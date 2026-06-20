@@ -208,9 +208,16 @@ _PROXY_HEADERS = (
 
 # Endpoints reachable without a session (the bare minimum for the login flow,
 # health probes, and the dashboard shell which JS will then gate on /api/me).
+#
+# /api/billing/webhook is intentionally in here: Stripe is the caller, it
+# proves authenticity via signature (verified in the handler), not via a
+# session cookie. Treating it as "public" lets the cookie-gate before_request
+# pass; the handler itself rejects any payload whose signature doesn't
+# verify with STRIPE_WEBHOOK_SECRET.
 _PUBLIC_PATHS = frozenset({
     "/", "/health", "/login", "/login.html",
     "/api/auth/register", "/api/auth/login", "/api/me",
+    "/api/billing/webhook",
 })
 
 
@@ -1356,6 +1363,233 @@ def api_me():
     if not u:
         return jsonify({"error": "not authenticated"}), 401
     return jsonify({"user": u.public_dict()})
+
+
+# ===========================================================================
+# Stripe billing — Phase 2A (TEST MODE only)
+# ===========================================================================
+import os
+import billing as _billing
+
+
+@app.post("/api/billing/checkout")
+@auth.login_required
+def api_billing_checkout():
+    """Create a Stripe Checkout session for the *currently authenticated*
+    user. The browser sends only a plan NAME; the price ID is looked up
+    server-side from an env-var allowlist (STRIPE_PRICE_STARTER /
+    STRIPE_PRICE_PRO). Any user_id / plan / price_id in the request body
+    is ignored.
+
+    Returns {url} for the hosted Checkout page. Plan provisioning
+    happens later in /api/billing/webhook — this endpoint never grants
+    entitlement on its own."""
+    u = auth.current_user()
+    body = request.get_json(silent=True) or {}
+    plan = (body.get("plan") or "").strip().lower()
+
+    allowlist = _billing.plan_to_price()
+    if plan not in allowlist:
+        # Includes the case where the env isn't configured — same response
+        # so a probing client can't tell config state from a bad plan.
+        return jsonify({"error": "unknown plan",
+                        "available": sorted(allowlist.keys())}), 400
+
+    # Refuse to start a second active subscription. The Stripe Customer
+    # Portal is the right place to switch plans; opening a parallel
+    # subscription would double-bill.
+    with _db.transaction() as conn:
+        existing = _billing.active_subscription_for(conn, u.id)
+    if existing:
+        return jsonify({
+            "error": "already subscribed",
+            "current_plan": existing["plan"],
+            "current_status": existing["status"],
+        }), 409
+
+    origin = (os.environ.get("BILLING_ORIGIN") or "").rstrip("/")
+    if not origin:
+        # Fall back to the request origin so local dev works without env.
+        origin = request.host_url.rstrip("/")
+
+    try:
+        session = _billing.stripe_client().checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price": allowlist[plan], "quantity": 1}],
+            customer_email=u.email,
+            # client_reference_id is read back on checkout.session.completed
+            # so we know which local user finished checkout.
+            client_reference_id=str(u.id),
+            # metadata is propagated onto the resulting Subscription —
+            # subscription.updated / .deleted events for THIS sub will
+            # also carry user_id, so we don't need a Stripe Customer lookup.
+            metadata={"user_id": str(u.id), "plan": plan},
+            subscription_data={"metadata": {"user_id": str(u.id), "plan": plan}},
+            success_url=f"{origin}/billing/success?session={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{origin}/billing/cancel",
+            allow_promotion_codes=True,
+        )
+    except RuntimeError as e:
+        # Missing STRIPE_SECRET_KEY etc. — 500 with safe message.
+        _logger.error(f"checkout config error: {e}")
+        return jsonify({"error": "billing not configured"}), 500
+    except Exception as e:
+        _logger.exception("Stripe Checkout.Session.create failed")
+        return jsonify({"error": f"stripe error: {e}"}), 502
+
+    return jsonify({"url": session.get("url"),
+                    "id":  session.get("id")})
+
+
+@app.post("/api/billing/webhook")
+def api_billing_webhook():
+    """Stripe webhook receiver. Must run BEFORE any auth gate (Stripe is
+    not a session). The raw request body is signature-verified against
+    STRIPE_WEBHOOK_SECRET; anything else is rejected with 400 so Stripe
+    retries with the same event id.
+
+    Idempotency: stripe_webhook_events.stripe_event_id is the PK. A
+    duplicate insert → return 200 without re-processing."""
+    payload = request.get_data()  # raw bytes — required for signature verify
+    sig = request.headers.get("Stripe-Signature", "")
+    if not sig:
+        return jsonify({"error": "missing signature"}), 400
+
+    # Narrow exception handling: a signature failure is the only thing that
+    # earns "invalid signature". Malformed JSON is a separate 400. A missing
+    # secret is a 500 (server's fault). Anything else propagates and is
+    # logged as UNCAUGHT by the global error handler so we don't silently
+    # call genuine bugs "tampering".
+    import stripe as _stripe_sdk
+    try:
+        event = _billing.verify_webhook(payload, sig)
+    except _stripe_sdk.SignatureVerificationError as e:
+        _logger.warning(f"webhook signature rejected: {e}")
+        return jsonify({"error": "invalid signature"}), 400
+    except ValueError as e:
+        # Body is signed but isn't valid JSON. Stripe would never send this,
+        # so it's either a misconfigured forwarder or someone replaying a
+        # corrupted payload — 400 with a distinct message.
+        _logger.warning(f"webhook payload malformed: {e}")
+        return jsonify({"error": "invalid payload"}), 400
+    except RuntimeError as e:
+        _logger.error(f"webhook config error: {e}")
+        return jsonify({"error": "billing not configured"}), 500
+
+    # Idempotency + dispatch happen in a single transaction so a crash
+    # mid-handler doesn't leave an "already-processed" mark without the
+    # effects.
+    with _db.transaction() as conn:
+        is_new = _billing.record_event_for_processing(conn, event)
+        if not is_new:
+            return jsonify({"ok": True, "duplicate": True}), 200
+        try:
+            outcome = _billing.dispatch_event(conn, event)
+        except Exception as e:
+            _logger.exception(f"webhook handler crashed for {event.get('id')}")
+            # Return 500 so Stripe retries (it backs off with jitter).
+            return jsonify({"error": f"handler failure: {e}"}), 500
+        _billing.mark_event_processed(conn, event["id"])
+
+    return jsonify({"ok": True, "outcome": outcome,
+                    "event": event["id"], "type": event["type"]}), 200
+
+
+@app.get("/api/billing/me")
+@auth.login_required
+def api_billing_me():
+    """Read the current user's subscription state. Purely a DB read —
+    never a live Stripe API call (those should happen via the webhook
+    flow only). Returns null subscription for free / never-subscribed
+    users."""
+    u = auth.current_user()
+    with _db.transaction() as conn:
+        sub = _billing.active_subscription_for(conn, u.id)
+    return jsonify({
+        "user": u.public_dict(),
+        "subscription": sub,
+    })
+
+
+@app.post("/api/billing/portal")
+@auth.login_required
+def api_billing_portal():
+    """Create a Stripe Billing Portal session for the current user.
+
+    Security stance:
+      * The Stripe customer ID comes ONLY from the local subscription
+        row owned by the session user. The client cannot supply or
+        influence it.
+      * The return URL is built ONLY from the BILLING_ORIGIN env var
+        (with a request-host fallback for local dev). The client cannot
+        supply or override it. This blocks open-redirect attacks via the
+        portal's `return_url`.
+      * Users who never started a subscription get a clear 404 with a
+        machine-readable error code, never a 500.
+    """
+    u = auth.current_user()
+    with _db.transaction() as conn:
+        # Pull any subscription row for this user (active or not) so users
+        # who canceled can still manage payment methods / view invoices.
+        cur = conn.cursor()
+        ph = _db.placeholder()
+        cur.execute(
+            f"SELECT stripe_customer_id FROM subscriptions "
+            f"WHERE user_id = {ph} AND stripe_customer_id IS NOT NULL "
+            f"  AND stripe_customer_id != '' "
+            f"ORDER BY updated_at DESC LIMIT 1",
+            (u.id,))
+        row = cur.fetchone()
+    customer_id = (row["stripe_customer_id"] if row else None)
+    if not customer_id:
+        return jsonify({"error": "no_stripe_customer",
+                        "message": "Subscribe before opening the billing portal."}), 404
+
+    origin = (os.environ.get("BILLING_ORIGIN") or "").rstrip("/") \
+             or request.host_url.rstrip("/")
+    return_url = f"{origin}/"
+
+    try:
+        session = _billing.stripe_client().billing_portal.Session.create(
+            customer=customer_id,
+            return_url=return_url,
+        )
+    except RuntimeError as e:
+        _logger.error(f"billing portal config error: {e}")
+        return jsonify({"error": "billing not configured"}), 500
+    except Exception as e:
+        # Stripe will sometimes 400 if the portal isn't configured for the
+        # test mode account. Surface that to the caller without leaking
+        # implementation details.
+        _logger.exception("Stripe billing_portal.Session.create failed")
+        return jsonify({"error": "stripe_portal_unavailable",
+                        "detail": f"{type(e).__name__}"}), 502
+
+    return jsonify({"url": session.get("url")})
+
+
+# ---- Admin billing health + reconciliation trigger ----------------------
+
+@app.get("/api/admin/billing/health")
+@auth.admin_required
+def api_admin_billing_health():
+    """Single pane of glass for billing health. Reads the last reconciliation
+    run, unresolved anomaly counts, and subscription-status distribution."""
+    with _db.transaction() as conn:
+        out = _billing.billing_health(conn)
+    return jsonify(out)
+
+
+# NOTE — Reconciliation is intentionally NOT exposed as a public HTTP
+# route. It runs as an internal command:
+#
+#     python3 -m jobs.reconcile_billing
+#
+# A systemd timer (see DEPLOY.md) calls that command directly on the
+# server host. There is no internet-facing scheduled billing action.
+# Operators inspect run results via the read-only GET
+# /api/admin/billing/health endpoint above, which now includes the
+# reconcile_job_lock state.
 
 
 # ---- View-function REPLACEMENT (the safe upgrade primitive) ------------

@@ -141,3 +141,148 @@ sniper.yourdomain.com {
 ```
 
 Caddy fetches Let's Encrypt certs on first request.
+
+## Scheduled billing reconciliation
+
+Reconciliation is an **internal** command, not a public HTTP endpoint. A
+systemd timer runs the command directly on the application host. The
+gunicorn workers never participate; if the web app is down, the timer
+still runs and corrects local subscription state from Stripe.
+
+The command:
+
+```bash
+/opt/sniper/.venv/bin/python3 -m jobs.reconcile_billing
+```
+
+Exit codes: `0` success · `1` operational failure (missing env, DB
+unreachable, import error) · `2` lock not acquired (another instance is
+already running, no work done) · `3` ran but reported errors talking to
+Stripe (corrections applied where possible — investigate `last_error`).
+
+A DB-backed advisory lock (`billing_job_locks` table, populated by
+migration 0005) prevents two timers / two hosts / a manual run + a cron
+run from racing each other. The lock has a 10-minute lease and is stolen
+after 1 hour of idleness — so a crashed reconciler never permanently
+blocks the next one.
+
+### Dry-run mode
+
+```bash
+/opt/sniper/.venv/bin/python3 -m jobs.reconcile_billing --dry-run
+```
+
+Walks the same subscription rows, queries Stripe, reports mismatches
+that WOULD be corrected, then exits without writing. Useful to verify a
+new Stripe price ID rollout, or before re-enabling a timer that was
+paused during incident response. Dry-run still acquires the lock, so it
+won't run concurrently with a real reconcile.
+
+### systemd service (oneshot)
+
+`/etc/systemd/system/sniper-reconcile-billing.service`:
+
+```ini
+[Unit]
+Description=sniper billing reconciliation (internal)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=sniper
+WorkingDirectory=/opt/sniper
+EnvironmentFile=/etc/sniper/env
+ExecStart=/opt/sniper/.venv/bin/python3 -m jobs.reconcile_billing
+# Reasonable safety limits — reconcile should never need more
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sniper
+```
+
+### systemd timer
+
+`/etc/systemd/system/sniper-reconcile-billing.timer`:
+
+```ini
+[Unit]
+Description=run sniper billing reconciliation hourly
+
+[Timer]
+# At minute 17 of every hour, with a 5-minute random jitter so
+# multi-host fleets don't all hit Stripe at the same second.
+OnCalendar=*-*-* *:17:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=sniper-reconcile-billing.service
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable + start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now sniper-reconcile-billing.timer
+systemctl list-timers sniper-reconcile-billing.timer
+journalctl -u sniper-reconcile-billing.service --since '1 hour ago'
+```
+
+The timer triggers the oneshot service; the service runs the Python
+command in a 30-second-ish wall-clock window (bounded by
+`--time-budget`). Each invocation's outcome is one JSON line in
+`journalctl`, suitable for alerting:
+
+```bash
+# Alert if last run had Stripe errors
+journalctl -u sniper-reconcile-billing.service -o cat -n 1 \
+  | jq 'select(.errors > 0)'
+
+# Alert if no successful run in the last 3 hours
+last=$(journalctl -u sniper-reconcile-billing.service -o cat -n 1 \
+        | jq -r '.finished_at // empty')
+```
+
+### Why no `/api/admin/billing/reconcile` route
+
+An internet-facing scheduled action would mean:
+- A long-lived admin token (or service account) stored somewhere on the
+  cron host, with all the rotation/leak pain of a real secret.
+- An adversary who reaches the route can fan it out and exhaust your
+  Stripe API quota or skew the audit log.
+- The timer can't run when the web tier is down — which is exactly when
+  a stuck subscription state most needs fixing.
+
+The internal CLI sidesteps all three. Operators inspect billing-health
+results through the read-only `GET /api/admin/billing/health` endpoint
+(login-required, admin-only) which includes the current job-lock state.
+
+## Pre-live tax decision checklist
+
+Sales-tax / VAT obligations are jurisdiction-specific and change with
+revenue, customer location, and product taxability. Phase 2 does **not**
+configure Stripe Tax. Before flipping to live mode:
+
+1. **Choose tax posture.** Decide whether to collect sales-tax / VAT at
+   checkout (Stripe Tax), to absorb tax into the listed price, or to
+   stay flat-priced and reconcile separately. Document the choice.
+2. **Confirm registrations and collection requirements with a qualified
+   tax professional.** Don't infer obligations from revenue thresholds
+   alone, and don't rely on this document. Low revenue does NOT
+   automatically remove tax obligations — many jurisdictions have $0
+   thresholds for digital services sold to local consumers.
+3. **Implement the chosen posture.** Either: enable Stripe Tax for the
+   live-mode account, mark Starter/Pro prices' Tax Behavior, and verify
+   on a real test charge that tax line items appear correctly — OR
+   document why you're handling tax outside of Stripe and how you'll
+   meet the filing/remittance schedule.
+4. **Re-check before each new market.** If you start selling into a new
+   country or US state, re-run step 2 before turning on collection
+   there.
+
+Do not enable live billing until step 1 has a written decision and
+step 2 is signed off by your tax advisor.

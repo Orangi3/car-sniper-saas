@@ -19,7 +19,7 @@ source .venv/bin/activate
 
 # Install deps quietly if any required module is missing
 python3 - <<'PY' >/dev/null 2>&1 || NEED_DEPS=1
-import flask, bcrypt, pytest  # noqa
+import flask, bcrypt, pytest, stripe  # noqa
 PY
 if [ "${NEED_DEPS:-0}" = "1" ]; then
     echo "▸ Installing test deps..."

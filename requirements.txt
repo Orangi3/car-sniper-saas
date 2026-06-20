@@ -5,4 +5,6 @@ flask>=3.0
 bcrypt>=4.1                 # password hashing
 itsdangerous>=2.1           # Flask already depends on it; pin for clarity
 pytest>=8.0                 # tests/
+# --- Phase 2A: Stripe billing (TEST MODE) ---
+stripe>=8.0                 # Checkout sessions + webhook signature verify
 # psycopg2-binary>=2.9      # uncomment when deploying with DATABASE_URL=postgres://...
