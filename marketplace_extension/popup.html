@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Sniper Bridge</title>
+<style>
+body { font: 13px -apple-system, sans-serif; width: 300px; margin: 0; padding: 12px; }
+h1 { font-size: 14px; margin: 0 0 6px; }
+.sub { color:#6b7280; font-size:11px; margin:0 0 10px; }
+button { width: 100%; padding: 9px; background: #15171a; color: #fff; border: 0; border-radius: 6px; cursor: pointer; font-weight: 500; margin-top:6px; }
+button:hover { background: #2a2d33; }
+button:disabled { background: #d1d5db; cursor: not-allowed; }
+button.secondary { background:#374151; }
+button.danger { background:#7f1d1d; }
+.row { display:flex; gap:8px; align-items:center; margin-top:8px; }
+.row label { font-size:12px; color:#374151; flex:1; }
+.row input { width:60px; padding:5px; font:12px monospace; border:1px solid #d1d5db; border-radius:4px; }
+.note { color: #6b7280; font-size: 11.5px; margin: 10px 0 0; }
+.sites { font-size:11px; color:#4b5563; margin:4px 0 8px; line-height:1.4; }
+#out { margin-top: 8px; font-size: 12px; }
+.ok { color: #16834a; }
+.bad { color: #b8252b; }
+hr { border:0; border-top:1px solid #e5e7eb; margin:10px 0; }
+</style>
+</head>
+<body>
+  <h1>Sniper Bridge</h1>
+  <p class="sub">Pushes the listings on this page to your local sniper.</p>
+  <div class="sites">
+    FB Marketplace · OfferUp · Nextdoor ·<br>
+    Cars.com · AutoTrader · CarGurus · Cars &amp; Bids
+  </div>
+
+  <button id="push">Push visible listings (auto-scroll)</button>
+
+  <hr>
+  <div class="row">
+    <label for="every">Auto-push every (seconds)</label>
+    <input id="every" type="number" min="30" value="120">
+  </div>
+  <button id="auto_start" class="secondary">Start auto-push on this tab</button>
+  <button id="auto_stop" class="danger">Stop auto-push</button>
+
+  <div id="out"></div>
+  <p class="note">
+    Sniper must be running at <code>127.0.0.1:8765</code>.
+    Open it via <strong>START HERE.command</strong>.
+  </p>
+<script src="popup.js"></script>
+</body></html>

@@ -1,0 +1,68 @@
+CAR SNIPER — QUICKSTART
+========================
+
+YOU ONLY NEED TO READ THIS ONCE.
+
+----------------------------------------------------------------
+FIRST TIME (10 seconds, one-time only)
+----------------------------------------------------------------
+
+1.  Right-click "START HERE.command"  →  choose "Open"
+    (Right-click only the FIRST time. macOS asks if you trust the
+    file. Click "Open" in the dialog. You won't see this again.)
+
+2.  Wait about 30 seconds while it installs the things it needs.
+
+3.  A web page will open in your browser. That's the dashboard.
+    You're done with setup.
+
+----------------------------------------------------------------
+EVERY DAY AFTER
+----------------------------------------------------------------
+
+  TO START:  double-click  START HERE.command
+  TO STOP:   double-click  STOP.command
+
+That's it. The dashboard always opens at:
+  http://127.0.0.1:8765
+
+----------------------------------------------------------------
+USING THE DASHBOARD
+----------------------------------------------------------------
+
+LIVE DEALS panel — fills up automatically as new car listings
+appear on Craigslist (Birmingham, Tuscaloosa, Montgomery). Each
+deal shows how far below sold-price-average it is.
+
+POLL NOW button (top right) — forces an immediate refresh if you
+don't want to wait 2 minutes.
+
+VIN CHECK panel — paste any 17-character VIN, hit "Check". You
+get year/make/model/trim/engine, open recalls, and the most-
+complained-about systems. Use this BEFORE you call the seller.
+
+SOLD-COMP LOOKUP — type a year, make, model. You get the actual
+sold-price average across eBay Motors, Bring a Trailer, and
+Cars & Bids. This is your real "is this a deal?" number.
+
+----------------------------------------------------------------
+TROUBLESHOOTING
+----------------------------------------------------------------
+
+"cannot be opened because the developer cannot be verified"
+  → That's macOS being cautious. Right-click the file, choose
+    Open instead. You'll only see this once per file.
+
+"Python is required"
+  → Open Terminal (Cmd+Space, type Terminal). Paste:
+       xcode-select --install
+    Click Install in the popup. Wait. Then try START HERE again.
+
+Browser opens to "can't connect"
+  → Wait 5 seconds and refresh. The server takes a moment to
+    start. If still broken, double-click STOP.command, then
+    START HERE.command again.
+
+Anything else
+  → Open sniper.log or server.log in TextEdit to see what
+    happened. Send the contents to Claude.

@@ -1,0 +1,46 @@
+# --- Secrets / runtime config ---
+# overrides.json contains the user's live phone number + share password
+.env
+.env.local
+overrides.json
+
+# --- Local databases ---
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-journal
+
+# --- Logs ---
+*.log
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Runtime state ---
+*.pid
+ngrok-url.txt
+
+# --- macOS / Linux junk ---
+.DS_Store
+.fuse_hidden*
+Thumbs.db
+
+# --- Vendored binaries (download via script on first run) ---
+cloudflared
+cloudflared.tgz
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp

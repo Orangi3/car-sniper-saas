@@ -1,0 +1,8 @@
+requests>=2.31
+feedparser>=6.0
+flask>=3.0
+# --- Phase 1 SaaS additions ---
+bcrypt>=4.1                 # password hashing
+itsdangerous>=2.1           # Flask already depends on it; pin for clarity
+pytest>=8.0                 # tests/
+# psycopg2-binary>=2.9      # uncomment when deploying with DATABASE_URL=postgres://...

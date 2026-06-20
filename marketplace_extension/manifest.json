@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Sniper Bridge — FB + OfferUp + Nextdoor + Cars.com + AutoTrader + CarGurus + C&B",
+  "version": "0.3.0",
+  "description": "While you browse Facebook Marketplace, OfferUp, Nextdoor, Cars.com, AutoTrader, CarGurus, or Cars & Bids, push visible vehicle listings to your local Car Sniper dashboard. Includes auto-scroll + auto-push.",
+  "permissions": ["activeTab", "storage", "alarms"],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://m.facebook.com/*",
+    "https://offerup.com/*",
+    "https://nextdoor.com/*",
+    "https://www.cars.com/*",
+    "https://www.autotrader.com/*",
+    "https://www.cargurus.com/*",
+    "https://carsandbids.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "action": {
+    "default_title": "Push visible listings to Car Sniper",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.facebook.com/marketplace/*",
+        "https://m.facebook.com/marketplace/*",
+        "https://offerup.com/*",
+        "https://nextdoor.com/*",
+        "https://www.cars.com/shopping/*",
+        "https://www.cars.com/for-sale/*",
+        "https://www.autotrader.com/cars-for-sale/*",
+        "https://www.cargurus.com/Cars/*",
+        "https://carsandbids.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}

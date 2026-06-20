@@ -1,0 +1,2074 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SNIPER ⟁ HUNT MODE</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   CYBERPUNK TERMINAL — v7
+   ============================================================ */
+:root {
+  color-scheme: dark;
+  --bg:        #04060a;
+  --bg-2:      #0a0e16;
+  --panel:     rgba(14,18,28,.72);
+  --panel-2:   rgba(20,26,40,.55);
+  --border:    rgba(0,255,200,.14);
+  --border-2:  rgba(255,255,255,.06);
+  --ink:       #d9e3ee;
+  --ink-2:     #a4b1c5;
+  --muted:     #5d6b85;
+
+  --neon:      #00ff9c;   /* primary action / profit */
+  --neon-d:    #00b87a;
+  --cyan:      #00d4ff;   /* live / data */
+  --magenta:   #ff2e9a;   /* urgent / scam */
+  --gold:      #ffc94d;   /* discount */
+  --orange:    #ff7a3d;
+  --shadow:    0 0 24px rgba(0,255,156,.10), 0 4px 24px rgba(0,0,0,.4);
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13.5px/1.45 "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+.mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+        font-variant-numeric: tabular-nums; }
+
+/* ============================================================
+   ANIMATED BACKGROUND — grid + matrix rain + radial glows
+   ============================================================ */
+.bg-layer { position: fixed; inset: 0; pointer-events: none; z-index: -2; }
+.bg-grid {
+  background:
+    linear-gradient(rgba(0,255,200,.05) 1px, transparent 1px) 0 0/60px 60px,
+    linear-gradient(90deg, rgba(0,255,200,.05) 1px, transparent 1px) 0 0/60px 60px;
+  mask: radial-gradient(ellipse at 50% 0%, #000 0%, transparent 70%);
+  -webkit-mask: radial-gradient(ellipse at 50% 0%, #000 0%, transparent 70%);
+}
+.bg-glow {
+  background:
+    radial-gradient(circle at 15% 20%, rgba(0,255,156,.16) 0%, transparent 35%),
+    radial-gradient(circle at 85% 30%, rgba(0,212,255,.12) 0%, transparent 35%),
+    radial-gradient(circle at 50% 100%, rgba(255,46,154,.08) 0%, transparent 45%);
+  animation: glow-shift 22s ease-in-out infinite;
+}
+@keyframes glow-shift {
+  0%,100% { transform: translate(0,0); }
+  50%     { transform: translate(-30px, 20px); }
+}
+.bg-scan {
+  position: fixed; left: 0; right: 0; top: 0; height: 100vh;
+  background: linear-gradient(180deg, transparent 0%, rgba(0,255,156,.05) 50%, transparent 100%);
+  pointer-events: none; z-index: -1;
+  animation: scan-down 8s linear infinite;
+}
+@keyframes scan-down {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+/* Crawling code rain in the background */
+#code-rain {
+  position: fixed; inset: 0; z-index: -1; opacity: .35; pointer-events: none;
+}
+.rain-col {
+  position: absolute; top: -50%; width: 14px;
+  color: var(--neon);
+  font: 11px "JetBrains Mono", monospace;
+  white-space: pre; line-height: 1.05;
+  text-shadow: 0 0 8px rgba(0,255,156,.6);
+  animation: rain-fall linear infinite;
+}
+@keyframes rain-fall {
+  0%   { transform: translateY(-50%); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(220vh); opacity: 0; }
+}
+
+/* ============================================================
+   HEADER
+   ============================================================ */
+header {
+  position: relative; padding: 18px 22px;
+  background: linear-gradient(180deg, rgba(4,6,10,.95) 0%, rgba(4,6,10,.7) 100%);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  z-index: 5;
+}
+header::after {
+  content: ""; position: absolute; bottom: -1px; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--neon), transparent);
+  filter: blur(1px); animation: line-pulse 4s ease-in-out infinite;
+}
+@keyframes line-pulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+
+h1 {
+  margin: 0; font: 900 22px/1 "Space Grotesk", sans-serif; letter-spacing: -.02em;
+  background: linear-gradient(135deg, #fff, var(--neon) 50%, var(--cyan));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 12px rgba(0,255,156,.4));
+}
+h1 small { font: 700 10px "JetBrains Mono", monospace; color: var(--cyan);
+           -webkit-text-fill-color: var(--cyan); letter-spacing: .2em; margin-left: 8px; }
+
+.live-pill {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 5px 12px 5px 10px; border-radius: 100px;
+  background: rgba(0,255,156,.08); border: 1px solid rgba(0,255,156,.4);
+  color: var(--neon); font: 800 10.5px "JetBrains Mono", monospace;
+  text-transform: uppercase; letter-spacing: .15em;
+  box-shadow: 0 0 18px rgba(0,255,156,.25);
+}
+.live-dot { width: 8px; height: 8px; border-radius: 50%;
+  background: var(--neon); box-shadow: 0 0 12px var(--neon); position: relative; }
+.live-dot::before, .live-dot::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 50%;
+  border: 1px solid var(--neon); opacity: 0;
+  animation: radar 2s linear infinite;
+}
+.live-dot::after { animation-delay: 1s; }
+@keyframes radar { 0% { transform: scale(1); opacity: .8; }
+                   100% { transform: scale(4.5); opacity: 0; } }
+
+.hd-meta { font: 600 11.5px "JetBrains Mono", monospace; color: var(--muted); }
+.hd-meta strong { color: var(--ink); }
+
+button.cta-poll {
+  margin-left: auto;
+  background: linear-gradient(135deg, var(--neon) 0%, var(--cyan) 100%);
+  color: #001a14; border: 0; padding: 11px 22px; border-radius: 8px;
+  font: 800 12.5px "JetBrains Mono", monospace; letter-spacing: .08em;
+  text-transform: uppercase; cursor: pointer;
+  box-shadow: 0 0 24px rgba(0,255,156,.4), inset 0 1px 0 rgba(255,255,255,.4);
+  transition: transform .12s, box-shadow .12s;
+}
+button.cta-poll:hover { transform: translateY(-2px); box-shadow: 0 0 36px rgba(0,255,156,.65); }
+button.cta-poll:disabled { background: #1f2738; color: var(--muted); box-shadow: none; cursor: wait; }
+
+/* ============================================================
+   TICKER
+   ============================================================ */
+.ticker-wrap {
+  background: linear-gradient(90deg, rgba(0,212,255,.06), rgba(255,46,154,.04));
+  border-top: 1px solid var(--border-2); border-bottom: 1px solid var(--border-2);
+  padding: 7px 0; overflow: hidden; position: relative;
+}
+.ticker-wrap::before, .ticker-wrap::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 80px; z-index: 1;
+}
+.ticker-wrap::before { left: 0; background: linear-gradient(90deg, var(--bg), transparent); }
+.ticker-wrap::after  { right: 0; background: linear-gradient(-90deg, var(--bg), transparent); }
+.ticker { display: inline-flex; gap: 28px; white-space: nowrap;
+          animation: ticker-scroll 80s linear infinite; }
+@keyframes ticker-scroll { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+.ticker-item { font: 600 12px "JetBrains Mono", monospace; color: var(--ink-2); }
+.ticker-item .tk-price { color: var(--neon); font-weight: 800; }
+.ticker-item .tk-src   { color: var(--cyan); }
+
+/* ============================================================
+   STAT TILES (hero numbers)
+   ============================================================ */
+.stats {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 16px 16px 6px;
+}
+@media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+.stat-tile {
+  position: relative; padding: 16px 18px; border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--border);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  overflow: hidden; transition: transform .2s, border-color .2s;
+}
+.stat-tile::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-c, var(--neon)), transparent);
+  opacity: .7;
+}
+.stat-tile:hover { transform: translateY(-2px); border-color: rgba(0,255,200,.3); }
+.stat-tile .label {
+  font: 700 9.5px "JetBrains Mono", monospace; color: var(--muted);
+  letter-spacing: .2em; text-transform: uppercase; margin-bottom: 8px;
+}
+.stat-tile .value {
+  font: 900 30px "Space Grotesk", sans-serif; line-height: 1; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+.stat-tile .sub { font: 500 11px "JetBrains Mono", monospace;
+                  color: var(--muted); margin-top: 6px; }
+.stat-tile.profit   { --accent-c: var(--neon); }
+.stat-tile.profit   .value { color: var(--neon); text-shadow: 0 0 18px rgba(0,255,156,.45); }
+.stat-tile.discount { --accent-c: var(--gold); }
+.stat-tile.discount .value { color: var(--gold); text-shadow: 0 0 18px rgba(255,201,77,.4); }
+.stat-tile.deals    { --accent-c: var(--cyan); }
+.stat-tile.deals    .value { color: var(--cyan); text-shadow: 0 0 18px rgba(0,212,255,.4); }
+.stat-tile.scanned  { --accent-c: var(--magenta); }
+.stat-tile.scanned  .value { color: var(--magenta); text-shadow: 0 0 18px rgba(255,46,154,.4); }
+
+/* ============================================================
+   TOP DEAL HERO CARD
+   ============================================================ */
+.top-deal {
+  margin: 14px 16px; padding: 22px 26px;
+  background: linear-gradient(135deg, rgba(0,255,156,.06), rgba(0,212,255,.03));
+  border: 1.5px solid var(--neon); border-radius: 16px;
+  box-shadow: 0 0 40px rgba(0,255,156,.18), inset 0 0 0 1px rgba(0,255,156,.08);
+  position: relative; overflow: hidden;
+  animation: td-pulse 4s ease-in-out infinite;
+}
+@keyframes td-pulse {
+  0%,100% { box-shadow: 0 0 30px rgba(0,255,156,.18), inset 0 0 0 1px rgba(0,255,156,.08); }
+  50%     { box-shadow: 0 0 60px rgba(0,255,156,.4),  inset 0 0 0 1px rgba(0,255,156,.16); }
+}
+.top-deal::before {
+  content: "▸ TOP TARGET ◂"; position: absolute; top: -1px; left: 22px;
+  background: var(--neon); color: #001a14;
+  font: 800 10px "JetBrains Mono", monospace; letter-spacing: .18em;
+  padding: 4px 12px; border-radius: 0 0 8px 8px;
+  box-shadow: 0 0 14px rgba(0,255,156,.6);
+}
+.top-deal .car {
+  font: 800 24px "Space Grotesk", sans-serif; margin: 10px 0 10px;
+  color: var(--ink); letter-spacing: -.01em;
+}
+.top-deal .price-row {
+  display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; margin: 8px 0;
+}
+.top-deal .big-price {
+  font: 800 42px "JetBrains Mono", monospace; color: #fff;
+  letter-spacing: -.02em; line-height: 1;
+  text-shadow: 0 0 24px rgba(255,255,255,.2);
+}
+.top-deal .big-discount {
+  font: 800 20px "JetBrains Mono", monospace; color: var(--neon);
+  background: rgba(0,255,156,.12); padding: 6px 14px; border-radius: 10px;
+  border: 1px solid rgba(0,255,156,.3);
+  text-shadow: 0 0 14px rgba(0,255,156,.4);
+}
+.top-deal .big-profit {
+  font: 700 14px "JetBrains Mono", monospace; color: var(--gold);
+  margin-top: 6px;
+}
+.top-deal a { color: var(--cyan); text-decoration: none; }
+.top-deal a:hover { text-shadow: 0 0 8px var(--cyan); }
+.top-deal .empty { color: var(--muted); text-align: center; padding: 12px 0; font-style: italic; }
+
+/* ============================================================
+   LAYOUT — sidebar + main + right
+   ============================================================ */
+main {
+  display: grid; grid-template-columns: 240px 1fr 320px; gap: 14px;
+  padding: 0 16px 16px;
+}
+@media (max-width: 1280px) { main { grid-template-columns: 220px 1fr 290px; } }
+@media (max-width: 1024px) { main { grid-template-columns: 1fr; } }
+
+.card {
+  background: var(--panel); border: 1px solid var(--border-2);
+  border-radius: 12px; padding: 14px;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--shadow); margin-bottom: 12px;
+  transition: border-color .2s;
+}
+.card:hover { border-color: var(--border); }
+.card h2 {
+  margin: 0 0 10px; font: 800 10.5px "JetBrains Mono", monospace;
+  letter-spacing: .18em; color: var(--cyan); text-transform: uppercase;
+}
+
+/* ============================================================
+   THRESHOLD WIDGET
+   ============================================================ */
+.threshold-wrap {
+  background: linear-gradient(135deg, rgba(255,46,154,.06), rgba(0,212,255,.03));
+  border: 1px solid rgba(255,46,154,.25); border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 12px;
+  position: relative; overflow: hidden;
+}
+.threshold-wrap label {
+  font: 800 9.5px "JetBrains Mono", monospace; color: var(--magenta);
+  letter-spacing: .2em; text-transform: uppercase;
+}
+.threshold-wrap .val {
+  font: 900 38px "JetBrains Mono", monospace; color: var(--magenta);
+  letter-spacing: -.03em; text-shadow: 0 0 18px rgba(255,46,154,.5);
+}
+.threshold-wrap small { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
+input[type="range"] {
+  width: 100%; height: 6px; border-radius: 3px;
+  -webkit-appearance: none; appearance: none;
+  background: linear-gradient(90deg, var(--neon), var(--gold), var(--magenta));
+  outline: none; margin: 8px 0 4px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; border: 2px solid var(--magenta);
+  cursor: pointer; box-shadow: 0 0 14px rgba(255,46,154,.6);
+}
+
+/* ============================================================
+   FORM CONTROLS
+   ============================================================ */
+input, select, textarea {
+  width: 100%; padding: 7px 10px;
+  background: rgba(0,0,0,.45); color: var(--ink);
+  border: 1px solid var(--border-2); border-radius: 6px;
+  font: 500 12.5px "JetBrains Mono", monospace;
+  outline: none; transition: border-color .2s, box-shadow .2s;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(0,212,255,.18);
+}
+select { appearance: none; -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--cyan) 50%),
+                    linear-gradient(135deg, var(--cyan) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 10px) 50%;
+  background-size: 4px 4px, 4px 4px; background-repeat: no-repeat;
+  padding-right: 24px;
+}
+label { display: block; font: 800 9.5px "JetBrains Mono", monospace;
+        color: var(--muted); letter-spacing: .15em; text-transform: uppercase; margin-bottom: 4px; }
+.row { display: flex; gap: 6px; margin-bottom: 8px; }
+.row > * { flex: 1; min-width: 0; }
+.filter-group { margin-bottom: 11px; }
+
+button {
+  background: rgba(0,212,255,.12); color: var(--cyan);
+  border: 1px solid rgba(0,212,255,.35); border-radius: 7px;
+  padding: 7px 13px; font: 700 11px "JetBrains Mono", monospace;
+  letter-spacing: .08em; text-transform: uppercase; cursor: pointer;
+  transition: all .15s;
+}
+button:hover { background: rgba(0,212,255,.2); border-color: var(--cyan);
+               box-shadow: 0 0 14px rgba(0,212,255,.3); }
+button.secondary { background: transparent; color: var(--ink-2); border-color: var(--border-2); }
+button.secondary:hover { color: var(--ink); border-color: var(--ink-2); box-shadow: none; }
+
+/* ============================================================
+   CHECKBOXES
+   ============================================================ */
+.checkbox-row {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 4px 0; font: 500 12px "JetBrains Mono", monospace; color: var(--ink-2);
+}
+.checkbox-row:hover { color: var(--ink); }
+.checkbox-row input { width: 14px; height: 14px; accent-color: var(--cyan); }
+
+/* ============================================================
+   AGE CHIPS
+   ============================================================ */
+.age-chips { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+.age-chip {
+  background: rgba(0,0,0,.4); color: var(--ink-2); border: 1px solid var(--border-2);
+  padding: 4px 10px; border-radius: 100px;
+  font: 700 10px "JetBrains Mono", monospace; letter-spacing: .08em;
+  cursor: pointer; transition: all .15s;
+}
+.age-chip:hover { color: var(--cyan); border-color: rgba(0,212,255,.4); }
+.age-chip.active {
+  background: var(--magenta); color: #fff; border-color: var(--magenta);
+  box-shadow: 0 0 12px rgba(255,46,154,.4);
+}
+
+/* ============================================================
+   TABS
+   ============================================================ */
+.tabs {
+  display: flex; gap: 4px; padding: 0 16px;
+  border-bottom: 1px solid var(--border-2); margin-bottom: 12px;
+}
+.tab {
+  padding: 10px 14px; cursor: pointer;
+  font: 700 11.5px "JetBrains Mono", monospace; letter-spacing: .1em;
+  color: var(--muted); text-transform: uppercase;
+  border-bottom: 2px solid transparent; transition: all .15s;
+}
+.tab:hover { color: var(--ink-2); }
+.tab.active { color: var(--neon); border-bottom-color: var(--neon);
+              text-shadow: 0 0 8px rgba(0,255,156,.4); }
+.tab .count {
+  background: rgba(255,255,255,.05); color: var(--muted);
+  padding: 2px 8px; border-radius: 100px;
+  font: 800 10px "JetBrains Mono", monospace; margin-left: 6px;
+}
+.tab.active .count { background: var(--neon); color: #001a14; }
+
+/* ============================================================
+   ALERTS (deal cards)
+   ============================================================ */
+.alert {
+  background: linear-gradient(135deg, rgba(0,255,156,.04), rgba(0,0,0,.2));
+  border: 1px solid var(--border-2); border-left: 3px solid var(--neon);
+  border-radius: 8px; padding: 12px 14px; margin-bottom: 9px;
+  transition: all .15s; overflow: hidden;     /* clearfix for floated photo */
+}
+.alert:hover {
+  border-color: var(--neon); transform: translateX(3px);
+  box-shadow: 0 0 22px rgba(0,255,156,.18);
+}
+.alert .top {
+  display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+  flex-wrap: wrap;
+}
+.alert .price {
+  font: 800 19px "JetBrains Mono", monospace; color: #fff;
+  text-shadow: 0 0 12px rgba(255,255,255,.2);
+}
+.alert .discount {
+  font: 800 15px "JetBrains Mono", monospace; color: var(--neon);
+  text-shadow: 0 0 8px rgba(0,255,156,.5);
+}
+.alert .meta {
+  font: 500 11px "JetBrains Mono", monospace; color: var(--muted); margin: 4px 0;
+}
+.alert a {
+  color: var(--cyan); text-decoration: none; font: 500 13px "Space Grotesk", sans-serif;
+  word-break: break-word;
+}
+.alert a:hover { text-shadow: 0 0 8px var(--cyan); }
+
+/* ============================================================
+   TAGS / BADGES
+   ============================================================ */
+.tag {
+  display: inline-block; padding: 2px 7px; border-radius: 4px;
+  font: 700 10px "JetBrains Mono", monospace; letter-spacing: .04em;
+  background: rgba(255,255,255,.06); color: var(--ink-2);
+  margin-right: 4px;
+}
+.tag.good    { background: rgba(0,255,156,.15); color: var(--neon); border: 1px solid rgba(0,255,156,.3); }
+.tag.bad     { background: rgba(255,46,154,.18); color: var(--magenta); border: 1px solid rgba(255,46,154,.4); }
+.tag.warn    { background: rgba(255,201,77,.15); color: var(--gold); }
+.tag.cash    { background: rgba(0,255,156,.15); color: var(--neon); font-weight: 800; }
+.tag.auction { background: rgba(168,85,247,.18); color: #c084fc; }
+.tag.salvage { background: rgba(255,46,154,.12); color: var(--magenta); }
+.tag.urgent  { background: var(--magenta); color: #fff; font-weight: 800;
+               box-shadow: 0 0 10px rgba(255,46,154,.5); }
+.tag.src-craigslist { background: rgba(0,212,255,.15); color: var(--cyan); }
+.tag.src-ebay       { background: rgba(255,122,61,.15); color: var(--orange); }
+.tag.src-bat        { background: rgba(0,255,156,.1); color: var(--neon); }
+.tag.src-carsandbids{ background: rgba(255,201,77,.15); color: var(--gold); }
+.tag.src-hemmings   { background: rgba(255,46,154,.12); color: var(--magenta); }
+.tag.src-govdeals,
+.tag.src-publicsurplus,
+.tag.src-gsa        { background: rgba(168,85,247,.15); color: #c084fc; }
+.tag.src-copart_live,
+.tag.src-iaa_live   { background: rgba(255,122,61,.12); color: var(--orange); }
+.tag.src-marketcheck{ background: rgba(0,212,255,.12); color: var(--cyan); }
+.tag.src-marketplace{ background: rgba(168,85,247,.12); color: #c084fc; }
+.tag.src-email_imap { background: rgba(0,255,156,.12); color: var(--neon); }
+
+.star-btn {
+  background: none; border: 0; color: var(--muted);
+  font-size: 22px; cursor: pointer; transition: transform .15s, color .15s; padding: 0;
+}
+.star-btn:hover { transform: scale(1.25); color: var(--gold); }
+.star-btn[data-saved="1"] { color: var(--gold); text-shadow: 0 0 10px var(--gold); }
+
+/* ============================================================
+   VIN CARD
+   ============================================================ */
+.vin-top { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+.vin-box {
+  padding: 10px; border-radius: 8px; text-align: center;
+  background: rgba(255,255,255,.04); border: 1px solid var(--border-2);
+}
+.vin-box .label { font: 700 9px "JetBrains Mono", monospace; color: var(--muted);
+                  letter-spacing: .15em; text-transform: uppercase; }
+.vin-box .value { font: 800 13px "JetBrains Mono", monospace; margin-top: 5px; color: var(--ink); }
+.vin-box.clean { background: rgba(0,255,156,.12); border-color: rgba(0,255,156,.3); }
+.vin-box.clean .value { color: var(--neon); }
+.vin-box.dirty { background: rgba(255,46,154,.12); border-color: rgba(255,46,154,.4); }
+.vin-box.dirty .value { color: var(--magenta); }
+.vin-box.unset { background: rgba(255,201,77,.08); border-color: rgba(255,201,77,.2); }
+.vin-box.unset .value { color: var(--gold); font-size: 10.5px; }
+/* v3 VIN: risk + confidence + listing-mismatch banner --------------------- */
+.vin-risk-bar { display:flex; gap:6px; align-items:stretch; margin-bottom:8px; }
+.vin-risk-badge { flex: 1; padding: 8px 10px; border-radius: 6px;
+                   border: 1px solid rgba(255,255,255,.08);
+                   display: flex; flex-direction: column; gap: 2px;
+                   font: 800 11px "JetBrains Mono", monospace; }
+.vin-risk-badge .lbl { font: 700 8.5px "JetBrains Mono", monospace;
+                       color: var(--muted); letter-spacing: .14em; }
+.vin-risk-badge .num { font-size: 18px; }
+.vin-risk-badge.clean    { background: rgba(0,255,156,.10); color: var(--neon); }
+.vin-risk-badge.caution  { background: rgba(255,201,77,.12); color: var(--gold); }
+.vin-risk-badge.high_risk{ background: rgba(255,107,53,.14); color: #ff8a4d; }
+.vin-risk-badge.avoid    { background: rgba(255,46,154,.14); color: var(--magenta); }
+.vin-risk-badge.unknown  { background: rgba(255,255,255,.04); color: var(--muted); }
+.vin-mismatch { margin: 0 0 8px; padding: 8px 10px; border-radius: 6px;
+                background: rgba(255,46,154,.10); border: 1px solid rgba(255,46,154,.4);
+                color: var(--magenta); font: 700 11.5px "JetBrains Mono", monospace; }
+.vin-mismatch.low    { background: rgba(255,201,77,.10); border-color: rgba(255,201,77,.4); color: var(--gold); }
+.vin-mismatch.medium { background: rgba(255,107,53,.10); border-color: rgba(255,107,53,.4); color: #ff8a4d; }
+.vin-completeness { font: 600 10.5px "JetBrains Mono", monospace; color: var(--muted);
+                    margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+.vin-completeness .chip { padding: 2px 7px; border-radius: 999px;
+                           background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); }
+.vin-completeness .chip.have { background: rgba(0,255,156,.08); border-color: rgba(0,255,156,.25); color: var(--neon); }
+.vin-completeness .chip.miss { background: rgba(255,201,77,.06); border-color: rgba(255,201,77,.22); color: var(--gold); }
+.vin-provider-line { font: 700 10px "JetBrains Mono", monospace;
+                     color: var(--muted); margin-top: 6px; letter-spacing: .1em; }
+
+.vehicle-photo {
+  width: 100%; max-height: 170px; object-fit: cover;
+  border-radius: 8px; margin-bottom: 10px;
+  border: 1px solid var(--border); box-shadow: 0 0 24px rgba(0,212,255,.15);
+}
+.vehicle-photo-empty {
+  width: 100%; height: 80px; background: rgba(255,255,255,.03);
+  border: 1px dashed var(--border-2); border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font: 500 11px "JetBrains Mono", monospace; margin-bottom: 10px;
+}
+
+.stars { color: var(--gold); letter-spacing: 1px; font-size: 14px;
+         text-shadow: 0 0 6px rgba(255,201,77,.5); }
+.stars .e { color: rgba(255,255,255,.1); }
+.mpg-pill { display: inline-block; padding: 3px 9px; border-radius: 4px;
+            background: rgba(0,255,156,.1); border: 1px solid rgba(0,255,156,.25);
+            color: var(--neon); font: 700 11px "JetBrains Mono", monospace; margin-right: 4px; }
+
+/* ============================================================
+   TABLES
+   ============================================================ */
+table { width: 100%; border-collapse: collapse; font: 500 12px "JetBrains Mono", monospace; }
+th, td { padding: 7px 9px; text-align: left; border-bottom: 1px solid var(--border-2); vertical-align: top; }
+th { color: var(--muted); font: 800 10px "JetBrains Mono", monospace; letter-spacing: .1em;
+     text-transform: uppercase; }
+tr:hover { background: rgba(0,212,255,.04); }
+.empty { padding: 20px; text-align: center; color: var(--muted); font-style: italic; }
+
+/* ============================================================
+   KEY-VALUE INFO
+   ============================================================ */
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px;
+      font: 500 12.5px "Space Grotesk", sans-serif; }
+.kv b { color: var(--muted); font: 800 10px "JetBrains Mono", monospace;
+        letter-spacing: .1em; text-transform: uppercase; }
+
+.alert-bar {
+  background: rgba(255,201,77,.08); border: 1px solid rgba(255,201,77,.2);
+  color: var(--gold); padding: 10px 14px; border-radius: 8px;
+  font: 500 12px "JetBrains Mono", monospace; margin: 0 16px 12px;
+}
+.alert-bar.info { background: rgba(0,212,255,.06); border-color: rgba(0,212,255,.25); color: var(--cyan); }
+
+.spinner { display: inline-block; width: 11px; height: 11px;
+  border: 2px solid var(--border-2); border-top-color: var(--cyan);
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+  vertical-align: middle; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.counting { animation: count-pop .35s ease; }
+@keyframes count-pop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.07); filter: brightness(1.4); }
+  100% { transform: scale(1); }
+}
+small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
+.urgent-row { background: rgba(255,46,154,.06) !important; }
+</style>
+</head>
+<body>
+
+<!-- ============ BACKGROUND LAYERS ============ -->
+<div class="bg-layer bg-glow"></div>
+<div class="bg-layer bg-grid"></div>
+<div class="bg-scan"></div>
+<div id="code-rain"></div>
+
+<!-- ============ HEADER ============ -->
+<header>
+  <h1>⟁ SNIPER <small>HUNT MODE v7 · build r5</small></h1>
+  <span class="live-pill"><span class="live-dot"></span><span id="hero-status">SCANNING</span></span>
+  <span class="hd-meta">ZIP <strong id="hero-zip">35401</strong> · R<strong id="hero-radius">100</strong>mi</span>
+  <span class="hd-meta">LAST <strong id="hero-last">–</strong></span>
+  <span class="hd-meta">THRESHOLD <strong id="hero-thresh">25</strong>%</span>
+  <button id="poll-now" class="cta-poll">⚡ Poll All Sources Now</button>
+</header>
+
+<!-- ============ LIVE TICKER ============ -->
+<div class="ticker-wrap">
+  <div class="ticker" id="hero-ticker"><span class="ticker-item">▸ Initializing scanner...</span></div>
+</div>
+
+<!-- ============ STAT TILES ============ -->
+<div class="stats">
+  <div class="stat-tile profit">
+    <div class="label">⟁ Profit Pool</div>
+    <div class="value mono" id="hero-profit">$0</div>
+    <div class="sub">across active alerts</div>
+  </div>
+  <div class="stat-tile discount">
+    <div class="label">⟁ Best Discount</div>
+    <div class="value mono" id="hero-best">—</div>
+    <div class="sub" id="hero-best-car">no deals yet</div>
+  </div>
+  <div class="stat-tile deals">
+    <div class="label">⟁ Deals Found</div>
+    <div class="value mono" id="hero-deals">0</div>
+    <div class="sub" id="hero-saved-count">0 saved</div>
+  </div>
+  <div class="stat-tile scanned">
+    <div class="label">⟁ Listings Scanned</div>
+    <div class="value mono" id="hero-scanned">0</div>
+    <div class="sub" id="hero-poll-secs">poll: – s</div>
+  </div>
+</div>
+
+<!-- ============ TOP DEAL HERO ============ -->
+<div class="top-deal" id="top-deal">
+  <div class="top-deal-content"><div class="top-deal-main">
+    <div class="empty">⏳ Click "⚡ POLL ALL SOURCES NOW" to begin hunting.</div>
+  </div></div>
+</div>
+
+<!-- ============ TABS ============ -->
+<div class="tabs">
+  <div class="tab active" data-tab="deals">⚡ Best Deals <span class="count" id="tab-count-deals">0</span></div>
+  <div class="tab" data-tab="closing">⏰ Closing Soon <span class="count" id="tab-count-closing">0</span></div>
+  <div class="tab" data-tab="saved">★ Saved <span class="count" id="tab-count-saved">0</span></div>
+  <div class="tab" data-tab="all">▦ All Listings <span class="count" id="tab-count-all">0</span></div>
+</div>
+
+<main>
+  <!-- LEFT: filters -->
+  <aside>
+    <div class="threshold-wrap">
+      <label>Deal Threshold</label>
+      <div><span class="val" id="thresh-val">25</span><span style="font-size:14px;color:var(--muted);font-family:'JetBrains Mono',monospace;"> % below comps</span></div>
+      <input type="range" id="thresh-slider" min="5" max="60" step="1" value="25">
+      <small>Only listings this far below sold-comp avg get alerted.</small>
+    </div>
+
+    <div class="card">
+      <h2>⟁ Quick Filters</h2>
+      <label class="checkbox-row"><input type="checkbox" id="cash-only" checked> Cash only</label>
+      <label class="checkbox-row"><input type="checkbox" id="hide-dealer"> Hide dealers</label>
+      <label class="checkbox-row"><input type="checkbox" id="hide-salvage" checked> Hide salvage</label>
+      <label class="checkbox-row"><input type="checkbox" id="hide-auction" checked> Hide auctions</label>
+      <label class="checkbox-row"><input type="checkbox" id="show-scams"> 🚩 Show scams</label>
+      <div class="filter-group" style="margin-top:10px;">
+        <label>Posted Within</label>
+        <div class="age-chips">
+          <button class="age-chip" data-age="60">1h</button>
+          <button class="age-chip" data-age="360">6h</button>
+          <button class="age-chip active" data-age="1440">24h</button>
+          <button class="age-chip" data-age="4320">3d</button>
+          <button class="age-chip" data-age="0">All</button>
+        </div>
+        <input id="f-max-age" type="number" placeholder="custom (min)" min="0">
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>⟁ Location</h2>
+      <div class="filter-group"><label>ZIP</label><input id="set-zip" maxlength="5"></div>
+      <div class="filter-group"><label>Radius (mi)</label><input id="set-radius" type="number" min="1" max="1000"></div>
+      <div class="filter-group"><label>CL regions</label><input id="set-cl-regions" placeholder="tuscaloosa, bham, montgomery"></div>
+      <div class="filter-group"><label>Gov states</label><input id="set-gov-states" placeholder="AL, MS, GA"></div>
+      <button id="settings-save" style="width:100%">Save & Apply</button>
+      <small id="settings-msg" class="muted" style="display:block;margin-top:6px;"></small>
+    </div>
+
+    <div class="card">
+      <h2>⟁ Specs</h2>
+      <div class="filter-group"><label>Search</label><input id="f-search" placeholder="e.g. F-150, Miata"></div>
+      <div class="filter-group"><label>Year</label>
+        <div class="row"><input id="f-year-min" placeholder="min" type="number"><input id="f-year-max" placeholder="max" type="number"></div>
+      </div>
+      <div class="filter-group"><label>Price $</label>
+        <div class="row"><input id="f-price-min" placeholder="min" type="number"><input id="f-price-max" placeholder="max" type="number"></div>
+      </div>
+      <div class="filter-group"><label>Miles</label>
+        <div class="row"><input id="f-miles-min" placeholder="min" type="number"><input id="f-miles-max" placeholder="max" type="number"></div>
+      </div>
+      <div class="filter-group"><label>Make</label><select id="f-make"><option value="">All makes</option></select></div>
+      <div class="filter-group"><label>Model</label><select id="f-model"><option value="">All models</option></select></div>
+      <div class="filter-group"><label>Sort</label>
+        <select id="f-sort">
+          <option value="newest">Newest first</option>
+          <option value="price_asc">Price ↑</option>
+          <option value="price_desc">Price ↓</option>
+          <option value="miles_asc">Miles ↑</option>
+        </select>
+      </div>
+      <button id="filter-clear" class="secondary" style="width:100%">Clear Filters</button>
+    </div>
+
+    <div class="card">
+      <h2>⟁ Sources</h2>
+      <div class="filter-group"><label>By Source</label>
+        <select id="f-source"><option value="">All sources</option></select>
+      </div>
+      <div id="sources-list" style="font-size:11px;"></div>
+    </div>
+  </aside>
+
+  <!-- CENTER: panes -->
+  <section>
+    <div id="pane-deals" class="pane">
+      <div id="alerts-header" style="display:none;" class="alert-bar info">
+        ⚠ No listings hit <strong id="ah-thresh">25</strong>% threshold. Showing
+        <strong id="ah-count">0</strong> near-misses.
+      </div>
+      <div id="alerts"><div class="empty">▸ Loading scanners…</div></div>
+    </div>
+
+    <div id="pane-closing" class="pane" style="display:none;">
+      <div class="alert-bar">⏰ Auctions ending within <strong id="closing-hrs-disp">24</strong> hours
+        <button class="secondary" id="closing-hrs-btn" style="float:right;padding:2px 8px;font-size:10px;">Window</button>
+      </div>
+      <div id="closing-out"><div class="empty">▸ Loading…</div></div>
+    </div>
+
+    <div id="pane-saved" class="pane" style="display:none;">
+      <div id="saved-out"><div class="empty">★ Star a deal anywhere to save it here.</div></div>
+    </div>
+
+    <div id="pane-all" class="pane" style="display:none;">
+      <div style="max-height:75vh; overflow-y:auto;">
+        <table id="listings-table">
+          <thead><tr>
+            <th>Seen</th><th>Src</th><th>Price</th><th>Year</th>
+            <th>Make</th><th>Model</th><th>Miles</th><th>Title</th>
+          </tr></thead>
+          <tbody><tr><td colspan="8" class="empty">▸ Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- RIGHT: VIN + Comps + bridges -->
+  <aside>
+    <div class="card" id="vin-setup-card" style="display:none;border-color:rgba(255,201,77,.4);background:rgba(255,201,77,.04);">
+      <h2 style="color:var(--gold);">⚠ VIN Provider Setup Needed</h2>
+      <small class="muted" style="display:block;margin-bottom:8px;">
+        Title / owners / maintenance need a paid NMVTIS provider.
+        Bumper.com is cheapest (~$1 first report, ~$25/mo unlimited via their API).
+        Paste your key once and the dashboard auto-renders these fields on every VIN check.
+      </small>
+      <div class="filter-group"><label>Bumper API Key</label><input id="bumper-key" type="password" placeholder="paste key…"></div>
+      <div class="filter-group"><label>OR ClearVin API Key</label><input id="clearvin-key" type="password" placeholder="paste key…"></div>
+      <div class="filter-group"><label>Test VIN (optional)</label><input id="test-vin" placeholder="17-char VIN to validate" maxlength="17" style="text-transform:uppercase;"></div>
+      <button id="vin-provider-save" style="width:100%">Save & Test</button>
+      <div id="vin-provider-msg" style="font-size:11px;margin-top:6px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>⟁ VIN Check</h2>
+      <div class="row"><input id="vin-input" placeholder="17-char VIN" maxlength="17" style="text-transform:uppercase;"><button id="vin-go" style="flex:0 0 auto;">Check</button></div>
+      <div id="vin-out"></div>
+    </div>
+
+    <div class="card">
+      <h2>⟁ Sold Comps (2025+)</h2>
+      <div class="row"><input id="c-year" placeholder="Year" type="number"><input id="c-make" placeholder="Make"></div>
+      <div class="row"><input id="c-model" placeholder="Model"><input id="c-miles" placeholder="Miles" type="number"></div>
+      <div style="margin: 8px 0;">
+        <label style="display:flex;justify-content:space-between;align-items:baseline;">
+          Match quality threshold <span id="cmt-val" style="color:var(--neon);font-weight:800;">100%</span>
+        </label>
+        <input type="range" id="comp-match-threshold" min="50" max="100" step="5" value="100">
+        <small class="muted">100 = exact year+make+model. Lower = looser, more comp volume.</small>
+      </div>
+      <button id="comps-go" style="width:100%">Pull Recent Sold Prices</button>
+      <div id="comps-out"></div>
+    </div>
+
+    <div class="card">
+      <h2>⟁ Diagnostics</h2>
+      <small class="muted" style="display:block;margin-bottom:8px;">If a source returns 0 the reason shows here.</small>
+      <div id="diagnostics-out" style="font-size:11px;"><div class="empty">▸ Waiting…</div></div>
+    </div>
+
+    <div class="card">
+      <h2>⟁ FB / OfferUp / Nextdoor</h2>
+      <div style="font-size:12px;margin-bottom:8px;">Pushed: <strong id="mp-count">0</strong></div>
+      <small class="muted">Install the Chrome extension at <code>~/Desktop/sniper/marketplace_extension</code>. Browser-session capture tool. Use only on accounts and sites where you have permission and review each platform's terms.</small>
+    </div>
+
+    <div class="card" id="share-card">
+      <h2>🌐 External Access (Shareable Link)</h2>
+      <small class="muted" style="display:block;margin-bottom:8px;">
+        Open a public URL that anyone can use. Pick <b>no-login</b> for a link
+        that works the instant someone opens it, or require a username + password.
+      </small>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;
+             font-size:13px;cursor:pointer;">
+        <input type="checkbox" id="share-public" style="width:auto;">
+        <span>No login — anyone with the link can open it</span>
+      </label>
+      <div class="filter-group">
+        <label>Username</label>
+        <input id="share-username" placeholder="sniper" value="sniper">
+      </div>
+      <div class="filter-group">
+        <label>Password <small class="muted">(used only when no-login is off)</small></label>
+        <input id="share-password" type="password" placeholder="strong password…">
+      </div>
+      <button id="share-save" style="width:100%">Save</button>
+      <div id="share-status" style="font-size:12px;margin-top:10px;padding:8px;
+           background:rgba(0,0,0,.3);border-radius:6px;">Auth: <strong>off</strong></div>
+      <div id="share-url-box" style="display:none;margin-top:8px;font-size:11px;">
+        <b style="color:var(--muted);">CURRENT PUBLIC URL</b>
+        <div style="margin-top:4px;padding:8px;background:rgba(0,255,156,.08);
+                    border:1px solid rgba(0,255,156,.3);border-radius:6px;
+                    word-break:break-all;font-family:'JetBrains Mono',monospace;">
+          <a id="share-url-link" href="#" target="_blank" style="color:var(--neon);">—</a>
+          <button id="share-copy" class="secondary" style="float:right;padding:2px 8px;font-size:10px;">Copy</button>
+        </div>
+      </div>
+      <small class="muted" style="display:block;margin-top:10px;border-top:1px solid var(--border-2);padding-top:8px;">
+        To open a public link, double-click <code>CLOUDFLARE TUNNEL.command</code>
+        in your sniper folder (no account needed). The URL is written to
+        <code>ngrok-url.txt</code> and shown above. Keep the Terminal window
+        open while sharing — closing it kills the tunnel.
+        <br><br>
+        Alternatives: <code>TEMPORARY LINK.command</code> (localhost.run SSH
+        tunnel, occasional DNS lag) or <code>SHARE EXTERNALLY.command</code>
+        (ngrok, requires a free ngrok account + authtoken).
+      </small>
+    </div>
+
+    <div class="card" id="text-alerts-card">
+      <h2>📱 Text Alerts</h2>
+      <small class="muted" style="display:block;margin-bottom:8px;">
+        New top deals get texted to your phone via your Mac's Messages app.
+        Free — no Twilio needed. iMessage if you have it, SMS via paired iPhone otherwise.
+      </small>
+      <div class="filter-group">
+        <label>Phone</label>
+        <input id="notify-phone" placeholder="+1 704-488-1208" value="+1 704-488-1208">
+      </div>
+      <div class="filter-group">
+        <label>Min score to text</label>
+        <input id="notify-min-score" type="number" min="1" max="500" value="30">
+        <small class="muted">Higher = fewer texts. 30 = solid deals only.</small>
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="notify-enabled" checked>
+        <strong>Send a text on every new top deal</strong>
+      </label>
+      <div class="filter-group">
+        <label>Quiet hours <small class="muted">(no texts between these local hours — leave blank for none)</small></label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input id="notify-quiet-start" type="number" min="0" max="23" placeholder="22" style="width:70px;">
+          <span style="color:var(--muted);">to</span>
+          <input id="notify-quiet-end" type="number" min="0" max="23" placeholder="7" style="width:70px;">
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button id="notify-save" class="secondary" style="flex:1;">Save</button>
+        <button id="notify-test" style="flex:1;">Send Test Text</button>
+      </div>
+      <div id="notify-out" style="font-size:11px;margin-top:6px;"></div>
+      <small class="muted" style="display:block;margin-top:8px;border-top:1px solid var(--border-2);padding-top:8px;">
+        ⚠ First time: macOS will prompt to allow Python to control Messages.
+        Approve in <code>System Settings → Privacy → Automation</code>.
+      </small>
+    </div>
+  </aside>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+const fmt = (n) => n == null ? "–" : "$" + Number(n).toLocaleString(undefined, {maximumFractionDigits: 0});
+const fmtMi = (n) => n == null ? "" : Number(n).toLocaleString() + " mi";
+const ago = (iso) => {
+  if (!iso) return "–";
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return "–";
+  const sec = (Date.now() - t) / 1000;
+  if (sec < 0) return "0s ago";        // clock skew safety
+  if (sec < 60) return Math.floor(sec) + "s ago";
+  if (sec < 3600) return Math.floor(sec/60) + "m ago";
+  if (sec < 86400) return Math.floor(sec/3600) + "h ago";
+  return Math.floor(sec/86400) + "d ago";
+};
+// Display age: prefer when seller posted, fall back to when WE first saw it
+const listingAge = (r) => ago(r.posted_at || r.first_seen_at);
+const until = (iso) => {
+  if (!iso) return "–";
+  const sec = (new Date(iso).getTime() - Date.now()) / 1000;
+  if (sec < 0) return "ended";
+  if (sec < 3600) return Math.floor(sec/60) + "m left";
+  if (sec < 86400) return Math.floor(sec/3600) + "h left";
+  return Math.floor(sec/86400) + "d left";
+};
+// SNIPER dashboard build marker — visible in the page header and the JS
+// console so we can tell at a glance whether the browser loaded the new file
+// or a stale cached copy. Bump on every dashboard.html change.
+const SNIPER_BUILD = "v7.r5 (" + new Date().toISOString().slice(0,10) + ")";
+console.log("%c⟁ SNIPER dashboard build " + SNIPER_BUILD + " loaded",
+            "color:#00ff9c;font-weight:bold;");
+
+// ---- Boot beacon ----------------------------------------------------------
+// Replaces the static "Initializing scanner…" / "Loading scanners…" / "Waiting…"
+// placeholders the MOMENT the JS starts running, so we can tell at a glance
+// whether the script executed at all. If those strings are STILL on screen
+// after a reload, the JS never ran — look at CSP, network-blocked HTML, or
+// a syntax error earlier in the file. If you instead see "Booting dashboard…"
+// it means JS started and any remaining issue is a fetch failure (which the
+// updated catch handlers below will surface explicitly).
+// Phase 1 SaaS chip — shows current user + sign-out in the top-right corner.
+// Injected here (vs. editing the static HTML) to keep the structural diff small.
+(function userChip() {
+  try {
+    fetch("/api/me", {credentials: "same-origin"})
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d || !d.user) return;
+        var u = d.user;
+        var chip = document.createElement("div");
+        chip.id = "sniper-user-chip";
+        chip.style.cssText = "position:fixed;top:8px;right:10px;z-index:9999;"
+          + "background:#13171c;border:1px solid #222a33;border-radius:8px;"
+          + "padding:6px 10px;font:12px -apple-system,sans-serif;color:#e7ecf2;"
+          + "display:flex;gap:10px;align-items:center;box-shadow:0 4px 12px rgba(0,0,0,.3)";
+        var label = (u.is_admin ? "admin" : u.plan) || "free";
+        chip.innerHTML = '<span style="color:#8b97a4">' + u.email + '</span>'
+          + '<span style="background:#27e1a4;color:#0a1714;padding:2px 6px;'
+          + 'border-radius:4px;font-weight:600;font-size:10px;text-transform:uppercase">'
+          + label + '</span>'
+          + '<a id="sniper-signout" href="#" style="color:#ff6e6e;text-decoration:none">sign out</a>';
+        document.body.appendChild(chip);
+        document.getElementById("sniper-signout").addEventListener("click", async function(e) {
+          e.preventDefault();
+          try { await fetch("/api/auth/logout", {method:"POST", credentials:"same-origin"}); }
+          catch (_) {}
+          location.replace("/login");
+        });
+      }).catch(() => {});
+  } catch (e) { /* never let the chip block the dashboard */ }
+})();
+
+(function bootBeacon() {
+  try {
+    var tick = document.getElementById("hero-ticker");
+    if (tick) tick.innerHTML =
+      '<span class="ticker-item">▸ Booting dashboard… ' + SNIPER_BUILD + '</span>';
+    var al = document.getElementById("alerts");
+    if (al && /Loading scanners/.test(al.textContent))
+      al.innerHTML = '<div class="empty">▸ Booting dashboard…</div>';
+    var di = document.getElementById("diagnostics-out");
+    if (di && /Waiting/.test(di.textContent))
+      di.innerHTML = '<div class="empty">▸ Booting diagnostics…</div>';
+    // Eagerly show the URL the user is actually on, BEFORE any fetch.
+    // If /api/share_settings later fails, the URL still won't read "—".
+    var urlBox = document.getElementById("share-url-box");
+    var urlLink = document.getElementById("share-url-link");
+    var origin = window.location.origin || "";
+    if (urlLink && origin && !/^http:\/\/(127\.|localhost)/i.test(origin)) {
+      if (urlBox) urlBox.style.display = "block";
+      urlLink.href = origin;
+      urlLink.textContent = origin;
+    }
+  } catch (e) { console.error("bootBeacon failed:", e); }
+})();
+
+// Surface every uncaught JS error and unhandled promise rejection in the UI
+// instead of letting the dashboard look "still loading" forever.
+window.addEventListener("error", function(e) {
+  console.error("UNCAUGHT:", e.message, "@", (e.filename||"") + ":" + (e.lineno||"?"));
+  var tick = document.getElementById("hero-ticker");
+  if (tick) tick.innerHTML =
+    '<span class="ticker-item" style="color:var(--magenta)">▸ Dashboard JS error: '
+    + (e.message || "unknown") + ' (line ' + (e.lineno || "?") + ')</span>';
+  var st = document.getElementById("hero-status");
+  if (st) st.textContent = "JS ERROR";
+});
+window.addEventListener("unhandledrejection", function(e) {
+  var msg = (e.reason && (e.reason.message || e.reason)) || "unknown";
+  console.error("UNHANDLED REJECTION:", e.reason);
+  var tick = document.getElementById("hero-ticker");
+  if (tick && /Booting dashboard/.test(tick.textContent)) {
+    tick.innerHTML = '<span class="ticker-item" style="color:var(--magenta)">▸ Fetch failed: '
+      + String(msg).slice(0,140) + '</span>';
+  }
+});
+
+// Universal fetch helper — 15s timeout + no-store + JSON-with-text-fallback
+// + console.error on every failure so debugging is one DevTools open away.
+async function _jfetch(u, opts) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 15000);
+  const cfg = Object.assign(
+    {signal: ctl.signal, cache: "no-store"},
+    opts || {},
+    {headers: Object.assign({"Cache-Control": "no-cache"},
+                            (opts && opts.headers) || {})});
+  try {
+    const r = await fetch(u, cfg);
+    const txt = await r.text();
+    if (!r.ok) {
+      // Phase-1 SaaS gate: any 401 means the session is gone (expired,
+      // revoked, never logged in). Boot back to /login so the user can
+      // re-auth instead of seeing cryptic "HTTP 401" toasts everywhere.
+      if (r.status === 401 && location.pathname !== "/login") {
+        location.replace("/login");
+        // Never resolve — we're navigating away.
+        return await new Promise(() => {});
+      }
+      console.error("HTTP " + r.status + " " + u + " — " + txt.slice(0, 200));
+      throw new Error("HTTP " + r.status + ": " + (txt.slice(0,140) || r.statusText));
+    }
+    try { return JSON.parse(txt); }
+    catch (e) {
+      console.error("non-JSON from " + u + ": " + txt.slice(0, 200));
+      return txt;
+    }
+  } catch (e) {
+    if (e.name === "AbortError") {
+      console.error("TIMEOUT after 15s: " + u);
+      throw new Error("timeout fetching " + u);
+    }
+    throw e;
+  } finally { clearTimeout(t); }
+}
+async function jget(u)        { return _jfetch(u); }
+async function jpost(u, body) { return _jfetch(u, {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: body ? JSON.stringify(body) : undefined}); }
+
+let SOURCE_NAMES = {};
+let CLOSING_HRS = 24;
+let TOP_SCORE_SEEN = 0;
+let LAST_POLL_SECS = null;
+// IS_OWNER: true when this browser is the local Mac (or authenticated).
+// External (tunneled) visitors are read-only — write controls are hidden.
+let IS_OWNER = true;
+const srcTag = (id) => `<span class="tag src-${id}">${SOURCE_NAMES[id] || id}</span>`;
+
+// ============ Background code rain ============
+function buildCodeRain() {
+  const root = $("#code-rain"); if (!root) return;
+  const chars = "01⟁▸◂▦⚡★⌬◈◉◇⬡";
+  let html = "";
+  const COLS = 30;
+  for (let i = 0; i < COLS; i++) {
+    const left = (i / COLS) * 100;
+    const dur = 8 + Math.random() * 14;
+    const delay = -Math.random() * dur;
+    let body = "";
+    for (let j = 0; j < 32; j++) body += chars[Math.floor(Math.random()*chars.length)] + "\n";
+    html += `<div class="rain-col" style="left:${left}%; animation-duration:${dur}s; animation-delay:${delay}s;">${body}</div>`;
+  }
+  root.innerHTML = html;
+}
+buildCodeRain();
+
+// ============ Tabs ============
+$$(".tab").forEach(t => t.addEventListener("click", () => {
+  $$(".tab").forEach(x => x.classList.remove("active"));
+  t.classList.add("active");
+  $$(".pane").forEach(p => p.style.display = "none");
+  $("#pane-" + t.dataset.tab).style.display = "block";
+}));
+
+// ============ Threshold slider ============
+const slider = $("#thresh-slider"), threshVal = $("#thresh-val");
+slider.addEventListener("input", () => { threshVal.textContent = slider.value; $("#hero-thresh").textContent = slider.value; });
+slider.addEventListener("change", async () => {
+  await jpost("/api/threshold", {pct: parseInt(slider.value)});
+  refreshAlerts(); refreshHero();
+});
+
+// ============ Count-up stat animation ============
+function setStat(id, newValue, formatter = (x) => x) {
+  const el = $(id); if (!el) return;
+  const newText = formatter(newValue);
+  if (el.textContent === newText) return;
+  const oldN = parseFloat(String(el.textContent).replace(/[^0-9.-]/g,"")) || 0;
+  const newN = typeof newValue === "number" ? newValue : parseFloat(String(newValue).replace(/[^0-9.-]/g,""));
+  if (!isNaN(newN) && Math.abs(newN - oldN) > 0.5) {
+    const dur = 500, t0 = performance.now();
+    const tick = (t) => {
+      const k = Math.min(1, (t - t0) / dur);
+      const v = oldN + (newN - oldN) * (1 - Math.pow(1 - k, 3));
+      el.textContent = formatter(Math.round(v));
+      if (k < 1) requestAnimationFrame(tick); else el.textContent = newText;
+    };
+    requestAnimationFrame(tick);
+  } else el.textContent = newText;
+  el.classList.remove("counting"); void el.offsetWidth; el.classList.add("counting");
+}
+
+// ============ Soft chime ============
+function chime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = 1320; gain.gain.value = 0.07;
+    osc.start();
+    osc.frequency.exponentialRampToValueAtTime(1760, ctx.currentTime + 0.12);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+    osc.stop(ctx.currentTime + 0.45);
+  } catch (e) {}
+}
+
+// ============ Filters ============
+function readFilters() {
+  return {
+    cash_only:    $("#cash-only").checked ? "1" : "",
+    hide_dealer:  $("#hide-dealer").checked ? "1" : "",
+    hide_auction: $("#hide-auction").checked ? "1" : "",
+    hide_salvage: $("#hide-salvage").checked ? "1" : "",
+    show_scams:   $("#show-scams").checked ? "1" : "",
+    min_year:     $("#f-year-min").value, max_year: $("#f-year-max").value,
+    min_price:    $("#f-price-min").value, max_price: $("#f-price-max").value,
+    min_miles:    $("#f-miles-min").value, max_miles: $("#f-miles-max").value,
+    max_age_min:  $("#f-max-age").value,
+    make: $("#f-make").value, model: $("#f-model").value,
+    source: $("#f-source").value, search: $("#f-search").value, sort: $("#f-sort").value,
+  };
+}
+function filterQS() {
+  const f = readFilters(), qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(f)) if (v) qs.set(k, v);
+  return qs.toString();
+}
+let filterTimer;
+const debounceFilter = () => { clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { refreshListings(); refreshAlerts(); refreshHero(); }, 250); };
+["#cash-only","#hide-dealer","#hide-auction","#hide-salvage","#show-scams",
+ "#f-year-min","#f-year-max","#f-price-min","#f-price-max",
+ "#f-miles-min","#f-miles-max","#f-max-age","#f-make","#f-model",
+ "#f-source","#f-search","#f-sort"].forEach(s => $(s).addEventListener("input", debounceFilter));
+
+document.querySelectorAll(".age-chip").forEach(c => c.addEventListener("click", () => {
+  document.querySelectorAll(".age-chip").forEach(x => x.classList.remove("active"));
+  c.classList.add("active");
+  $("#f-max-age").value = c.dataset.age === "0" ? "" : c.dataset.age;
+  debounceFilter();
+}));
+
+$("#filter-clear").addEventListener("click", () => {
+  ["f-year-min","f-year-max","f-price-min","f-price-max","f-miles-min","f-miles-max","f-max-age","f-search"]
+    .forEach(id => $("#"+id).value = "");
+  ["f-make","f-model","f-source"].forEach(id => $("#"+id).value = "");
+  $("#f-sort").value = "newest";
+  $("#cash-only").checked = true; $("#hide-dealer").checked = false;
+  $("#hide-auction").checked = true; $("#hide-salvage").checked = true;
+  $("#show-scams").checked = false;
+  debounceFilter();
+});
+
+// ============ Stats ============
+async function refreshStats() {
+  try {
+    const s = await jget("/api/stats");
+    $("#hero-zip").textContent = s.zip;
+    $("#hero-radius").textContent = s.radius_mi;
+    setStat("#hero-scanned", s.listings, n => n.toLocaleString());
+    // hero-deals reflects the SAME set the BEST DEALS tab shows: every
+    // below-comp near-miss. The legacy s.alerts is verified-only and
+    // usually 0, which made the tile contradict the tab badge.
+    setStat("#hero-deals", (s.deals != null ? s.deals : s.alerts), n => n.toLocaleString());
+    $("#hero-last").textContent = ago(s.last_poll_seen);
+    threshVal.textContent = s.deal_threshold_pct;
+    $("#hero-thresh").textContent = s.deal_threshold_pct;
+    slider.value = s.deal_threshold_pct;
+    if (LAST_POLL_SECS != null) $("#hero-poll-secs").textContent = `poll: ${LAST_POLL_SECS}s`;
+    // success — clear any prior offline indicator without overwriting a
+    // legitimate "TRACKING" / "DEALS LIVE" that refreshHero may have set.
+    const st = $("#hero-status");
+    if (st && (st.textContent === "OFFLINE" || st.textContent === "JS ERROR"))
+      st.textContent = "SCANNING";
+  } catch (e) {
+    console.error("refreshStats failed:", e);
+    const st = $("#hero-status"); if (st) st.textContent = "OFFLINE";
+    const tick = $("#hero-ticker");
+    if (tick) tick.innerHTML =
+      '<span class="ticker-item" style="color:var(--magenta)">▸ /api/stats failed — '
+      + (e.message || e) + '</span>';
+  }
+}
+
+async function refreshHero() {
+  try {
+    const params = new URLSearchParams();
+    if ($("#cash-only").checked) params.set("cash_only", "1");
+    if ($("#hide-auction").checked) params.set("hide_auction", "1");
+    if ($("#show-scams").checked) params.set("show_scams", "1");
+    params.set("limit", "200");
+    let rows = await jget("/api/alerts?" + params.toString());
+    let fromNearMiss = false;
+    if (!rows.length) {
+      rows = await jget("/api/near_misses?" + params.toString() + "&limit=50");
+      fromNearMiss = true;
+    }
+    let totalProfit = 0, best = null;
+    rows.forEach(r => {
+      if (r.est_profit && r.est_profit > 0) totalProfit += r.est_profit;
+      if (!best || (r.discount_pct || 0) > (best.discount_pct || 0)) best = r;
+    });
+    setStat("#hero-profit", totalProfit, n => "$" + n.toLocaleString());
+    if (best) {
+      setStat("#hero-best", best.discount_pct, n => "−" + n.toFixed(1) + "%");
+      $("#hero-best-car").textContent = `${best.year||""} ${best.make||""} ${best.model||""}`.trim().slice(0, 26)
+                                       + (fromNearMiss ? " (near-miss)" : "");
+    } else { $("#hero-best").textContent = "—"; $("#hero-best-car").textContent = "no deals yet"; }
+    renderTopDeal(rows[0], fromNearMiss);
+    $("#hero-status").textContent = rows.length ? (fromNearMiss ? "TRACKING" : "DEALS LIVE") : "SCANNING";
+  } catch (e) { console.error("refreshHero failed:", e); }
+  try { const saved = await jget("/api/saved"); $("#hero-saved-count").textContent = saved.length + " saved"; } catch (e) { console.error("refreshHero/saved failed:", e); }
+}
+
+function renderTopDeal(r, isNearMiss) {
+  const root = $("#top-deal");
+  if (!r) {
+    root.innerHTML = `<div class="empty">⏳ Click "⚡ POLL ALL SOURCES NOW" to begin hunting.</div>`; return;
+  }
+  const profitHtml = r.est_profit && r.est_profit > 0
+    ? `<div class="big-profit">⟁ Est. profit ${fmt(r.est_profit)}</div>` : '';
+  root.innerHTML = `
+    <div class="car">${r.year||""} ${r.make||""} ${r.model||""}
+      ${r.odometer ? '<span class="tag">'+fmtMi(r.odometer)+'</span>' : ""}
+      ${srcTag(r.source)}
+      ${r.is_cash_only ? '<span class="tag cash">CASH</span>' : ''}
+      ${r.is_auction ? '<span class="tag auction">AUCTION</span>' : ''}
+      ${isNearMiss ? '<span class="tag warn">below threshold</span>' : ''}
+    </div>
+    <div class="price-row">
+      <span class="big-price">${fmt(r.price)}</span>
+      <span class="big-discount">−${(r.discount_pct||0).toFixed(1)}%</span>
+    </div>
+    ${profitHtml}
+    <div style="margin-top:8px;font:500 12px 'JetBrains Mono',monospace;color:var(--muted);">
+      vs comp avg <strong style="color:var(--ink-2);">${fmt(r.comp_avg)}</strong> (n=${r.comp_n||0})
+    </div>
+    <div style="margin-top:6px;"><a href="${r.url}" target="_blank" rel="noopener">${(r.title||"").slice(0,100)}</a></div>`;
+}
+
+// ============ Sources & facets ============
+async function refreshSources() {
+  try {
+    const list = await jget("/api/sources");
+    SOURCE_NAMES = Object.fromEntries(list.map(s => [s.id, s.name]));
+    $("#sources-list").innerHTML = list.map(s => `
+      <div style="padding:3px 0;color:${s.enabled?'var(--ink-2)':'var(--muted)'};font:500 11px 'JetBrains Mono',monospace;">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;
+              background:${s.enabled?'var(--neon)':'#3a3f4d'};margin-right:6px;
+              box-shadow:${s.enabled?'0 0 6px var(--neon)':'none'};"></span>
+        ${s.name} <span style="color:var(--muted);">w${s.weight.toFixed(1)}</span>
+      </div>`).join("");
+    const f = $("#f-source"); const cur = f.value;
+    f.innerHTML = '<option value="">All sources</option>' +
+      list.filter(s => s.enabled).map(s => `<option value="${s.id}">${s.name}</option>`).join("");
+    f.value = cur;
+  } catch (e) {}
+}
+
+async function refreshFacets() {
+  try {
+    const f = await jget("/api/facets");
+    const populate = (sel, items) => {
+      const cur = sel.value;
+      sel.innerHTML = `<option value="">All ${sel.id.includes('make')?'makes':'models'}</option>` +
+        items.map(x => `<option value="${x}">${x}</option>`).join("");
+      sel.value = cur;
+    };
+    populate($("#f-make"), f.makes); populate($("#f-model"), f.models);
+  } catch (e) {}
+}
+
+// ============ Alert rendering ============
+// 0-100 risk score combining scam signals, salvage/auction/dealer flags,
+// missing data, and weakness of the comp source. Shown as a colored badge.
+function dealRisk(r) {
+  let risk = 0;
+  if (r.scam_score)            risk += Math.min(50, r.scam_score / 2);
+  if (r.is_salvage)            risk += 30;
+  if (r.is_dealer)             risk += 10;
+  if (r.is_auction)            risk += 15;
+  if (!r.year || !r.make || !r.model) risk += 20;
+  if (r.basis === 'estimate')  risk += 10;
+  if (r.comp_n != null && r.comp_n < 3) risk += 10;
+  return Math.min(100, Math.round(risk));
+}
+function riskTag(r) {
+  const k = dealRisk(r);
+  if (k <= 10) return '';
+  const cls = k >= 50 ? 'bad' : (k >= 25 ? 'warn' : '');
+  const reasons = [];
+  if (r.scam_score >= 30) reasons.push('scam signals');
+  if (r.is_salvage) reasons.push('salvage');
+  if (r.is_auction) reasons.push('auction');
+  if (r.is_dealer) reasons.push('dealer');
+  if (r.basis === 'estimate') reasons.push('estimate-based comp');
+  if (r.comp_n != null && r.comp_n < 3) reasons.push('thin comp pool');
+  const tip = (reasons.join(' · ') || 'risk factors detected').replace(/"/g, '&quot;');
+  return `<span class="tag ${cls}" title="${tip}">RISK ${k}</span>`;
+}
+function renderAlert(r, isNearMiss=false) {
+  const profit = r.est_profit;
+  const profitTag = profit != null
+    ? `<span class="tag ${profit > 0 ? 'good' : 'bad'}">P ${fmt(profit)}</span>` : '';
+  const starred = r.is_saved ? '★' : '☆';
+  // Real photo from the listing if we have one (shows actual color/condition)
+  let imgs = [];
+  try { imgs = JSON.parse(r.image_urls || "[]") || []; } catch(e) {}
+  const photoHtml = imgs.length
+    ? `<img src="${imgs[0]}" loading="lazy" style="width:80px;height:60px;object-fit:cover;border-radius:6px;border:1px solid var(--border-2);float:left;margin-right:10px;" onerror="this.style.display='none'">`
+    : '';
+  let scamTag = '';
+  if (r.scam_score && r.scam_score >= 30) {
+    let reasons = [];
+    try { reasons = JSON.parse(r.scam_reasons || "[]") || []; } catch (e) {}
+    if (!Array.isArray(reasons)) reasons = [];
+    const tip = (reasons.slice(0, 5).join(" · ") || "suspicious patterns").replace(/"/g,"&quot;");
+    scamTag = `<span class="tag bad" title="${tip}">🚩 SCAM ${r.scam_score}</span>`;
+  }
+  const pending = r.pending_scoring;
+  let discountHtml;
+  if (r.discount_pct == null)  discountHtml = `<span class="tag warn">scoring…</span>`;
+  else if (r.discount_pct > 0) discountHtml = `<span class="discount">−${r.discount_pct.toFixed(1)}%</span>`;
+  else                         discountHtml = `<span class="tag">at market</span>`;
+  const basisTag = pending ? ''
+    : (r.basis === 'verified'
+        ? '<span class="tag good" title="Based on real 2025+ sold prices">VERIFIED</span>'
+        : '<span class="tag" title="Instant estimate from peer listings — refining to verified sold comps">EST</span>');
+  return `
+    <div class="alert" style="${isNearMiss?'border-left-color:var(--muted);background:rgba(255,255,255,.02);':''}">
+      ${photoHtml}
+      <div class="top">
+        <div>
+          <span class="price">${fmt(r.price)}</span>
+          ${discountHtml}
+          ${basisTag}
+          ${riskTag(r)}
+          ${profitTag}
+          ${scamTag}
+          ${srcTag(r.source)}
+          ${r.is_cash_only ? '<span class="tag cash">CASH</span>' : ''}
+          ${r.is_auction ? '<span class="tag auction">AUCTION</span>' : ''}
+          ${r.state ? '<span class="tag">'+r.state+'</span>' : ''}
+        </div>
+        <div>
+          ${IS_OWNER ? `<button class="star-btn" data-cid="${r.composite_id}" data-saved="${r.is_saved?1:0}" title="Save deal">${starred}</button><button class="pass-btn" data-cid="${r.composite_id}" title="Pass — hide this deal" style="margin-left:4px;">✕</button>` : ''}
+          <small class="muted">${listingAge(r)} · sc ${(r.score||0).toFixed(0)}</small>
+        </div>
+      </div>
+      <div style="margin-top:5px;">${r.year || ""} ${r.make || ""} ${r.model || ""}
+        ${r.odometer ? '<span class="tag">'+fmtMi(r.odometer)+'</span>' : ""}
+      </div>
+      <div class="meta">${pending
+          ? 'gathering comps…'
+          : (r.basis==='verified'?'sold-comp ':'est. value ')+fmt(r.comp_avg)+' · n='+(r.comp_n||0)+(r.basis==='verified'?'':' · estimate')}${isNearMiss && !pending ?' · near-miss':''}</div>
+      ${r.note ? `<div style="font:italic 11px 'JetBrains Mono',monospace;color:var(--muted);margin-top:3px;">▸ why: ${(r.note||'').slice(0,160)}</div>` : ''}
+      <div><a href="${r.url}" target="_blank" rel="noopener">${r.title || ""}</a></div>
+    </div>`;
+}
+function wireStarButtons() {
+  document.querySelectorAll(".star-btn").forEach(b => {
+    b.addEventListener("click", async () => {
+      const cid = b.dataset.cid, saved = b.dataset.saved === "1";
+      try {
+        await jpost(saved ? "/api/unsave" : "/api/save", {composite_id: cid});
+        refreshAlerts(); refreshListings(); refreshSaved(); refreshHero();
+      } catch (e) { alert("Save failed: " + e.message); }
+    });
+  });
+  document.querySelectorAll(".pass-btn").forEach(b => {
+    b.addEventListener("click", async () => {
+      const cid = b.dataset.cid;
+      try {
+        await jpost("/api/saved/status", {composite_id: cid, status: "passed"});
+        refreshAlerts(); refreshSaved(); refreshHero();
+      } catch (e) { alert("Pass failed: " + e.message); }
+    });
+  });
+}
+
+async function refreshAlerts() {
+  try {
+    const params = new URLSearchParams();
+    if ($("#cash-only").checked) params.set("cash_only", "1");
+    if ($("#hide-auction").checked) params.set("hide_auction", "1");
+    if ($("#show-scams").checked) params.set("show_scams", "1");
+    params.set("limit", "80");
+    // UNIFIED RANKED BOARD: verified deals + estimated/near-miss listings,
+    // merged, de-duped, highest score first. Always populated — every
+    // listing carries an instant estimate the moment it is ingested.
+    let alerts = [], near = [];
+    try { alerts = await jget("/api/alerts?" + params.toString()); } catch (e) {}
+    try { near  = await jget("/api/near_misses?" + params.toString() + "&limit=80"); } catch (e) {}
+    const alertIds = new Set(alerts.map(r => r.composite_id));
+    alerts.forEach(r => r._verifiedDeal = true);
+    let rows = alerts.concat(near.filter(r => !alertIds.has(r.composite_id)));
+    // Hide listings the user has explicitly passed on — they stay in the
+    // Saved tab under the "passed" status but vanish from the deal board.
+    rows = rows.filter(r => r.save_status !== 'passed');
+    rows.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+    let fallbackKind = rows.length ? "board" : "empty";
+    if (!rows.length) {
+      try { rows = await jget("/api/fresh_listings?" + params.toString() + "&limit=30"); } catch (e) {}
+      fallbackKind = rows.length ? "fresh" : "empty";
+    }
+
+    // chime + notify on a genuinely new top VERIFIED deal
+    if (alerts.length && alerts[0].score && alerts[0].score > TOP_SCORE_SEEN + 5) {
+      maybeNotify(`New top deal: ${(alerts[0].title||"").slice(0, 60)}`,
+                  `${fmt(alerts[0].price)} (−${(alerts[0].discount_pct||0).toFixed(1)}%)`);
+      chime();
+      TOP_SCORE_SEEN = alerts[0].score;
+    }
+
+    $("#tab-count-deals").textContent = rows.length;
+    const header = $("#alerts-header"), root = $("#alerts");
+    if (fallbackKind === "board") {
+      header.style.display = "block";
+      header.innerHTML = alerts.length
+        ? '⚡ <strong>'+alerts.length+'</strong> verified deal'+(alerts.length===1?'':'s')
+          +' · remaining rows are live estimates refining to verified sold comps.'
+        : '⚡ <strong>'+rows.length+'</strong> ranked listings — instant estimates, upgrading to verified sold comps as comps load.';
+    } else if (fallbackKind === "fresh" && rows.length) {
+      header.style.display = "block";
+      header.innerHTML = '▸ Showing <strong>'+rows.length+'</strong> newest listings.';
+    } else header.style.display = "none";
+
+    if (!rows.length) { root.innerHTML = '<div class="empty">▸ Database empty. Click "⚡ POLL ALL SOURCES NOW" to ingest the first batch.</div>'; return; }
+    root.innerHTML = rows.map(r => renderAlert(r, !r._verifiedDeal)).join("");
+    wireStarButtons();
+  } catch (e) { $("#alerts").innerHTML = '<div class="empty">Error: '+e.message+'</div>'; }
+}
+
+const PIPELINE_STATUSES = ["saved","contacted","vin_needed","negotiating","going_to_see","bought","passed"];
+function statusBadge(s) {
+  if (!s) return '';
+  const cls = ({bought:'good', passed:'bad', saved:'',
+                contacted:'warn', vin_needed:'warn',
+                negotiating:'warn', going_to_see:'good'})[s] || '';
+  return `<span class="tag ${cls}">${s.replace(/_/g,' ').toUpperCase()}</span>`;
+}
+function savedExtras(r) {
+  // Pipeline dropdown + notes editor appended below each saved deal card.
+  if (!IS_OWNER) return '';
+  const cur = r.status || 'saved';
+  const opts = PIPELINE_STATUSES
+      .map(s => `<option value="${s}" ${cur===s?'selected':''}>${s.replace(/_/g,' ')}</option>`)
+      .join('');
+  const note = (r.user_note || '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return `
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <span style="font:600 10px 'JetBrains Mono',monospace;color:var(--muted);">PIPELINE</span>
+      <select class="saved-status" data-cid="${r.composite_id}"
+        style="padding:4px 8px;font-size:11px;background:rgba(0,0,0,.3);
+        color:var(--ink);border:1px solid var(--border-2);border-radius:6px;">
+        ${opts}
+      </select>
+      ${statusBadge(cur)}
+    </div>
+    <div style="margin-top:6px;">
+      <textarea class="saved-note" data-cid="${r.composite_id}" rows="2"
+        placeholder="Notes — phone, asking price, what was said..."
+        style="width:100%;padding:6px;font:400 12px 'JetBrains Mono',monospace;
+        background:rgba(0,0,0,.3);color:var(--ink);
+        border:1px solid var(--border-2);border-radius:6px;
+        box-sizing:border-box;">${note}</textarea>
+      <button class="saved-note-save secondary" data-cid="${r.composite_id}"
+        style="font-size:11px;padding:3px 10px;margin-top:3px;">Save note</button>
+    </div>`;
+}
+function wireSavedControls() {
+  document.querySelectorAll('.saved-status').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      try {
+        await jpost('/api/saved/status', {composite_id: sel.dataset.cid, status: sel.value});
+        refreshSaved(); refreshAlerts(); refreshHero();
+      } catch (e) { alert('Status update failed: ' + e.message); }
+    });
+  });
+  document.querySelectorAll('.saved-note-save').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const cid = btn.dataset.cid;
+      const ta = document.querySelector(`.saved-note[data-cid="${cid}"]`);
+      try {
+        await jpost('/api/saved/note', {composite_id: cid, note: ta ? ta.value : ''});
+        const old = btn.textContent;
+        btn.textContent = '✓ Saved'; btn.disabled = true;
+        setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 1500);
+      } catch (e) { alert('Note save failed: ' + e.message); }
+    });
+  });
+}
+async function refreshSaved() {
+  try {
+    const rows = await jget("/api/saved");
+    $("#tab-count-saved").textContent = rows.length;
+    const root = $("#saved-out");
+    if (!rows.length) {
+      root.innerHTML = '<div class="empty">★ Star a deal anywhere to save it here. Use ✕ to Pass on a deal — it lands here as <em>passed</em>.</div>';
+      return;
+    }
+    // Render each saved deal + append pipeline/notes controls inside the card.
+    root.innerHTML = rows.map(r => {
+      const card = renderAlert(r);
+      // Inject the extras just before the card's closing </div>.
+      return card.replace(/<\/div>\s*$/, savedExtras(r) + '</div>');
+    }).join("");
+    wireStarButtons();
+    wireSavedControls();
+  } catch (e) { $("#saved-out").innerHTML = '<div class="empty">'+e.message+'</div>'; }
+}
+
+async function refreshClosing() {
+  try {
+    const rows = await jget(`/api/listings/closing_soon?hrs=${CLOSING_HRS}`);
+    $("#closing-hrs-disp").textContent = CLOSING_HRS;
+    $("#tab-count-closing").textContent = rows.length;
+    const root = $("#closing-out");
+    if (!rows.length) { root.innerHTML = '<div class="empty">▸ No auctions closing in this window.</div>'; return; }
+    root.innerHTML = rows.map(r => `
+      <div class="alert" style="border-left-color:var(--gold);background:rgba(255,201,77,.04);">
+        <div class="top">
+          <div>
+            <span class="price">${fmt(r.price)}</span>
+            ${r.buy_now_price ? '<span class="tag good">BIN '+fmt(r.buy_now_price)+'</span>' : ''}
+            ${srcTag(r.source)} <span class="tag urgent">${until(r.auction_end_at)}</span>
+            ${r.bid_count != null ? '<span class="tag">'+r.bid_count+' bids</span>' : ''}
+          </div>
+          <small class="muted">${listingAge(r)}</small>
+        </div>
+        <div style="margin-top:5px;">${r.year || ""} ${r.make || ""} ${r.model || ""}
+          ${r.odometer ? '<span class="tag">'+fmtMi(r.odometer)+'</span>' : ""}
+        </div>
+        <div><a href="${r.url}" target="_blank" rel="noopener">${r.title || ""}</a></div>
+      </div>`).join("");
+  } catch (e) { $("#closing-out").innerHTML = '<div class="empty">Error: '+e.message+'</div>'; }
+}
+$("#closing-hrs-btn").addEventListener("click", () => {
+  const v = prompt("Show auctions closing within how many hours?", CLOSING_HRS);
+  if (v && !isNaN(parseInt(v))) { CLOSING_HRS = parseInt(v); refreshClosing(); }
+});
+
+async function refreshListings() {
+  try {
+    const rows = await jget("/api/listings?limit=300&" + filterQS());
+    $("#tab-count-all").textContent = rows.length;
+    const tb = $("#listings-table tbody");
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="8" class="empty">▸ No listings match filters.</td></tr>'; return; }
+    tb.innerHTML = rows.map(r => `
+      <tr ${r.is_auction && r.auction_end_at ? 'class="urgent-row"' : ''}>
+        <td><small>${listingAge(r)}</small></td>
+        <td>${srcTag(r.source)}</td>
+        <td><strong>${fmt(r.price)}</strong>${r.buy_now_price ? '<br><small class="muted">BIN '+fmt(r.buy_now_price)+'</small>' : ''}</td>
+        <td>${r.year||""}</td><td>${r.make||""}</td><td>${r.model||""}</td>
+        <td>${r.odometer ? Number(r.odometer).toLocaleString() : ""}</td>
+        <td><a href="${r.url}" target="_blank" rel="noopener">${(r.title||"").slice(0,80)}</a>
+          ${r.is_dealer ? '<span class="tag warn">dealer</span>' : ''}
+          ${r.is_salvage ? '<span class="tag salvage">salvage</span>' : ''}
+          ${r.is_auction ? '<span class="tag auction">auction</span>' : ''}
+          ${r.is_cash_only ? '<span class="tag cash">cash</span>' : ''}
+          ${(r.scam_score && r.scam_score >= 30) ? '<span class="tag bad">🚩'+r.scam_score+'</span>' : ''}</td>
+      </tr>`).join("");
+  } catch (e) { $("#listings-table tbody").innerHTML = '<tr><td colspan="8" class="empty">'+e.message+'</td></tr>'; }
+}
+
+// ============ Poll button ============
+$("#poll-now").addEventListener("click", async () => {
+  const btn = $("#poll-now"); btn.disabled = true;
+  const oldText = btn.textContent; btn.textContent = "⚡ POLLING…";
+  $("#hero-status").textContent = "POLLING";
+  try {
+    const r = await jpost("/api/poll-all");
+    LAST_POLL_SECS = r.duration_seconds || r.poll_secs;
+    btn.textContent = `+${r.new_listings||0} NEW · ${r.deals_found||0} DEALS`;
+    await Promise.all([refreshStats(), refreshAlerts(), refreshClosing(), refreshListings(),
+                       refreshFacets(), refreshHero(), refreshSaved(), refreshDiagnostics(), refreshTicker()]);
+  } catch (e) {
+    console.error("poll-all failed:", e);
+    btn.textContent = "ERROR";
+    const tick = $("#hero-ticker");
+    if (tick) tick.innerHTML =
+      '<span class="ticker-item" style="color:var(--magenta)">▸ Poll failed — '
+      + (e.message || e) + '</span>';
+    const st = $("#hero-status"); if (st) st.textContent = "OFFLINE";
+  }
+  finally { setTimeout(() => { btn.disabled = false; btn.textContent = oldText; }, 2500); }
+});
+
+// ============ Ticker ============
+async function refreshTicker() {
+  const tick = $("#hero-ticker");
+  try {
+    const rows = await jget("/api/listings?limit=30&sort=newest");
+    if (!rows.length) {
+      tick.innerHTML = '<span class="ticker-item">▸ No listings yet — click <strong>POLL ALL SOURCES NOW</strong> to fill the feed.</span>';
+      return;
+    }
+    const items = rows.map(r => {
+      const car = `${r.year||""} ${r.make||""} ${r.model||""}`.trim() || (r.title||"").slice(0,40);
+      return `<span class="ticker-item">▸ <strong>${car}</strong>
+        <span class="tk-price">${fmt(r.price)}</span>
+        ${r.odometer ? '· '+(r.odometer/1000).toFixed(0)+'k mi' : ''}
+        · <span class="tk-src">${r.source}</span></span>`;
+    });
+    tick.innerHTML = items.concat(items).join("");
+  } catch (e) {
+    // Visible failure beats silently stuck on "Initializing scanner..."
+    console.error("refreshTicker failed:", e);
+    tick.innerHTML = '<span class="ticker-item" style="color:var(--magenta);">▸ Scanner offline — '+(e.message||e)+'</span>';
+  }
+}
+
+// ============ Diagnostics ============
+async function refreshDiagnostics() {
+  const root = $("#diagnostics-out");
+  try {
+    const list = await jget("/api/diagnostics");
+    if (!list.length) { root.innerHTML = '<div class="empty">No sources registered.</div>'; return; }
+    root.innerHTML = list.map(d => {
+      let status = "";
+      if (!d.enabled)             status = '<span style="color:var(--muted)">off</span>';
+      else if (d.error)           status = '<span style="color:var(--magenta)" title="'+(d.error||'').replace(/"/g,'&quot;')+'">⚠ '+(d.error||"").slice(0,40)+'</span>';
+      else if (d.count === 0)     status = '<span style="color:var(--gold)">0 found — not polled this tick</span>';
+      else if (d.count == null)   status = '<span style="color:var(--muted)">not polled yet</span>';
+      else                        status = '<span style="color:var(--neon)">✓ '+d.count+'</span>';
+      const elapsed = d.elapsed_s != null ? ' <small class="muted">'+d.elapsed_s+'s</small>' : '';
+      return `<div style="padding:3px 0;display:flex;justify-content:space-between;font:500 11px 'JetBrains Mono',monospace;">
+        <span style="color:var(--ink-2);">${d.id}</span><span>${status}${elapsed}</span></div>`;
+    }).join("");
+  } catch (e) {
+    console.error("refreshDiagnostics failed:", e);
+    root.innerHTML = '<div class="empty" style="color:var(--magenta);">⚠ Diagnostics fetch failed: '+(e.message||e)+'</div>';
+  }
+}
+
+// ============ Marketplace count ============
+async function refreshMpCount() {
+  try {
+    const s = await jget("/api/stats");
+    const mp = (s.per_source || []).find(x => x.source === "marketplace");
+    $("#mp-count").textContent = mp ? mp.n : 0;
+  } catch (e) {}
+}
+
+// ============ VIN provider setup ============
+async function checkVinProviderState() {
+  try {
+    const s = await jget("/api/settings");
+    if (!s.bumper_api_key_set && !s.clearvin_api_key_set) {
+      $("#vin-setup-card").style.display = "block";
+    } else {
+      $("#vin-setup-card").style.display = "none";
+    }
+  } catch (e) {}
+}
+$("#vin-provider-save").addEventListener("click", async () => {
+  const btn = $("#vin-provider-save"), msg = $("#vin-provider-msg");
+  btn.disabled = true; btn.textContent = "Testing…";
+  try {
+    const r = await jpost("/api/vin_provider", {
+      bumper_api_key: $("#bumper-key").value,
+      clearvin_api_key: $("#clearvin-key").value,
+      test_vin: $("#test-vin").value.toUpperCase().trim() || undefined,
+    });
+    if (r.ok) {
+      msg.style.color = "var(--neon)";
+      msg.innerHTML = r.provider
+        ? "✓ Saved. Provider: " + r.provider + " · title: " + (r.title_status || "?") + " · owners: " + (r.owners ?? "?")
+        : "✓ Saved. (Add a test VIN to verify.)";
+      $("#bumper-key").value = ""; $("#clearvin-key").value = "";
+      setTimeout(checkVinProviderState, 800);
+    } else {
+      msg.style.color = "var(--magenta)";
+      msg.textContent = "Test failed: " + (r.error || "unknown");
+    }
+  } catch (e) {
+    msg.style.color = "var(--magenta)"; msg.textContent = "Error: " + e.message;
+  } finally { btn.disabled = false; btn.textContent = "Save & Test"; }
+});
+
+// ============ Settings ============
+async function loadSettings() {
+  try {
+    const s = await jget("/api/settings");
+    $("#set-zip").value = s.zip; $("#set-radius").value = s.radius_mi;
+    $("#set-cl-regions").value = (s.craigslist_regions || []).join(", ");
+    $("#set-gov-states").value = (s.govdeals_states || []).join(", ");
+    if (!$("#f-max-age").value && s.max_listing_age_min) $("#f-max-age").value = s.max_listing_age_min;
+    if (cmtSlider && s.comp_match_threshold_pct) {
+      cmtSlider.value = s.comp_match_threshold_pct;
+      cmtVal.textContent = s.comp_match_threshold_pct + "%";
+    }
+  } catch (e) {}
+}
+$("#settings-save").addEventListener("click", async () => {
+  const btn = $("#settings-save"), msg = $("#settings-msg");
+  btn.disabled = true; btn.textContent = "Saving…"; msg.textContent = "";
+  try {
+    await jpost("/api/settings", {
+      zip: $("#set-zip").value.trim(),
+      radius_mi: parseInt($("#set-radius").value) || undefined,
+      craigslist_regions: $("#set-cl-regions").value.trim(),
+      govdeals_states: $("#set-gov-states").value.trim(),
+      max_listing_age_min: parseInt($("#f-max-age").value) || 0,
+    });
+    msg.textContent = "Saved. Applies next poll."; msg.style.color = "var(--neon)";
+    refreshStats();
+  } catch (e) { msg.textContent = "Error: "+e.message; msg.style.color = "var(--magenta)"; }
+  finally { btn.disabled = false; btn.textContent = "Save & Apply"; }
+});
+
+// ============ VIN ============
+$("#vin-go").addEventListener("click", async () => {
+  const v = $("#vin-input").value.toUpperCase().trim(), out = $("#vin-out");
+  if (v.length !== 17) { out.innerHTML = '<small style="color:var(--magenta)">VIN must be 17 chars.</small>'; return; }
+  out.innerHTML = '<div class="spinner"></div> Decoding…';
+  try {
+    // v3 — call both: legacy /api/vin for photo/safety/fuel + new
+    // /api/vin/check for risk/confidence/listing-mismatch/data-completeness.
+    const [r, rv3] = await Promise.all([
+      jpost("/api/vin", {vin: v}),
+      jpost("/api/vin/check", {vin: v}).catch(e => ({ok: false, _err: e.message})),
+    ]);
+    if (r.error) { out.innerHTML = '<small style="color:var(--magenta)">'+r.error+'</small>'; return; }
+    const d = r.decoded || {}, tf = r.top_fields || {};
+    const photoHtml = r.photo_url
+      ? `<img class="vehicle-photo" src="${r.photo_url}" onerror="this.outerHTML='<div class=\\'vehicle-photo-empty\\'>image unavailable</div>'">`
+      : `<div class="vehicle-photo-empty">no public photo found</div>`;
+    // v3 risk + confidence (silent if /api/vin/check failed)
+    const riskHtml = (() => {
+      if (!rv3 || !rv3.ok) return "";
+      const risk = (rv3.risk_label || "unknown").toLowerCase();
+      const score = rv3.risk_score ?? "—";
+      const conf  = rv3.confidence_score ?? "—";
+      return `<div class="vin-risk-bar">
+        <div class="vin-risk-badge ${risk}">
+          <span class="lbl">RISK</span>
+          <span class="num">${score}</span>
+          <span>${risk.replace('_',' ').toUpperCase()}</span>
+        </div>
+        <div class="vin-risk-badge ${conf>=70?'clean':conf>=40?'caution':'unknown'}">
+          <span class="lbl">CONFIDENCE</span>
+          <span class="num">${conf}</span>
+          <span>${conf>=70?'HIGH':conf>=40?'PARTIAL':'LOW'}</span>
+        </div></div>`;
+    })();
+    const mismatchHtml = (() => {
+      if (!rv3 || !rv3.ok) return "";
+      const m = rv3.listing_mismatch || {};
+      if (!m.message) return "";
+      const sev = (m.severity || "high").toLowerCase();
+      return `<div class="vin-mismatch ${sev}">⚠ ${m.message}</div>`;
+    })();
+    const completenessHtml = (() => {
+      if (!rv3 || !rv3.ok || !Array.isArray(rv3.data_completeness)) return "";
+      const chips = rv3.data_completeness.map(c =>
+        `<span class="chip ${c.status==='present'?'have':'miss'}" title="${(c.note||c.source||'').replace(/"/g,'')}">${c.field}: ${c.status==='present'?'✓':'—'}</span>`
+      ).join("");
+      const prov = rv3.provider ? rv3.provider : "no paid provider";
+      return `<div class="vin-completeness">${chips}</div>
+              <div class="vin-provider-line">PROVIDER: ${prov.toUpperCase()} · CHECKED ${rv3.checked_at ? new Date(rv3.checked_at).toLocaleTimeString() : '—'}</div>`;
+    })();
+    // Honest copy: "set up" → "Not available — needs paid provider"
+    const NOT_AVAIL = "Not available";
+    const titleBox = (() => {
+      const t = tf.title || {};
+      if (!t.configured) return `<div class="vin-box unset"><div class="label">Title</div><div class="value">${NOT_AVAIL}</div></div>`;
+      return `<div class="vin-box ${t.is_clean?'clean':'dirty'}"><div class="label">Title</div><div class="value">${(t.value||"?").toUpperCase()}</div></div>`;
+    })();
+    const ownersBox = (() => {
+      const o = tf.owners || {};
+      if (!o.configured) return `<div class="vin-box unset"><div class="label">Owners</div><div class="value">${NOT_AVAIL}</div></div>`;
+      return `<div class="vin-box ${(o.value||0) <= 2 ? 'clean':'unset'}"><div class="label">Owners</div><div class="value">${o.value ?? "?"}</div></div>`;
+    })();
+    const maintBox = (() => {
+      const m = tf.maintenance || {};
+      if (!m.configured) return `<div class="vin-box unset"><div class="label">Service</div><div class="value">${NOT_AVAIL}</div></div>`;
+      return `<div class="vin-box ${(m.records||0) > 5 ? 'clean':'unset'}"><div class="label">Service</div><div class="value">${m.records ?? 0} rec</div></div>`;
+    })();
+    const stars = (n) => {
+      if (n == null) return '<span class="muted">N/A</span>';
+      const full = Math.round(n);
+      return '<span class="stars">' + '★'.repeat(full) + '<span class="e">'+'★'.repeat(5-full)+'</span></span>'
+             + ' <small class="muted">'+ n.toFixed(1) + '/5</small>';
+    };
+    const s = r.safety || {};
+    const safetyHtml = (s.overall || s.frontal || s.side || s.rollover) ? `
+      <div class="kv" style="margin-top:6px;">
+        <b>Overall</b><div>${stars(s.overall)}</div>
+        ${s.frontal != null ? '<b>Frontal</b><div>'+stars(s.frontal)+'</div>' : ''}
+        ${s.side != null ? '<b>Side</b><div>'+stars(s.side)+'</div>' : ''}
+        ${s.rollover != null ? '<b>Rollover</b><div>'+stars(s.rollover)+'</div>' : ''}
+      </div>` : '';
+    const fe = r.fuel_economy || {};
+    const feHtml = (fe.combined || fe.city || fe.highway) ? `
+      <div style="margin-top:8px;">
+        ${fe.city ? '<span class="mpg-pill">'+fe.city+' city</span>' : ''}
+        ${fe.highway ? '<span class="mpg-pill">'+fe.highway+' hwy</span>' : ''}
+        ${fe.combined ? '<span class="mpg-pill">'+fe.combined+' avg</span>' : ''}
+      </div>` : '';
+    let setupHtml = "";
+    if (r.setup_hint) {
+      setupHtml = `<div class="alert-bar info" style="margin:8px 0 0;">
+        Title / Owners / Service need a paid VIN provider:
+        <ul style="margin:4px 0 0;padding-left:18px;">
+          ${(r.setup_hint.options || []).map(o => `<li><a href="${o.url}" target="_blank" style="color:var(--cyan)">${o.name}</a> — ${o.cost}</li>`).join("")}
+        </ul></div>`;
+    }
+    const safety = ['abs_brakes','esc','tpms','blind_spot','lane_keep','adaptive_cruise','auto_brake','backup_camera']
+      .filter(k => d[k]).map(k => k.replace(/_/g,' ')).join(', ');
+    out.innerHTML = `${photoHtml}
+      ${riskHtml}${mismatchHtml}
+      <div class="vin-top">${titleBox}${ownersBox}${maintBox}</div>
+      ${completenessHtml}
+      ${setupHtml}${safetyHtml}${feHtml}
+      <div class="kv" style="margin-top:10px;">
+        <b>Vehicle</b><div>${d.year||"?"} ${d.make||"?"} ${d.model||""} ${d.trim||""}</div>
+        <b>Engine</b><div>${d.engine_displacement_l||"?"}L ${d.engine_cylinders||"?"}cyl${d.engine_hp?" · "+d.engine_hp+"hp":""}</div>
+        <b>Trans</b><div>${d.transmission||"–"} · ${d.drive_type||"–"}</div>
+        <b>Body</b><div>${d.body||"–"}</div>
+        ${safety ? '<b>Safety</b><div>'+safety+'</div>' : ''}
+      </div>
+      <div style="margin-top:10px;"><b style="color:var(--muted);font:800 10px 'JetBrains Mono',monospace;">RECALLS (${(r.recalls||[]).length})</b>
+        ${(r.recalls||[]).slice(0,3).map(rec => '<div><small>· '+(rec.component||"?")+': '+(rec.summary||"").slice(0,140)+'</small></div>').join("") || '<small class="muted">none</small>'}
+      </div>`;
+  } catch (e) { out.innerHTML = '<small style="color:var(--magenta)">'+e.message+'</small>'; }
+});
+
+// ============ Comp-match threshold slider ============
+const cmtSlider = $("#comp-match-threshold"), cmtVal = $("#cmt-val");
+if (cmtSlider) {
+  cmtSlider.addEventListener("input", () => { cmtVal.textContent = cmtSlider.value + "%"; });
+  cmtSlider.addEventListener("change", async () => {
+    try { await jpost("/api/settings", {comp_match_threshold_pct: parseInt(cmtSlider.value)}); }
+    catch(e) {}
+  });
+}
+
+// ============ Comps ============
+$("#comps-go").addEventListener("click", async () => {
+  const out = $("#comps-out");
+  const body = {year: $("#c-year").value, make: $("#c-make").value, model: $("#c-model").value, miles: $("#c-miles").value || undefined};
+  if (!body.year || !body.make || !body.model) { out.innerHTML = '<small style="color:var(--magenta)">Need year, make, model.</small>'; return; }
+  out.innerHTML = '<div class="spinner"></div> Pulling sold prices…';
+  try {
+    const c = await jpost("/api/comps", body);
+    if (c.error) { out.innerHTML = '<small style="color:var(--magenta)">'+c.error+'</small>'; return; }
+    out.innerHTML = `
+      <div class="kv">
+        <b>Match %</b><div><strong style="color:var(--neon);">${c.match_threshold_pct||100}%</strong> threshold · ${c.match_rejected||0} rejected</div>
+        <b>n</b><div>${c.n}</div>
+        <b>Avg</b><div style="color:var(--neon);font-weight:800;">${fmt(c.avg)}</div>
+        <b>Median</b><div>${fmt(c.median)}</div>
+        <b>Range</b><div>${fmt(c.min)} – ${fmt(c.max)}</div>
+        ${c.mileage_adjusted_avg ? '<b>Miles-adj</b><div>'+fmt(c.mileage_adjusted_avg)+'</div>' : ''}
+        <b>Sources</b><div>${(c.sources||[]).join(", ") || "–"}</div>
+        <b>Refreshed</b><div>${c.fetched_at_age_min} min ago</div>
+      </div>
+      <div style="margin-top:10px;"><b style="color:var(--muted);font:800 10px 'JetBrains Mono',monospace;">RECENT SALES (each scored 0-100% match)</b>
+        ${(c.examples||[]).slice(0,8).map(e => {
+          const pct = e.match_pct != null ? e.match_pct : 100;
+          const color = pct >= 100 ? "var(--neon)" : pct >= 70 ? "var(--gold)" : "var(--magenta)";
+          return '<div style="margin:3px 0;"><small><span style="color:'+color+';font-weight:800;">'+pct+'%</span> '+
+          '<span class="tag src-'+e.source+'">'+e.source+'</span> '+
+          fmt(e.price)+' — '+(e.end_date||"?")+' — '+(e.title||"").slice(0,55)+'</small></div>';
+        }).join("")}
+      </div>`;
+  } catch (e) { out.innerHTML = '<small style="color:var(--magenta)">'+e.message+'</small>'; }
+});
+
+// ============ External access (share) ============
+function applyOwnerVisibility() {
+  // Hide write-only / sensitive cards + controls for external visitors.
+  // Owner sees everything; visitors get a clean read-only deal-browsing view.
+  function hideCardOf(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const card = el.closest(".card") || el;
+    card.style.display = IS_OWNER ? "" : "none";
+  }
+  hideCardOf("share-card");           // External Access controls
+  hideCardOf("vin-provider-save");    // VIN provider API key inputs
+  hideCardOf("notify-save");          // Text-alert phone + Send Test
+  hideCardOf("settings-save");        // ZIP/radius/regions/threshold writes
+  ["poll-now", "thresh-slider"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = IS_OWNER ? "" : "none";
+  });
+  // Read-only banner at the very top
+  let banner = document.getElementById("viewer-banner");
+  if (!banner && !IS_OWNER) {
+    banner = document.createElement("div");
+    banner.id = "viewer-banner";
+    banner.style.cssText =
+      "background:rgba(0,255,156,.10);color:var(--neon);padding:8px 14px;" +
+      "text-align:center;font:600 12px 'JetBrains Mono',monospace;" +
+      "border-bottom:1px solid rgba(0,255,156,.3);letter-spacing:.05em;";
+    banner.textContent =
+      "▸ READ-ONLY VIEW · Only the owner can change settings, save deals, or run polls.";
+    document.body.insertBefore(banner, document.body.firstChild);
+  }
+  if (banner) banner.style.display = IS_OWNER ? "none" : "";
+}
+
+async function loadShareSettings() {
+  // Eager URL: the boot beacon already filled this in for non-loopback
+  // origins, but cover the case where the page is loaded from localhost too
+  // (owner will replace it with tunnel_url once the API answers).
+  function setUrl(url) {
+    if (!url) return;
+    const box = $("#share-url-box"), a = $("#share-url-link");
+    if (box) box.style.display = "block";
+    if (a) { a.href = url; a.textContent = url; }
+  }
+  const origin = window.location.origin || "";
+  if (origin && !/^http:\/\/(127\.|localhost)/i.test(origin)) setUrl(origin);
+
+  try {
+    const s = await jget("/api/share_settings");
+    IS_OWNER = !!s.is_owner;
+    applyOwnerVisibility();
+    if ($("#share-username")) $("#share-username").value = s.username || "sniper";
+    if ($("#share-public")) $("#share-public").checked = !!s.public;
+    const status = $("#share-status");
+    if (s.public) {
+      status.innerHTML = 'Access: <strong style="color:var(--neon);">PUBLIC</strong> · '
+                       + 'no login — anyone with the link can open it.';
+    } else if (s.auth_enabled) {
+      status.innerHTML = 'Access: <strong style="color:var(--neon);">PASSWORD</strong> · '
+                       + 'visitors must log in.';
+    } else {
+      status.innerHTML = 'Access: <strong style="color:var(--magenta);">OFF</strong> · '
+                       + 'set a password or turn on no-login before sharing.';
+    }
+    // Backend tunnel_url wins when present (owner-only); otherwise the
+    // current browser origin is the URL the visitor is actually on.
+    setUrl(s.tunnel_url || (origin && !/^http:\/\/(127\.|localhost)/i.test(origin) ? origin : null));
+  } catch (e) {
+    console.error("loadShareSettings failed:", e);
+    const status = $("#share-status");
+    if (status) status.innerHTML =
+      'Access: <strong style="color:var(--magenta);">UNKNOWN</strong> · '
+      + '/api/share_settings failed — ' + (e.message || e);
+  }
+}
+$("#share-save").addEventListener("click", async () => {
+  const btn = $("#share-save"); btn.disabled = true;
+  try {
+    await jpost("/api/share_settings", {
+      username: $("#share-username").value.trim(),
+      password: $("#share-password").value,
+      public: $("#share-public") ? $("#share-public").checked : false,
+    });
+    $("#share-password").value = "";
+    loadShareSettings();
+  } catch (e) { alert("Save failed: " + e.message); }
+  finally { btn.disabled = false; }
+});
+if ($("#share-public")) $("#share-public").addEventListener("change", async () => {
+  try {
+    await jpost("/api/share_settings", { public: $("#share-public").checked });
+    loadShareSettings();
+  } catch (e) { alert("Save failed: " + e.message); }
+});
+$("#share-copy").addEventListener("click", () => {
+  const url = $("#share-url-link").href;
+  navigator.clipboard.writeText(url);
+  $("#share-copy").textContent = "Copied!";
+  setTimeout(() => $("#share-copy").textContent = "Copy", 1500);
+});
+
+// ============ Text alerts ============
+async function loadNotifySettings() {
+  try {
+    const s = await jget("/api/notify_settings");
+    if (s.phone) $("#notify-phone").value = s.phone;
+    $("#notify-enabled").checked = !!s.enabled;
+    if (s.min_score != null) $("#notify-min-score").value = s.min_score;
+    if ($("#notify-quiet-start"))
+      $("#notify-quiet-start").value = (s.quiet_start_hour == null ? "" : s.quiet_start_hour);
+    if ($("#notify-quiet-end"))
+      $("#notify-quiet-end").value = (s.quiet_end_hour == null ? "" : s.quiet_end_hour);
+  } catch (e) {}
+}
+$("#notify-save").addEventListener("click", async () => {
+  const out = $("#notify-out");
+  const btn = $("#notify-save"); btn.disabled = true;
+  const phoneVal = $("#notify-phone").value.trim();
+  // Don't echo a masked phone back to the server — strip the mask so the
+  // backend's "ignore masked echo-backs" guard works correctly. If the user
+  // actually wants to change it they'll type a real number.
+  const phoneToSend = (/[•*]/.test(phoneVal)) ? "" : phoneVal;
+  const qs = $("#notify-quiet-start").value;
+  const qe = $("#notify-quiet-end").value;
+  try {
+    await jpost("/api/notify_settings", {
+      phone: phoneToSend,
+      enabled: $("#notify-enabled").checked,
+      min_score: parseInt($("#notify-min-score").value) || 30,
+      quiet_start_hour: qs === "" ? null : parseInt(qs),
+      quiet_end_hour:   qe === "" ? null : parseInt(qe),
+    });
+    out.innerHTML = '<span style="color:var(--neon)">✓ Saved.</span>';
+  } catch (e) {
+    out.innerHTML = '<span style="color:var(--magenta)">'+e.message+'</span>';
+  } finally { btn.disabled = false; }
+});
+$("#notify-test").addEventListener("click", async () => {
+  const out = $("#notify-out");
+  const btn = $("#notify-test"); btn.disabled = true;
+  out.innerHTML = '<div class="spinner"></div> Sending test text…';
+  try {
+    // Save the latest phone first so the test uses what's in the box
+    await jpost("/api/notify_settings", {phone: $("#notify-phone").value.trim()});
+    const r = await jpost("/api/notify_test");
+    if (r.ok) {
+      out.innerHTML = '<span style="color:var(--neon)">✓ Test text sent to ' + (r.phone || $("#notify-phone").value) + '. Check your phone.</span>';
+    } else {
+      out.innerHTML = '<span style="color:var(--magenta)">Failed: ' + (r.detail || r.error || "unknown") + '<br>'
+        + '<small>If you see "Not authorised", grant Automation permission to Python under System Settings → Privacy → Automation, then try again.</small></span>';
+    }
+  } catch (e) {
+    out.innerHTML = '<span style="color:var(--magenta)">'+e.message+'</span>';
+  } finally { btn.disabled = false; }
+});
+
+// ============ Notifications ============
+function maybeNotify(title, body) {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") {
+    new Notification(title, {body});
+  } else if (Notification.permission !== "denied") {
+    Notification.requestPermission();
+  }
+}
+if ("Notification" in window && Notification.permission === "default") {
+  setTimeout(() => Notification.requestPermission(), 2000);
+}
+
+// ============ Boot + intervals ============
+async function boot() {
+  await Promise.all([refreshStats(), refreshSources(), refreshFacets(),
+                     refreshAlerts(), refreshClosing(), refreshListings(),
+                     refreshSaved(), refreshHero(), loadSettings(),
+                     refreshMpCount(), refreshDiagnostics(), refreshTicker(),
+                     checkVinProviderState(), loadNotifySettings(),
+                     loadShareSettings()]);
+}
+boot();
+setInterval(() => { refreshStats(); refreshHero(); refreshTicker(); }, 5000);
+setInterval(() => { refreshAlerts(); refreshClosing(); refreshListings(); refreshSaved(); refreshMpCount(); refreshDiagnostics(); }, 15000);
+</script>
+
+</body>
+</html>
