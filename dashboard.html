@@ -753,6 +753,18 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
 
   <!-- RIGHT: VIN + Comps + bridges -->
   <aside>
+    <!-- Subscription / billing card. Populated by JS from /api/billing/me.
+         Free users see Starter vs Pro tiers; subscribers see status +
+         a Manage button that POSTs to /api/billing/portal. Admin role
+         hides upgrade controls — admins don't pay themselves. No Stripe
+         price IDs, customer IDs, or subscription IDs are ever surfaced. -->
+    <div class="card" id="billing-card" aria-live="polite">
+      <h2>⟁ Subscription</h2>
+      <div id="billing-card-body">
+        <div class="empty" id="billing-skeleton">▸ Loading subscription…</div>
+      </div>
+    </div>
+
     <div class="card" id="vin-setup-card" style="display:none;border-color:rgba(255,201,77,.4);background:rgba(255,201,77,.04);">
       <h2 style="color:var(--gold);">⚠ VIN Provider Setup Needed</h2>
       <small class="muted" style="display:block;margin-bottom:8px;">
@@ -924,6 +936,402 @@ console.log("%c⟁ SNIPER dashboard build " + SNIPER_BUILD + " loaded",
 // a syntax error earlier in the file. If you instead see "Booting dashboard…"
 // it means JS started and any remaining issue is a fetch failure (which the
 // updated catch handlers below will surface explicitly).
+// ----- Phase 2C: Subscription / billing UI -----------------------------
+//
+// Lives in the #billing-card placeholder added near the top of the right
+// aside. Source of truth is the server's /api/billing/me; the client never
+// computes entitlement, holds Stripe price IDs, or grants access from
+// browser parameters. The "Updating your subscription" pending state is
+// bounded polling only — it stops on resolution, timeout, tab hide, or
+// page navigation.
+window.__SNIPER_BILLING = (function () {
+  const $ = (id) => document.getElementById(id);
+  const POLL_MS         = 3000;   // 3s between polls
+  const POLL_MAX_MS     = 30000;  // give up after 30s
+
+  // Friendly labels for Stripe subscription.status. Anything not in this
+  // map renders as the raw string in lowercase — operators can grep for
+  // it in logs without us inventing copy for every future status.
+  const STATUS_LABEL = {
+    active:             "Active",
+    trialing:           "Trialing",
+    past_due:           "Payment past due",
+    canceled:           "Canceled",
+    unpaid:             "Unpaid",
+    incomplete:         "Incomplete",
+    incomplete_expired: "Incomplete (expired)",
+    paused:             "Paused",
+  };
+
+  const PLAN_BADGE_COLOR = {
+    free:    "var(--muted)",
+    starter: "var(--neon)",
+    pro:     "var(--gold)",
+    admin:   "var(--magenta)",
+  };
+
+  let _state = { snapshot: null, polling: false, abortPoll: null };
+
+  function _escape(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g,
+      c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  }
+
+  function _formatPeriodEnd(iso) {
+    if (!iso) return null;
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return null;
+      // e.g. "Jul 20, 2026"
+      return d.toLocaleDateString(undefined,
+        { year:"numeric", month:"short", day:"numeric" });
+    } catch (e) { return null; }
+  }
+
+  function _badge(plan, color) {
+    return '<span style="display:inline-block;padding:2px 8px;border-radius:4px;'
+      + 'font:800 10px \'JetBrains Mono\',monospace;letter-spacing:.4px;'
+      + 'background:' + color + ';color:#0a1714;text-transform:uppercase;">'
+      + _escape(plan) + '</span>';
+  }
+
+  function _renderError(msg) {
+    return '<div class="empty" style="color:var(--magenta);">'
+      + '▸ Subscription status unavailable.'
+      + '<div style="margin-top:6px;color:var(--muted);font-size:11px;">'
+      + _escape(msg || "Please try again in a moment.") + '</div>'
+      + '<button id="billing-retry" class="secondary" style="margin-top:10px;width:100%;">'
+      + 'Retry</button></div>';
+  }
+
+  function _renderPendingOverlay() {
+    return '<div style="padding:14px;border:1px dashed var(--border-2);'
+      + 'border-radius:8px;background:rgba(0,255,156,.03);">'
+      + '<div style="font:800 12px \'JetBrains Mono\',monospace;color:var(--neon);'
+      + 'letter-spacing:.5px;margin-bottom:6px;">▸ UPDATING YOUR SUBSCRIPTION</div>'
+      + '<div style="color:var(--muted);font-size:11px;line-height:1.5;">'
+      + 'Stripe confirmed payment. Provisioning access — usually a few seconds. '
+      + 'This panel will refresh automatically.'
+      + '</div></div>';
+  }
+
+  function _renderCanceledReturn() {
+    return '<div style="padding:10px;border:1px solid var(--border-2);'
+      + 'border-radius:8px;color:var(--muted);font-size:12px;margin-bottom:10px;">'
+      + 'Checkout canceled. No charges were made. Your plan is unchanged.</div>';
+  }
+
+  function _renderFree(opts) {
+    // Two upgrade tiles + a short why-pay line. No prices hardcoded:
+    // amounts come from the marketing site / Stripe Checkout page, not
+    // the dashboard, so changing pricing never needs a client deploy.
+    const prefix = opts.returnBanner || "";
+    return prefix
+      + '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">'
+      + 'You\'re on the <strong style="color:var(--text);">Free</strong> plan — '
+      + 'browse cached deals only.</div>'
+      + '<div id="billing-tiers" style="display:grid;gap:8px;">'
+      + _tier("starter", "Starter",
+            "Save deals, saved searches, alert tray")
+      + _tier("pro", "Pro",
+            "Everything in Starter + VIN reports and comps lookups")
+      + '</div>'
+      + '<small class="muted" style="display:block;margin-top:10px;font-size:11px;">'
+      + 'Checkout opens on Stripe. We never see your card details.</small>';
+  }
+
+  function _tier(planKey, planLabel, blurb) {
+    return '<button class="billing-upgrade-btn" data-plan="' + planKey
+      + '" style="display:block;width:100%;text-align:left;padding:10px 12px;'
+      + 'border:1px solid var(--border-2);border-radius:8px;'
+      + 'background:rgba(0,255,156,.04);color:var(--text);cursor:pointer;'
+      + 'transition:border-color .15s;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;">'
+      + '<strong>' + _escape(planLabel) + '</strong>'
+      + '<span style="color:var(--neon);font-size:11px;font-weight:700;">Upgrade →</span>'
+      + '</div>'
+      + '<div style="margin-top:4px;font-size:11px;color:var(--muted);">'
+      + _escape(blurb) + '</div></button>';
+  }
+
+  function _renderActive(user, sub, opts) {
+    const plan = user.plan || "free";
+    const status = sub.status || "active";
+    const statusLabel = STATUS_LABEL[status] || status;
+    const isUnhealthy = (status === "past_due" || status === "unpaid"
+                        || status === "incomplete" || status === "incomplete_expired");
+    const periodEnd = _formatPeriodEnd(sub.current_period_end);
+    const cancelEop = !!sub.cancel_at_period_end;
+
+    let banner = opts.returnBanner || "";
+    let healthLine = "";
+    if (isUnhealthy) {
+      healthLine = '<div style="margin-top:8px;padding:8px;border-radius:6px;'
+        + 'background:rgba(255,46,154,.08);border:1px solid rgba(255,46,154,.3);'
+        + 'color:var(--magenta);font-size:12px;">'
+        + '⚠ ' + _escape(statusLabel)
+        + '. Update your payment method in the portal to keep access.</div>';
+    } else if (cancelEop && periodEnd) {
+      healthLine = '<div style="margin-top:8px;padding:8px;border-radius:6px;'
+        + 'background:rgba(255,201,77,.08);border:1px solid rgba(255,201,77,.3);'
+        + 'color:var(--gold);font-size:12px;">'
+        + '⏳ Scheduled to cancel on ' + _escape(periodEnd)
+        + '. You keep full access until then.</div>';
+    } else if (periodEnd) {
+      healthLine = '<div style="margin-top:6px;color:var(--muted);font-size:12px;">'
+        + 'Renews on ' + _escape(periodEnd) + '.</div>';
+    }
+
+    return banner
+      + '<div style="display:flex;justify-content:space-between;align-items:center;">'
+      +   '<div>Current plan</div>'
+      +   _badge(plan, PLAN_BADGE_COLOR[plan] || "var(--muted)")
+      + '</div>'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;'
+      +   'margin-top:6px;color:var(--muted);font-size:12px;">'
+      +   '<div>Status</div>'
+      +   '<div>' + _escape(statusLabel) + '</div>'
+      + '</div>'
+      + healthLine
+      + '<button id="billing-manage-btn" class="secondary" '
+      +   'style="margin-top:12px;width:100%;">Manage subscription</button>'
+      + '<small class="muted" style="display:block;margin-top:8px;font-size:11px;">'
+      + 'Plan changes and cancellation happen in the Stripe portal.'
+      + '</small>';
+  }
+
+  function _renderCanceledSub(user, sub, opts) {
+    // The local mirror has a canceled subscription — the user used to
+    // pay but no longer does. Treat as free + offer re-subscribe.
+    return (opts.returnBanner || "")
+      + '<div style="display:flex;justify-content:space-between;align-items:center;'
+      +   'margin-bottom:10px;">'
+      +   '<div>Current plan</div>'
+      +   _badge("free", PLAN_BADGE_COLOR.free)
+      + '</div>'
+      + '<div style="color:var(--muted);font-size:12px;margin-bottom:10px;">'
+      + 'Your previous subscription ended. Pick a plan to resume.'
+      + '</div>'
+      + '<div id="billing-tiers" style="display:grid;gap:8px;">'
+      + _tier("starter", "Starter",
+            "Save deals, saved searches, alert tray")
+      + _tier("pro", "Pro",
+            "Everything in Starter + VIN reports and comps lookups")
+      + '</div>';
+  }
+
+  function _renderAdmin(user) {
+    return '<div style="display:flex;justify-content:space-between;align-items:center;">'
+      +   '<div>Role</div>'
+      +   _badge("admin", PLAN_BADGE_COLOR.admin)
+      + '</div>'
+      + '<small class="muted" style="display:block;margin-top:8px;font-size:11px;">'
+      + 'Admin accounts have full access; billing controls don\'t apply.'
+      + '</small>';
+  }
+
+  async function render(opts) {
+    opts = opts || {};
+    const body = $("billing-card-body");
+    if (!body) return;
+    try {
+      const data = await jget("/api/billing/me");
+      _state.snapshot = data;
+      const user = data.user || {};
+      const sub  = data.subscription || null;
+      if (user.is_admin || user.role === "admin") {
+        body.innerHTML = _renderAdmin(user);
+      } else if (sub && sub.status === "canceled") {
+        body.innerHTML = _renderCanceledSub(user, sub, opts);
+      } else if (sub) {
+        body.innerHTML = _renderActive(user, sub, opts);
+      } else {
+        body.innerHTML = _renderFree(opts);
+      }
+      _wireButtons();
+    } catch (e) {
+      body.innerHTML = _renderError(e && e.message);
+      const r = $("billing-retry");
+      if (r) r.addEventListener("click", () => render(opts));
+    }
+  }
+
+  function _wireButtons() {
+    document.querySelectorAll(".billing-upgrade-btn").forEach(btn => {
+      btn.addEventListener("click", _onUpgrade);
+      btn.addEventListener("mouseenter",
+        () => btn.style.borderColor = "var(--neon)");
+      btn.addEventListener("mouseleave",
+        () => btn.style.borderColor = "var(--border-2)");
+    });
+    const manage = $("billing-manage-btn");
+    if (manage) manage.addEventListener("click", _onManage);
+  }
+
+  async function _onUpgrade(ev) {
+    const btn = ev.currentTarget;
+    const plan = btn && btn.dataset && btn.dataset.plan;
+    if (!plan || (plan !== "starter" && plan !== "pro")) return;
+    // Disable BOTH tier buttons to avoid double-click double-charge.
+    document.querySelectorAll(".billing-upgrade-btn").forEach(b => {
+      b.disabled = true; b.style.opacity = ".6"; b.style.cursor = "wait";
+    });
+    btn.querySelector("span").textContent = "Opening Stripe…";
+    let resp;
+    try {
+      resp = await jpost("/api/billing/checkout", { plan: plan });
+    } catch (e) {
+      _renderInlineError(btn,
+        "Couldn't start checkout — " + (e.message || "try again"));
+      return;
+    }
+    if (resp && resp.url) {
+      // Hard navigate to Stripe Checkout. Entitlement still won't grant
+      // until the webhook lands; this is just the UX hand-off.
+      window.location.assign(resp.url);
+    } else {
+      _renderInlineError(btn, "Stripe didn't return a checkout URL.");
+    }
+  }
+
+  async function _onManage(ev) {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    btn.style.opacity = ".6"; btn.style.cursor = "wait";
+    const original = btn.textContent;
+    btn.textContent = "Opening Stripe portal…";
+    let resp;
+    try {
+      resp = await jpost("/api/billing/portal", {});
+    } catch (e) {
+      btn.disabled = false; btn.style.opacity = "1"; btn.style.cursor = "pointer";
+      btn.textContent = original;
+      // Portal not configured / temporary 502 — show inline without
+      // touching the rest of the dashboard.
+      const body = $("billing-card-body");
+      if (body && !body.querySelector(".billing-portal-err")) {
+        body.insertAdjacentHTML("beforeend",
+          '<div class="billing-portal-err" style="margin-top:8px;color:var(--magenta);'
+          + 'font-size:11px;">' + _escape(e.message || "Portal unavailable") + '</div>');
+      }
+      return;
+    }
+    if (resp && resp.url) {
+      window.location.assign(resp.url);
+    } else {
+      btn.disabled = false; btn.style.opacity = "1"; btn.style.cursor = "pointer";
+      btn.textContent = original;
+    }
+  }
+
+  function _renderInlineError(nearBtn, msg) {
+    const body = $("billing-card-body");
+    if (!body) return;
+    if (!body.querySelector(".billing-inline-err")) {
+      body.insertAdjacentHTML("beforeend",
+        '<div class="billing-inline-err" style="margin-top:8px;color:var(--magenta);'
+        + 'font-size:11px;">' + _escape(msg) + '</div>');
+    }
+    document.querySelectorAll(".billing-upgrade-btn").forEach(b => {
+      b.disabled = false; b.style.opacity = "1"; b.style.cursor = "pointer";
+      const span = b.querySelector("span");
+      if (span && span.textContent === "Opening Stripe…") span.textContent = "Upgrade →";
+    });
+  }
+
+  // ---- Return flow (success / cancel from Stripe) -------------------
+
+  function _stateKey(snap) {
+    if (!snap) return "none";
+    const sub = snap.subscription;
+    return [
+      (snap.user && snap.user.plan) || "free",
+      sub ? (sub.status || "") : "no-sub",
+      sub ? (sub.stripe_subscription_id || "") : "",
+    ].join("|");
+  }
+
+  async function _pollUntilChanged(baselineKey) {
+    if (_state.polling) return;
+    _state.polling = true;
+    const body = $("billing-card-body");
+    // Place the pending banner above whatever's currently shown.
+    if (body) body.insertAdjacentHTML("afterbegin",
+      '<div id="billing-pending-banner" style="margin-bottom:10px;">'
+      + _renderPendingOverlay() + '</div>');
+    const ctrl = new AbortController();
+    _state.abortPoll = ctrl;
+    const stopOnHide = () => { if (document.hidden) ctrl.abort(); };
+    document.addEventListener("visibilitychange", stopOnHide);
+    window.addEventListener("pagehide", () => ctrl.abort());
+    const start = Date.now();
+    try {
+      while (!ctrl.signal.aborted && (Date.now() - start) < POLL_MAX_MS) {
+        await new Promise(r => setTimeout(r, POLL_MS));
+        if (ctrl.signal.aborted) break;
+        let data;
+        try { data = await jget("/api/billing/me"); }
+        catch (e) { continue; }
+        if (_stateKey(data) !== baselineKey) {
+          _state.snapshot = data;
+          break;
+        }
+      }
+    } finally {
+      _state.polling = false;
+      _state.abortPoll = null;
+      document.removeEventListener("visibilitychange", stopOnHide);
+      const banner = $("billing-pending-banner");
+      if (banner) banner.remove();
+      // Re-render to reflect the verified server-side state — never
+      // optimistically unlock based on the return param.
+      render();
+    }
+  }
+
+  function _readReturnParam() {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      const r = p.get("billing_return");
+      if (r === "success" || r === "cancel") return r;
+    } catch (e) {}
+    return null;
+  }
+
+  function _cleanReturnParam() {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("billing_return");
+      url.searchParams.delete("session");
+      window.history.replaceState({}, "", url.toString());
+    } catch (e) {}
+  }
+
+  async function init() {
+    const billingReturn = _readReturnParam();
+    _cleanReturnParam();
+    // Render with a return banner only on the FIRST paint after a Stripe round-trip.
+    if (billingReturn === "cancel") {
+      await render({ returnBanner: _renderCanceledReturn() });
+      return;
+    }
+    if (billingReturn === "success") {
+      // Establish baseline THEN poll. The baseline is whatever the page
+      // sees right now; the poll exits as soon as the snapshot key
+      // differs (status, plan, or subscription id change).
+      await render();
+      const baseline = _stateKey(_state.snapshot);
+      _pollUntilChanged(baseline);
+      return;
+    }
+    await render();
+  }
+
+  return { init: init, render: render };
+})();
+
+// Boot billing UI after the user-chip beacon below has confirmed auth.
+
 // Phase 1 SaaS chip — shows current user + sign-out in the top-right corner.
 // Injected here (vs. editing the static HTML) to keep the structural diff small.
 (function userChip() {
@@ -952,6 +1360,9 @@ console.log("%c⟁ SNIPER dashboard build " + SNIPER_BUILD + " loaded",
           catch (_) {}
           location.replace("/login");
         });
+        // Boot the subscription card now that /api/me confirmed a session.
+        try { window.__SNIPER_BILLING && window.__SNIPER_BILLING.init(); }
+        catch (e) { console.error("billing init failed:", e); }
       }).catch(() => {});
   } catch (e) { /* never let the chip block the dashboard */ }
 })();

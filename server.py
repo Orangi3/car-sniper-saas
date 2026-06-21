@@ -342,7 +342,22 @@ def index():
             mt = int((ROOT / "dashboard.html").stat().st_mtime)
         except Exception:
             mt = int(time.time())
-        return redirect(f"/?v={mt}", code=302)
+        # Preserve safe, allowlisted return-flow params across the
+        # cache-bust redirect so /billing/success?session=… can land on
+        # /?v=…&billing_return=success without losing the marker the JS
+        # uses to enable bounded post-checkout polling. `session` is the
+        # Stripe Checkout Session ID — non-secret, used by the JS only
+        # for UX display, never for entitlement decisions.
+        extras = []
+        rv = (request.args.get("billing_return") or "").strip().lower()
+        if rv in ("success", "cancel"):
+            extras.append(f"billing_return={rv}")
+        sid = (request.args.get("session") or "").strip()
+        if sid and sid.startswith("cs_") and len(sid) < 200 \
+                and all(c.isalnum() or c == "_" for c in sid):
+            extras.append(f"session={sid}")
+        suffix = ("&" + "&".join(extras)) if extras else ""
+        return redirect(f"/?v={mt}{suffix}", code=302)
     # Serve ONLY the static dashboard file from ROOT. No DB, no comp, no
     # network — the page must load even if every backend dependency is down.
     page = ROOT / "dashboard.html"
@@ -1290,6 +1305,39 @@ def login_page():
     resp = send_from_directory(ROOT, "login.html")
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+# ---- Stripe Checkout return landings ------------------------------------
+#
+# Stripe redirects the user back here after Hosted Checkout. These routes
+# do NOT grant any entitlement — they just forward to the dashboard with
+# a `billing_return` flag so the JS knows to show a pending state and
+# poll /api/billing/me until the verified webhook flips the user's plan.
+# Unauthenticated visitors land on /login (the dashboard is private).
+
+def _billing_return_redirect(outcome: str):
+    """Forward to / with safe, allowlisted query params only."""
+    sid = (request.args.get("session") or "").strip()
+    safe_sid = ""
+    if sid and sid.startswith("cs_") and len(sid) < 200 \
+            and all(c.isalnum() or c == "_" for c in sid):
+        safe_sid = f"&session={sid}"
+    target = f"/?billing_return={outcome}{safe_sid}"
+    return redirect(target, code=302)
+
+
+@app.get("/billing/success")
+def billing_success_return():
+    if not auth.current_user():
+        return redirect("/login", code=302)
+    return _billing_return_redirect("success")
+
+
+@app.get("/billing/cancel")
+def billing_cancel_return():
+    if not auth.current_user():
+        return redirect("/login", code=302)
+    return _billing_return_redirect("cancel")
 
 
 # ---- Auth endpoints ------------------------------------------------------
