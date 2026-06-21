@@ -1001,67 +1001,23 @@ def _job_iso(dt: datetime) -> str:
 def acquire_job_lock(job_name: str, *, holder: str,
                      lease_seconds: int = 600,
                      steal_after_seconds: int = 3600) -> bool:
-    """Try to claim the named job. Returns True if claimed, False if held
-    by someone else (and the existing lock hasn't expired beyond the
-    steal-after window).
-
-    Two cases where this returns True:
-      1. The row currently has no holder (initial / properly released).
-      2. The existing holder's expires_at is older than
-         (now - steal_after_seconds) — i.e. a previous run crashed and
-         left a stale lock. We steal it and record the steal.
-
-    No INSERT/SELECT race window: the conditional UPDATE is atomic per row
-    in both engines."""
-    now = datetime.now(timezone.utc)
-    expires = now + timedelta(seconds=lease_seconds)
-    steal_cutoff = now - timedelta(seconds=steal_after_seconds)
-    now_iso = _job_iso(now)
-    expires_iso = _job_iso(expires)
-    steal_cutoff_iso = _job_iso(steal_cutoff)
-    ph = _db.placeholder()
-    with _db.transaction() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            f"UPDATE billing_job_locks "
-            f"SET holder = {ph}, acquired_at = {ph}, expires_at = {ph}, "
-            f"    updated_at = {ph} "
-            f"WHERE job_name = {ph} "
-            f"  AND (holder IS NULL OR holder = '' OR expires_at < {ph})",
-            (holder, now_iso, expires_iso, now_iso, job_name, steal_cutoff_iso))
-        # SQLite: rowcount; psycopg2: rowcount. Both reliable on UPDATE.
-        return cur.rowcount > 0
+    """Backwards-compatible facade over joblock.acquire — kept so the
+    existing reconciliation tests + callers continue to work without
+    touching billing.py's public surface."""
+    import joblock
+    return joblock.acquire(job_name, holder=holder,
+                            lease_seconds=lease_seconds,
+                            steal_after_seconds=steal_after_seconds)
 
 
 def release_job_lock(job_name: str, *, holder: str) -> None:
-    """Release the named lock, but ONLY if we still hold it (avoid
-    accidentally releasing a lock another instance stole after we
-    crashed past our lease)."""
-    ph = _db.placeholder()
-    with _db.transaction() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            f"UPDATE billing_job_locks "
-            f"SET holder = NULL, acquired_at = NULL, expires_at = NULL, "
-            f"    updated_at = {ph} "
-            f"WHERE job_name = {ph} AND holder = {ph}",
-            (_job_now(), job_name, holder))
+    import joblock
+    joblock.release(job_name, holder=holder)
 
 
 def current_lock_holder(job_name: str) -> Optional[dict]:
-    """Read-only inspection for billing_health / debugging."""
-    ph = _db.placeholder()
-    with _db.transaction() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT holder, acquired_at, expires_at, updated_at "
-            f"FROM billing_job_locks WHERE job_name = {ph}",
-            (job_name,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        return {k: row[k] for k in ("holder", "acquired_at",
-                                     "expires_at", "updated_at")}
+    import joblock
+    return joblock.current_holder(job_name)
 
 
 def reconcile_billing_with_lock(*, holder: str,

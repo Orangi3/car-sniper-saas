@@ -152,11 +152,16 @@ def test_anonymous_cannot_trigger_poll(client):
     r = client.post("/api/admin/poll")
     assert r.status_code == 401
 
-def test_regular_user_cannot_trigger_poll(client):
-    register(client, "alice@example.com")  # plan=free, role=user
-    r = client.post("/api/admin/poll")
-    assert r.status_code == 403
-    assert "admin" in r.get_json()["error"].lower()
+# NOTE — `test_regular_user_cannot_trigger_poll` and
+# `test_admin_can_trigger_poll` were retired in Phase 2C.1 when
+# /api/admin/poll was removed as a public scrape trigger. The current
+# coverage is in tests/test_scheduler_isolation.py:
+#   - test_server_module_has_no_polling_route          (route is gone)
+#   - test_scheduler_runs_one_tick_and_exits           (internal CLI works)
+#   - test_scheduler_second_instance_exits_2_when_lock_held
+# The old anonymous-cannot-trigger check below still holds: any /api/*
+# without a session 401s in _enforce_route_policy regardless of whether
+# the path resolves to a real route.
 
 
 def test_legacy_poll_endpoints_are_dropped(client):
@@ -169,20 +174,7 @@ def test_legacy_poll_endpoints_are_dropped(client):
     assert r.status_code in (401, 404, 405)
 
 
-def test_admin_can_trigger_poll(client, monkeypatch):
-    register(client, "admin@example.com")
-    make_admin("admin@example.com")
-    logout(client); login(client, "admin@example.com")
-
-    # Stub the actual scrape so the test doesn't hit external sites
-    import sniper
-    monkeypatch.setattr(sniper, "poll_once",
-                        lambda **k: {"fetched": 0, "new": 0,
-                                     "scoring_pending": 0,
-                                     "poll_secs": 0.01, "per_source": {}})
-    r = client.post("/api/admin/poll")
-    assert r.status_code == 200
-    assert r.get_json()["fetched"] == 0
+# `test_admin_can_trigger_poll` retired in Phase 2C.1 — see note above.
 
 
 # ---------- Normal cached-listing access (free plan can browse) ---------

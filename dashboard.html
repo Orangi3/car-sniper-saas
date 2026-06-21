@@ -1022,33 +1022,54 @@ window.__SNIPER_BILLING = (function () {
   }
 
   function _renderFree(opts) {
-    // Two upgrade tiles + a short why-pay line. No prices hardcoded:
-    // amounts come from the marketing site / Stripe Checkout page, not
-    // the dashboard, so changing pricing never needs a client deploy.
+    // Two upgrade tiles + a short why-pay line. No prices hardcoded.
+    // When billingAvailable === false the tiles render disabled and an
+    // informational banner replaces the upgrade footer. We never expose
+    // *why* billing is unavailable — the server flag is yes/no only.
     const prefix = opts.returnBanner || "";
+    const dis = (opts.billingAvailable === false);
+    const unavailableBanner = dis
+      ? ('<div role="status" style="margin-bottom:10px;padding:10px;'
+        + 'border:1px solid rgba(255,201,77,.3);border-radius:8px;'
+        + 'background:rgba(255,201,77,.06);color:var(--gold);font-size:12px;'
+        + 'line-height:1.5;">'
+        + '⏳ Billing is temporarily unavailable. Please try again later. '
+        + 'Your account and saved data are unaffected.</div>')
+      : "";
     return prefix
+      + unavailableBanner
       + '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">'
       + 'You\'re on the <strong style="color:var(--text);">Free</strong> plan — '
       + 'browse cached deals only.</div>'
       + '<div id="billing-tiers" style="display:grid;gap:8px;">'
       + _tier("starter", "Starter",
-            "Save deals, saved searches, alert tray")
+            "Save deals, saved searches, alert tray", dis)
       + _tier("pro", "Pro",
-            "Everything in Starter + VIN reports and comps lookups")
+            "Everything in Starter + VIN reports and comps lookups", dis)
       + '</div>'
-      + '<small class="muted" style="display:block;margin-top:10px;font-size:11px;">'
-      + 'Checkout opens on Stripe. We never see your card details.</small>';
+      + (dis ? '' :
+          '<small class="muted" style="display:block;margin-top:10px;font-size:11px;">'
+          + 'Checkout opens on Stripe. We never see your card details.</small>');
   }
 
-  function _tier(planKey, planLabel, blurb) {
-    return '<button class="billing-upgrade-btn" data-plan="' + planKey
-      + '" style="display:block;width:100%;text-align:left;padding:10px 12px;'
-      + 'border:1px solid var(--border-2);border-radius:8px;'
-      + 'background:rgba(0,255,156,.04);color:var(--text);cursor:pointer;'
-      + 'transition:border-color .15s;">'
+  function _tier(planKey, planLabel, blurb, disabled) {
+    const ariaDisabled = disabled ? ' aria-disabled="true"' : '';
+    const inlineDisable = disabled
+      ? ' disabled style="display:block;width:100%;text-align:left;padding:10px 12px;'
+        + 'border:1px solid var(--border-2);border-radius:8px;'
+        + 'background:rgba(255,255,255,.02);color:var(--muted);cursor:not-allowed;'
+        + 'opacity:.55;"'
+      : ' style="display:block;width:100%;text-align:left;padding:10px 12px;'
+        + 'border:1px solid var(--border-2);border-radius:8px;'
+        + 'background:rgba(0,255,156,.04);color:var(--text);cursor:pointer;'
+        + 'transition:border-color .15s;"';
+    const cta = disabled
+      ? '<span style="color:var(--muted);font-size:11px;font-weight:700;">Unavailable</span>'
+      : '<span style="color:var(--neon);font-size:11px;font-weight:700;">Upgrade →</span>';
+    return '<button class="billing-upgrade-btn" data-plan="' + planKey + '"'
+      + ariaDisabled + inlineDisable + '>'
       + '<div style="display:flex;justify-content:space-between;align-items:center;">'
-      + '<strong>' + _escape(planLabel) + '</strong>'
-      + '<span style="color:var(--neon);font-size:11px;font-weight:700;">Upgrade →</span>'
+      + '<strong>' + _escape(planLabel) + '</strong>' + cta
       + '</div>'
       + '<div style="margin-top:4px;font-size:11px;color:var(--muted);">'
       + _escape(blurb) + '</div></button>';
@@ -1103,7 +1124,16 @@ window.__SNIPER_BILLING = (function () {
   function _renderCanceledSub(user, sub, opts) {
     // The local mirror has a canceled subscription — the user used to
     // pay but no longer does. Treat as free + offer re-subscribe.
+    const dis = (opts.billingAvailable === false);
+    const unavailableBanner = dis
+      ? ('<div role="status" style="margin-bottom:10px;padding:10px;'
+        + 'border:1px solid rgba(255,201,77,.3);border-radius:8px;'
+        + 'background:rgba(255,201,77,.06);color:var(--gold);font-size:12px;'
+        + 'line-height:1.5;">'
+        + '⏳ Billing is temporarily unavailable. Please try again later.</div>')
+      : "";
     return (opts.returnBanner || "")
+      + unavailableBanner
       + '<div style="display:flex;justify-content:space-between;align-items:center;'
       +   'margin-bottom:10px;">'
       +   '<div>Current plan</div>'
@@ -1114,9 +1144,9 @@ window.__SNIPER_BILLING = (function () {
       + '</div>'
       + '<div id="billing-tiers" style="display:grid;gap:8px;">'
       + _tier("starter", "Starter",
-            "Save deals, saved searches, alert tray")
+            "Save deals, saved searches, alert tray", dis)
       + _tier("pro", "Pro",
-            "Everything in Starter + VIN reports and comps lookups")
+            "Everything in Starter + VIN reports and comps lookups", dis)
       + '</div>';
   }
 
@@ -1139,14 +1169,20 @@ window.__SNIPER_BILLING = (function () {
       _state.snapshot = data;
       const user = data.user || {};
       const sub  = data.subscription || null;
+      // billing_available defaults to true if the server (somehow) omits
+      // it, so we never spuriously disable tiers when the field is just
+      // missing rather than explicitly false.
+      const billingAvailable = (data.billing_available !== false);
+      const enriched = Object.assign({}, opts,
+                                      { billingAvailable: billingAvailable });
       if (user.is_admin || user.role === "admin") {
         body.innerHTML = _renderAdmin(user);
       } else if (sub && sub.status === "canceled") {
-        body.innerHTML = _renderCanceledSub(user, sub, opts);
+        body.innerHTML = _renderCanceledSub(user, sub, enriched);
       } else if (sub) {
-        body.innerHTML = _renderActive(user, sub, opts);
+        body.innerHTML = _renderActive(user, sub, enriched);
       } else {
-        body.innerHTML = _renderFree(opts);
+        body.innerHTML = _renderFree(enriched);
       }
       _wireButtons();
     } catch (e) {
@@ -1158,6 +1194,7 @@ window.__SNIPER_BILLING = (function () {
 
   function _wireButtons() {
     document.querySelectorAll(".billing-upgrade-btn").forEach(btn => {
+      if (btn.disabled) return; // billing-unavailable state — no handlers
       btn.addEventListener("click", _onUpgrade);
       btn.addEventListener("mouseenter",
         () => btn.style.borderColor = "var(--neon)");

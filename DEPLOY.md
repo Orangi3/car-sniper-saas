@@ -100,12 +100,22 @@ Skips the schema_migrations verification at worker boot. Only legitimate
 use is the first-boot bootstrap script that runs the migrations and the
 server in a single process. Never leave this set in steady-state prod.
 
-## Systemd unit (reference)
+## Production service layout — three responsibilities, three units
+
+The web server, the source-polling scheduler, and the billing
+reconciliation job are intentionally separated. Gunicorn workers must
+never own the scheduler or call `sniper.poll_once`; they only serve
+HTTP. The scheduler runs as exactly one process; a second instance that
+races it will fail to acquire the DB-backed lease and exit cleanly.
+
+### 1. `sniper-web.service` — Gunicorn HTTP only
+
+`/etc/systemd/system/sniper-web.service`:
 
 ```ini
 [Unit]
-Description=sniper saas
-After=network.target postgresql.service
+Description=sniper web (gunicorn)
+After=network-online.target postgresql.service
 Requires=postgresql.service
 
 [Service]
@@ -113,21 +123,141 @@ Type=simple
 User=sniper
 WorkingDirectory=/opt/sniper
 EnvironmentFile=/etc/sniper/env
-ExecStartPre=/opt/sniper/.venv/bin/python3 -m migrations.runner
-ExecStart=/opt/sniper/.venv/bin/gunicorn server:app -w 4 -b 127.0.0.1:8765 --access-logfile -
+# Migrations are a deploy step — see `python3 -m migrations.runner` in
+# the playbook. The web service refuses to start if the schema is
+# behind code (Phase 1 sanity check).
+ExecStart=/opt/sniper/.venv/bin/gunicorn server:app \
+            --workers ${GUNICORN_WORKERS} \
+            --bind 127.0.0.1:8765 \
+            --access-logfile - --error-logfile - --timeout 30
 Restart=on-failure
 RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sniper /var/log/sniper
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-`ExecStartPre` is the one-shot migrate step; `ExecStart` is gunicorn.
-Systemd guarantees `ExecStartPre` completes (exit 0) before `ExecStart`
-runs, and a single systemd-managed process means there's no worker race.
+`GUNICORN_WORKERS` lives in `/etc/sniper/env`. **Do not hard-code a
+value as a correctness requirement.** Start with 2–4 workers; tune
+after observing CPU, RSS, and request concurrency under real load
+(`htop`, `journalctl --since`, response-time percentiles from your
+proxy access log). A sustained queue at the reverse proxy is the signal
+to add workers; high RSS / paging is the signal to remove them.
 
-Put `DATABASE_URL`, `SECRET_KEY`, `ALLOW_REGISTRATION` in
+### 2. `sniper-scheduler.service` — source polling (exactly one)
+
+`/etc/systemd/system/sniper-scheduler.service`:
+
+```ini
+[Unit]
+Description=sniper source polling scheduler (single instance)
+After=network-online.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=sniper
+WorkingDirectory=/opt/sniper
+EnvironmentFile=/etc/sniper/env
+ExecStart=/opt/sniper/.venv/bin/python3 -m jobs.scheduler --interval 60
+Restart=on-failure
+RestartSec=10
+# Belt-and-suspenders: systemd won't start a second instance...
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sniper
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Concurrency guarantees (defense in depth):**
+1. systemd's `Type=simple` + non-templated unit refuses to start a
+   second copy of the SAME unit on the same host.
+2. If a second host ever points at the same DB, the
+   `billing_job_locks(job_name='scheduler')` row is the actual
+   primitive: the second process's `joblock.acquire` returns False and
+   the CLI exits with code `2`, logging `{"event":"lock_held",...}` to
+   the journal. The original holder keeps running.
+3. The lease is refreshed before each tick; a crashed scheduler that
+   left a stale lease is taken over by the next start after the
+   `--steal-after-seconds` window (default 600s).
+
+### 3. `sniper-reconcile.service` + `.timer` — billing reconciliation
+
+These are the units from Phase 2B's hardening — unchanged. Reproduced
+here for completeness:
+
+`/etc/systemd/system/sniper-reconcile.service`:
+
+```ini
+[Unit]
+Description=sniper billing reconciliation (internal)
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=sniper
+WorkingDirectory=/opt/sniper
+EnvironmentFile=/etc/sniper/env
+ExecStart=/opt/sniper/.venv/bin/python3 -m jobs.reconcile_billing
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+```
+
+`/etc/systemd/system/sniper-reconcile.timer`:
+
+```ini
+[Unit]
+Description=run sniper billing reconciliation hourly
+
+[Timer]
+OnCalendar=*-*-* *:17:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=sniper-reconcile.service
+
+[Install]
+WantedBy=timers.target
+```
+
+### Enable + inspect
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now sniper-web.service sniper-scheduler.service sniper-reconcile.timer
+sudo systemctl status sniper-web.service sniper-scheduler.service
+systemctl list-timers sniper-reconcile.timer
+# Tail logs
+journalctl -u sniper-web.service       -f
+journalctl -u sniper-scheduler.service -f
+journalctl -u sniper-reconcile.service --since '1 hour ago'
+# Restart cleanly (preserves DB locks; scheduler exits then re-acquires)
+sudo systemctl restart sniper-scheduler.service
+# Stop scheduler for maintenance (web stays up — read-only against the cache)
+sudo systemctl stop sniper-scheduler.service
+```
+
+Put `DATABASE_URL`, `SECRET_KEY`, `ALLOW_REGISTRATION`,
+`GUNICORN_WORKERS`, and all `STRIPE_*` test-mode keys in
 `/etc/sniper/env` (0600, owned by sniper).
+
+**Why no `/api/admin/poll` HTTP route.** Phase 2C.1 deliberately removed
+the previous admin-only poll trigger. Web workers must never call
+`sniper.poll_once` — N gunicorn workers could each spawn the scorer
+thread pool, fan out duplicate writes, race the scheduler, and burn
+source rate-limit budgets. The only legitimate manual tick is on the
+host: stop the scheduler service, run `python3 -m jobs.scheduler --once`,
+restart the service.
 
 ## Reverse proxy
 
@@ -286,3 +416,47 @@ configure Stripe Tax. Before flipping to live mode:
 
 Do not enable live billing until step 1 has a written decision and
 step 2 is signed off by your tax advisor.
+
+## Phase 3 staging acceptance — backup/restore drill
+
+Before promoting staging to production traffic, an actual **restore**
+of a Postgres off-host backup into a fresh database must succeed. A
+backup that has never been restored is, for engineering purposes, not a
+backup.
+
+Minimal acceptance procedure:
+
+1. Take a normal `pg_dump --format=custom` of the staging DB to your
+   off-host destination (S3 / B2 / restic repo). Record the size and
+   the SHA256.
+2. Provision a **fresh** Postgres database (could be a throwaway docker
+   container — the point is that it has no schema and no rows).
+3. Restore the backup into that fresh DB with `pg_restore --clean
+   --if-exists --no-owner -d <fresh_db> /path/to/dump`.
+4. Run `python3 -m migrations.runner` against the restored DB. The
+   migration runner must report zero pending migrations.
+5. Run `pytest -q` with `DATABASE_URL` pointed at the restored DB. The
+   full suite must pass.
+6. Spot-check at least one real user's billing state (`SELECT user_id,
+   plan, status FROM subscriptions LIMIT 5;`) and verify that
+   `/api/admin/billing/health` from a fresh app instance against the
+   restored DB shows the expected last-reconciliation row.
+7. Write the date, dump size, dump SHA256, and restore wall-clock time
+   into the project runbook.
+
+Do not claim "backups are working" or check this off until steps 1–7
+have actually been executed end-to-end. A backup is verified by a
+successful restore, not by the absence of error messages from
+`pg_dump`.
+
+## Billing-unavailable state
+
+`GET /api/billing/me` returns `billing_available: false` whenever the
+server lacks `STRIPE_SECRET_KEY` or has no `STRIPE_PRICE_STARTER` /
+`STRIPE_PRICE_PRO` configured. The dashboard renders the Starter and
+Pro tier tiles disabled with a calm "Billing is temporarily
+unavailable" banner; raw configuration details and "unknown plan"
+errors are never surfaced to end users. The server still returns
+`400 unknown plan` for direct/tampered `POST /api/billing/checkout`
+requests — the UX path is purely a polish layer on top of the existing
+authorization model.

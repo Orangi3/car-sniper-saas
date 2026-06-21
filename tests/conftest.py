@@ -46,11 +46,14 @@ def app(temp_db_path):
     run `migrations.runner.run_pending()` explicitly, THEN import server.
     server.py verifies on startup that every migration is applied; doing
     them before import keeps it happy without weakening the check."""
-    # Pop every module that caches per-DB state. `billing` is in here
-    # specifically because it calls _db.transaction() directly inside
-    # reconcile_all(); if we don't re-import it, that call uses the
-    # previous test's db module reference and sees an empty/stale file.
-    for mod in ("server", "db", "auth", "sniper", "billing",
+    # Pop every module that caches per-DB state. `billing` and `joblock`
+    # are in here specifically because they call _db.transaction()
+    # directly; if we don't re-import them, those calls use the previous
+    # test's db module reference and see an empty/stale file.
+    # `jobs.scheduler` is popped so the test runner's --once invocations
+    # re-bind the module-level imports against the fresh test DB.
+    for mod in ("server", "db", "auth", "sniper", "billing", "joblock",
+                "jobs.scheduler", "jobs",
                 "migrations.runner", "migrations"):
         sys.modules.pop(mod, None)
     import db                       # noqa: F401  (re-import w/ new SNIPER_DB_PATH)

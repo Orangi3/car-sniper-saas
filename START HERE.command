@@ -54,14 +54,20 @@ if [ ! -d ".venv" ]; then
 fi
 
 # --- Stop any old instance --------------------------------------------------
-pkill -f "sniper.py daemon" 2>/dev/null
-pkill -f "server.py"        2>/dev/null
+pkill -f "sniper.py daemon"   2>/dev/null   # legacy entry, retired
+pkill -f "jobs.scheduler"     2>/dev/null
+pkill -f "server.py"          2>/dev/null
 sleep 1
 
-# --- Start the poller in the background -------------------------------------
+# --- Apply pending migrations (idempotent) ----------------------------------
+.venv/bin/python -m migrations.runner
+
+# --- Start the source-polling scheduler as a SEPARATE process ---------------
+# Phase 2C.1: web workers never own the scheduler. The DB-backed
+# scheduler lease in billing_job_locks prevents accidental double-starts.
 echo ""
-echo "Starting the sniper..."
-nohup .venv/bin/python sniper.py daemon > sniper.log 2>&1 &
+echo "Starting the source-polling scheduler..."
+nohup .venv/bin/python -m jobs.scheduler --interval 60 > sniper.log 2>&1 &
 echo $! > sniper.pid
 
 # --- Start the dashboard in the background ----------------------------------

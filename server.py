@@ -1543,19 +1543,35 @@ def api_billing_webhook():
                     "event": event["id"], "type": event["type"]}), 200
 
 
+def _billing_available() -> bool:
+    """True when the server is configured to start Stripe Checkout.
+    Booleanized for the dashboard — never leak which env var is missing
+    or which Price IDs aren't set. Used by the UI to disable upgrade
+    actions with a calm message instead of showing a raw error."""
+    try:
+        return bool(os.environ.get("STRIPE_SECRET_KEY")) \
+               and bool(_billing.plan_to_price())
+    except Exception:
+        return False
+
+
 @app.get("/api/billing/me")
 @auth.login_required
 def api_billing_me():
     """Read the current user's subscription state. Purely a DB read —
-    never a live Stripe API call (those should happen via the webhook
-    flow only). Returns null subscription for free / never-subscribed
-    users."""
+    never a live Stripe API call (those happen via the webhook flow
+    only). Returns null subscription for free / never-subscribed users.
+
+    Also returns a boolean `billing_available` flag the dashboard uses
+    to decide whether to enable upgrade buttons. The flag exposes only
+    yes/no — never which piece of configuration is missing."""
     u = auth.current_user()
     with _db.transaction() as conn:
         sub = _billing.active_subscription_for(conn, u.id)
     return jsonify({
         "user": u.public_dict(),
         "subscription": sub,
+        "billing_available": _billing_available(),
     })
 
 
@@ -1923,10 +1939,16 @@ def api_saved_searches_delete(sid: int):
 @app.get("/api/admin/sources/health")
 @auth.admin_required
 def api_admin_sources_health():
-    """Per-source health view. Reads source_health (written by the scheduler
-    on every tick) AND live in-memory SOURCE_DIAG for the very latest counts."""
+    """Per-source health + scheduler heartbeat for the admin dashboard.
+
+    Reads source_health and scheduler_state (both written by the
+    out-of-process scheduler), plus the current `billing_job_locks` row
+    for `job_name='scheduler'` so operators can see who's holding the
+    scheduler lease and when it expires."""
     rows: list[dict] = []
     enabled_ids = {s.SOURCE_ID for s in sources.iter_sources(CONFIG)}
+    import joblock as _joblock
+    sched_lock = _joblock.current_holder("scheduler") or {}
     with _db.transaction() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM source_health")
@@ -1951,28 +1973,35 @@ def api_admin_sources_health():
     return jsonify({
         "sources": rows,
         "scheduler": {
-            "last_tick_at":   sched.get("last_tick_at"),
-            "last_tick_secs": sched.get("last_tick_secs"),
-            "tick_counter":   sched.get("tick_counter"),
-            "enabled_sources": (sched.get("enabled_sources") or "").split(",")
-                               if sched.get("enabled_sources") else [],
+            "holder":           sched.get("holder") or sched_lock.get("holder"),
+            "lock_expires_at":  sched_lock.get("expires_at"),
+            "lock_acquired_at": sched_lock.get("acquired_at"),
+            "last_tick_at":     sched.get("last_tick_at"),
+            "last_tick_secs":   sched.get("last_tick_secs"),
+            "last_success_at":  sched.get("last_success_at"),
+            "last_error":       sched.get("last_error"),
+            "last_error_at":    sched.get("last_error_at"),
+            "tick_counter":     sched.get("tick_counter"),
+            "enabled_sources":  (sched.get("enabled_sources") or "").split(",")
+                                if sched.get("enabled_sources") else [],
         },
         "scorer": sniper.get_scorer_stats(),
         "db": _db.describe(),
     })
 
 
-@app.post("/api/admin/poll", endpoint="api_admin_poll")
-@auth.admin_required
-def api_admin_poll():
-    """Admin-only manual scrape trigger. Subscribers never hit this — they
-    read the centrally-maintained cache. Use sparingly; the scheduler runs
-    on its own tier schedule and is the production data path."""
-    only = request.args.get("source")
-    only_list = [s.strip() for s in only.split(",")] if only else None
-    return jsonify(sniper.poll_once(verbose=False,
-                                    only_sources=only_list,
-                                    force_all=True))
+# NOTE — Phase 2C.1 removed `POST /api/admin/poll`.
+#
+# Scraping is owned exclusively by the out-of-process scheduler service:
+#
+#     python3 -m jobs.scheduler
+#
+# (See DEPLOY.md for the systemd unit.) Web workers must NEVER call
+# sniper.poll_once — otherwise N gunicorn workers can race the scheduler
+# and the scrape source, fan out duplicate writes, and burn source quota.
+# Operators trigger an ad-hoc tick by SSH'ing to the host and running
+# `python3 -m jobs.scheduler --once` while the long-running scheduler is
+# stopped (the job lock prevents concurrent runs).
 
 
 # ---- Admin: shadow legacy settings/share/notify/import endpoints --------
