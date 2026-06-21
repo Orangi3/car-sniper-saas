@@ -1,0 +1,35 @@
+[Unit]
+Description=sniper source-polling scheduler (single instance, DB-leased)
+After=network-online.target postgresql.service sniper-migrate.service
+Requires=postgresql.service
+# NOT a hard Requires on sniper-web — scheduler can run with web down
+# (and should, during incident recovery). But it must NEVER run before
+# migrations have applied.
+Wants=sniper-migrate.service
+
+[Service]
+Type=simple
+User=sniper
+Group=sniper
+WorkingDirectory=/opt/sniper/current
+EnvironmentFile=/etc/sniper/env
+ExecStart=/opt/sniper/.venv/bin/python3 -m jobs.scheduler --interval 60
+Restart=on-failure
+RestartSec=10
+# Graceful shutdown: scheduler catches SIGTERM, finishes the current
+# tick, releases the DB lease, exits 0.
+TimeoutStopSec=120
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sniper /var/log/sniper
+
+[Install]
+# Intentionally NOT in WantedBy by default — install.sh leaves this
+# service disabled. Operator runs `systemctl enable --now
+# sniper-scheduler.service` after explicitly approving a staging-safe
+# source config (see DEPLOY.md and STAGING_RUNBOOK.md).
+WantedBy=multi-user.target

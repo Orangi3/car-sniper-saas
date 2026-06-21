@@ -1,0 +1,41 @@
+# Caddyfile — staging reverse proxy
+#
+# Substitute __STAGING_HOSTNAME__ → your real hostname before installing,
+# or let install.sh do it via `sed -i "s/__STAGING_HOSTNAME__/$HOST/g"`.
+#
+# Caddy fetches a Let's Encrypt certificate automatically on first
+# request after the A record resolves to this host.
+
+__STAGING_HOSTNAME__ {
+    encode zstd gzip
+
+    # Health probe (Healthchecks.io and Stripe sanity hits) — uncached.
+    @health path /health
+    handle @health {
+        reverse_proxy 127.0.0.1:8765
+    }
+
+    # Stripe webhook MUST never be cached or redirected; pass the raw
+    # body straight through. Caddy preserves the body by default.
+    @webhook path /api/billing/webhook
+    handle @webhook {
+        reverse_proxy 127.0.0.1:8765 {
+            header_up X-Forwarded-Proto https
+        }
+    }
+
+    # Everything else
+    handle {
+        reverse_proxy 127.0.0.1:8765 {
+            header_up X-Forwarded-Proto https
+        }
+    }
+
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 10MiB
+            roll_keep 7
+        }
+        format console
+    }
+}

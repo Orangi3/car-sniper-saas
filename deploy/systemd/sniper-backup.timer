@@ -1,0 +1,11 @@
+[Unit]
+Description=daily trigger for sniper Postgres backup
+
+[Timer]
+OnCalendar=*-*-* 04:23:00
+RandomizedDelaySec=600
+Persistent=true
+Unit=sniper-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=external sniper /health probe → Healthchecks.io
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=sniper
+Group=sniper
+EnvironmentFile=/etc/sniper/env
+# Hit our own /health through Caddy (so TLS + reverse-proxy paths are
+# exercised). On HTTP 200 ping Healthchecks.io. If web is down, do NOT
+# ping — that lets the dead-man timer fire after 11 minutes.
+ExecStart=/bin/sh -c 'curl -fsS -m 8 "https://${STAGING_HOSTNAME:-127.0.0.1}/health" >/dev/null && test -n "$HEALTHCHECK_WEB_URL" && curl -fsS -m 10 "$HEALTHCHECK_WEB_URL" >/dev/null'
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict

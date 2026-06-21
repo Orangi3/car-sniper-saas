@@ -1,0 +1,20 @@
+[Unit]
+Description=sniper billing reconciliation (internal CLI, no HTTP)
+After=network-online.target postgresql.service sniper-migrate.service
+
+[Service]
+Type=oneshot
+User=sniper
+Group=sniper
+WorkingDirectory=/opt/sniper/current
+EnvironmentFile=/etc/sniper/env
+ExecStart=/opt/sniper/.venv/bin/python3 -m jobs.reconcile_billing
+# Ping Healthchecks.io on success (URL is loaded from env, never logged).
+ExecStartPost=-/bin/sh -c 'test -n "$HEALTHCHECK_RECONCILE_URL" && curl -fsS -m 10 "$HEALTHCHECK_RECONCILE_URL" >/dev/null || true'
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sniper /var/log/sniper

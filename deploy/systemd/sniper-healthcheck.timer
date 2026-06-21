@@ -1,0 +1,11 @@
+[Unit]
+Description=5-minute trigger for sniper health probe
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=sniper-healthcheck.service
+
+[Install]
+WantedBy=timers.target

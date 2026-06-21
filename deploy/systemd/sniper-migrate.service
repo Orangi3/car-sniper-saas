@@ -1,0 +1,23 @@
+[Unit]
+Description=sniper schema migrations (one-shot, runs before web + scheduler)
+After=network-online.target postgresql.service
+Requires=postgresql.service
+Before=sniper-web.service sniper-scheduler.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+User=sniper
+Group=sniper
+WorkingDirectory=/opt/sniper/current
+EnvironmentFile=/etc/sniper/env
+ExecStart=/opt/sniper/.venv/bin/python3 -m migrations.runner
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sniper /var/log/sniper
+
+[Install]
+WantedBy=multi-user.target

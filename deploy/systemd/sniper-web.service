@@ -1,0 +1,37 @@
+[Unit]
+Description=sniper web (gunicorn, HTTP only — never owns the scheduler)
+After=network-online.target postgresql.service sniper-migrate.service
+Requires=postgresql.service
+# Hard-block start until migrations succeeded — the app's own schema
+# sanity check would refuse to start anyway, but failing here gives a
+# cleaner systemctl status output.
+Wants=sniper-migrate.service
+
+[Service]
+Type=simple
+User=sniper
+Group=sniper
+WorkingDirectory=/opt/sniper/current
+EnvironmentFile=/etc/sniper/env
+# GUNICORN_WORKERS lives in /etc/sniper/env (default 3 — tune AFTER
+# observing CPU/RSS/request load; do NOT hard-code as a correctness req).
+ExecStart=/opt/sniper/.venv/bin/gunicorn server:app \
+            --workers ${GUNICORN_WORKERS} \
+            --bind 127.0.0.1:8765 \
+            --access-logfile /var/log/sniper/web-access.log \
+            --error-logfile  /var/log/sniper/web-error.log \
+            --timeout 30 \
+            --graceful-timeout 30
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sniper /var/log/sniper
+
+[Install]
+WantedBy=multi-user.target
