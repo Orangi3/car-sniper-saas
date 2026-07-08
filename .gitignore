@@ -44,3 +44,12 @@ cloudflared.tgz
 .vscode/
 .idea/
 *.swp
+
+# Gate 0 local tooling (no secrets, keep out of git)
+STAGING-SECRETS-SETUP.command
+.staging-secrets-status.txt
+EXPORT-SSH-PUBKEY.command
+.ssh-pubkey.txt
+RUN-ALL-TESTS.command
+.pytest-ui-demo.log
+FIX-GIT-LOCK.command
