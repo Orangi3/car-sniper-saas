@@ -45,6 +45,21 @@ Outcome labels: `genuine_opportunity`, `weak_opportunity`, `bad_comparison`,
 Every metric reports its sample size; below 20 it is flagged
 `enough_samples: false`.
 
+## First real listings (cohort)
+
+When a source first delivers real listings (eBay, seller submissions, …):
+
+1. `python -m evaluation cohort --source ebay --n 100 --snapshot --sheet review.csv`
+   prints validity, field completeness, duplicate rate, comparable coverage,
+   confidence mix, potential-deal rate and the conservative profit-estimate
+   distribution, records each listing for review, and writes `review.csv`.
+2. A person opens each listing, fills `outcome_label` (see the list above)
+   and `labeled_by`, then `python -m evaluation import review.csv`.
+3. Re-run `cohort` for precision of potential deals among reviewed ones,
+   and `report` for latency and valuation error.
+
+Profit figures are estimates from asking-price comparables, not outcomes.
+
 ## Running a beta evaluation
 
 1. Territory and window: e.g. 35401 + 75 mi, 4 weeks.

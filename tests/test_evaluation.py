@@ -108,3 +108,50 @@ def test_valuation_error_not_claimed_without_sales(app):
     evaluation.label("craigslist", "x1", "genuine_opportunity")
     r = evaluation.report()
     assert r["valuation_error"] == {"n": 0, "why": "no confirmed sale amounts recorded"}
+
+
+def test_first_listings_cohort_and_review_round_trip(app, world, tmp_path):
+    import csv
+    import evaluation
+    import sniper
+    sniper.ingest([L("c1", 6500), L("c2", 9900), L("c3", 7000, source="ebay")])
+    score_all()
+    sheet = tmp_path / "review.csv"
+    r = evaluation.cohort("craigslist", n=100, snapshot_rows=True, sheet=str(sheet))
+    assert r["listings"] == 12 and r["valid_pct"] == 100.0       # 10 peers + 2 new
+    assert r["comparable_coverage_pct"] > 0 and r["field_completeness_pct"]["price"] == 100.0
+    assert 0 < r["potential_deal_rate_pct"] < 100
+    assert r["conservative_profit_estimate"]["n"] >= 1
+    assert r["precision_of_potential_deals"]["denominator"] == 0  # nobody reviewed yet
+    assert r["snapshotted"] == 12 and "not realized profit" in r["note"]
+    rows = list(csv.DictReader(open(sheet)))
+    assert len(rows) == 12 and rows[0]["outcome_label"] == ""
+    # a person labels the sheet and imports it back
+    for row in rows:
+        if row["source_listing_id"] == "c1":
+            row["outcome_label"], row["labeled_by"] = "genuine_opportunity", "owner"
+    with open(sheet, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+    assert evaluation.import_csv(str(sheet)) == 12
+    r2 = evaluation.cohort("craigslist", n=100)
+    assert r2["reviewed_potential_deals"] == 1
+    assert r2["precision_of_potential_deals"]["value"] == 1.0
+    assert evaluation.cohort("nosuchsource") == {"listings": 0,
+                                                  "why": "no listings from this source yet"}
+
+
+def test_reimported_review_sheet_keeps_system_estimates(app, world, tmp_path):
+    import evaluation
+    import sniper
+    import db
+    sniper.ingest([L("k1", 6500)]); score_all()
+    sheet = tmp_path / "s.csv"
+    evaluation.cohort("craigslist", snapshot_rows=True, sheet=str(sheet))
+    with db.session() as c:
+        before = c.execute("SELECT est_profit FROM eval_observations WHERE "
+                           "source_listing_id = 'k1'").fetchone()[0]
+    evaluation.import_csv(str(sheet))
+    with db.session() as c:
+        after = c.execute("SELECT est_profit FROM eval_observations WHERE "
+                          "source_listing_id = 'k1'").fetchone()[0]
+    assert before is not None and after == before
