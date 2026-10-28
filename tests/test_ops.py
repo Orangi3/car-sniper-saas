@@ -55,11 +55,32 @@ def test_ops_reflects_real_pipeline_activity(client, ebay_feed, monkeypatch):
     assert ebay["listings_first_seen_in_window"] == 1
     assert ebay["last_live_probe"]["origin"] == "test"
     di = d["deal_intelligence"]
-    assert di["qualified_deals"] >= 1 and di["subscriber_matches"] == 1
-    assert di["qualified_deals"] <= di["trusted_valuations"]
+    f = di["funnel"]
+    assert f["discovered"] >= 11 and f["scored"] >= f["valued"] >= f["potential_opportunities"] >= 1
+    assert f["potential_opportunities"] <= di["trusted_valuations"]
+    assert f["high_confidence_opportunities"] == 0       # asking prices only
+    assert f["manually_verified"] == 0                    # nobody reviewed anything
+    assert di["subscriber_matches"] == 1
+    assert all(t["conservative_profit"] > 0 for t in di["top_by_conservative_profit"])
     assert di["notifications"]["delivered_to_provider"] >= 1
     top = di["top_by_conservative_profit"][0]
     assert top["composite_id"] == "ebay:v1|600|0" and top["conservative_profit"] is not None
     assert isinstance(di["mean_comparable_quality"], float)
     assert d["costs"]["hosting"] == {"value": 44.0, "basis": "configured"}
     assert d["costs"]["notifications_this_month"]["push"]["sent"] >= 1
+
+
+def test_only_human_labels_count_as_manually_verified(client, ebay_feed):
+    import evaluation
+    make_user(client, "b2@example.com", searches=[("camry", {"max_price": 9000})])
+    ebay_feed["items"] = [_ebay_item("v1|601|0", 6900)]
+    _poll(); score_all()
+    evaluation.import_csv(str(__import__("pathlib").Path(__file__).parent / "fixtures"
+                              / "eval_samples_FIXTURE.csv"), fixture=True)
+    _admin(client)
+    assert client.get("/api/admin/ops").get_json()["deal_intelligence"]["funnel"][
+        "manually_verified"] == 0                           # fixture rows never count
+    evaluation.snapshot("ebay:v1|601|0")
+    evaluation.label("ebay", "v1|601|0", "genuine_opportunity", labeled_by="owner")
+    assert client.get("/api/admin/ops").get_json()["deal_intelligence"]["funnel"][
+        "manually_verified"] == 1

@@ -58,10 +58,16 @@ fetch("/api/admin/ops").then(r => { if (!r.ok) throw new Error("HTTP " + r.statu
        <td>${s.last_live_probe.unavailable ? '<span class="na">none</span>' : `${esc(s.last_live_probe.status)} · ${esc(s.last_live_probe.listings)} listings<div class="muted">${esc(s.last_live_probe.checked_at)}</div>`}</td></tr>`)) +
     `<p class="muted">Duplicates rejected per poll: ${val(dh.duplicates_rejected_per_poll)}</p>`;
   const di = d.deal_intelligence, n = di.notifications;
-  document.getElementById("deals").innerHTML += `<div class="kpi"><div><b>${di.qualified_deals}</b>qualified (${di.window_hours}h)</div><div><b>${di.trusted_valuations}</b>trusted</div><div><b>${di.valued_listings}</b>valued</div><div><b>${di.subscriber_matches}</b>subscriber matches</div><div><b>${n.delivered_to_provider}</b>alerts delivered</div><div><b class="${n.failed_permanently ? "bad" : ""}">${n.failed_permanently}</b>failed</div></div>` +
+  const f = di.funnel;
+  document.getElementById("deals").innerHTML += `<p class="muted">Last ${di.window_hours}h. Potential = trusted valuation and profitable in the conservative estimate; only "manually verified" has been checked by a person.</p>` +
+    table(["Funnel", ""], [["Discovered", f.discovered], ["Scored", f.scored], ["Valued", f.valued],
+      ["Potential opportunities (estimated)", f.potential_opportunities],
+      ["High-confidence (completed-sale evidence)", f.high_confidence_opportunities],
+      ["Manually verified", f.manually_verified]].map(([k, v]) => `<tr><td>${esc(k)}</td><td class="r"><b>${esc(v)}</b></td></tr>`)) +
+    `<div class="kpi"><div><b>${di.subscriber_matches}</b>subscriber matches</div><div><b>${n.delivered_to_provider}</b>alerts delivered</div><div><b class="${n.failed_permanently ? "bad" : ""}">${n.failed_permanently}</b>failed</div></div>` +
     (di.top_by_conservative_profit.length ? table(["Vehicle", "Price", "Conservative", "Confidence"], di.top_by_conservative_profit.map(t =>
       `<tr><td>${esc(t.vehicle)}<div class="muted">${esc(t.source)} · ${esc(t.comps)} comps</div></td><td class="r">${money(t.price)}</td><td class="r">${money(t.conservative_profit)}</td><td>${esc(t.confidence)}</td></tr>`))
-      : '<p class="na">No qualified deals in this window.</p>') +
+      : '<p class="na">No potential opportunities in this window.</p>') +
     `<p class="muted">Confidence: ${esc(JSON.stringify(di.by_confidence))} · evidence: ${esc(JSON.stringify(di.by_evidence_class))} · comparable quality: ${val(di.mean_comparable_quality)}<br>${esc(di.profit_basis)}. ${esc(n.note)}.</p>`;
   const sh = d.system_health, q = sh.queue.totals;
   document.getElementById("system").innerHTML += `<div class="kpi"><div><b>${q.pending}</b>queued</div><div><b>${q.running}</b>running</div><div><b class="${q.dead ? "bad" : ""}">${q.dead}</b>dead</div></div>` +

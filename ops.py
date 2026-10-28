@@ -99,18 +99,37 @@ def deal_intelligence(conn, window_h: int = 24, top: int = 5) -> dict:
                                "base_profit": pr["scenarios"]["base"]["profit"],
                                "confidence": r["confidence"], "comps": r["comp_n"]})
     ranked.sort(key=lambda d: -d["conservative_profit"])
+    potential = [d for d in ranked if d["conservative_profit"] > 0]
+    discovered = int(conn.execute("SELECT COUNT(*) FROM listings WHERE first_seen_at >= ?",
+                                  (since,)).fetchone()[0])
+    verified = int(conn.execute(
+        "SELECT COUNT(*) FROM eval_observations WHERE is_fixture = FALSE AND updated_at >= ? "
+        "AND outcome_label IN ('genuine_opportunity', 'purchased_profit_verified')",
+        (since,)).fetchone()[0])
+    funnel = {
+        "discovered": discovered,
+        "scored": len(rows),
+        "valued": sum(1 for r in rows if r["value_mid"]),
+        # trusted valuation AND profitable in the conservative scenario — an
+        # ESTIMATE from the evidence we have, not a verified deal
+        "potential_opportunities": len(potential),
+        # needs completed-sale evidence (confidence 'high' is impossible on
+        # asking prices alone, by design)
+        "high_confidence_opportunities": sum(1 for d in potential if d["confidence"] == "high"),
+        # a person reviewed the listing and labeled it a genuine opportunity
+        "manually_verified": verified,
+    }
     jobs = {(r[0]): int(r[1]) for r in conn.execute(
         "SELECT status, COUNT(*) FROM jobs WHERE kind = 'notify' AND created_at >= ? "
         "GROUP BY status", (since,))}
     return {
         "window_hours": window_h, "valued_listings": len(rows),
+        "funnel": funnel,
         "trusted_valuations": sum(1 for r in rows if r["trust"] == "trusted"),
-        # qualified = trusted AND profitable even in the conservative scenario
-        "qualified_deals": sum(1 for d in ranked if d["conservative_profit"] > 0),
         "by_confidence": by_conf, "by_evidence_class": by_ev,
         "mean_comparable_quality": (round(sum(quality) / len(quality), 1) if quality
                                     else _na("no valuation with comparable quality yet")),
-        "top_by_conservative_profit": ranked[:top],
+        "top_by_conservative_profit": potential[:top],
         "profit_basis": "default assumptions (profit.DEFAULTS); estimates, not outcomes",
         "owner_alerts": int(conn.execute("SELECT COUNT(*) FROM alerts WHERE created_at >= ?",
                                          (since,)).fetchone()[0]),
