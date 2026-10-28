@@ -1,0 +1,7 @@
+source,source_listing_id,posted_at,posted_at_kind,detected_at,alert_enqueued_at,notified_at,asking_price,est_value,est_profit,evidence_class,confidence,alerted,in_reference_set,buyer_action,seller_contacted,sold_confirmed,sale_amount,realized_profit,outcome_label,labeled_by,notes
+fixture,f1,2026-10-01T10:00:00+00:00,seller_posted,2026-10-01T10:04:00+00:00,2026-10-01T10:04:30+00:00,2026-10-01T10:04:40+00:00,7000,10000,2150,asking_comparables,high,1,1,purchased,1,1,9800,1900,purchased_profit_verified,fixture,SYNTHETIC ROW
+fixture,f2,2026-10-02T09:00:00+00:00,seller_posted,2026-10-02T09:10:00+00:00,2026-10-02T09:10:20+00:00,2026-10-02T09:10:31+00:00,8200,10500,1450,asking_comparables,medium,1,1,contacted,1,,,,genuine_opportunity,fixture,SYNTHETIC ROW
+fixture,f3,2026-10-03T12:00:00+00:00,seller_posted,2026-10-03T12:20:00+00:00,2026-10-03T12:20:10+00:00,2026-10-03T12:20:22+00:00,5000,9000,3150,asking_comparables,medium,1,1,viewed,,,,,mechanical_condition_problem,fixture,SYNTHETIC ROW
+fixture,f4,2026-10-04T08:00:00+00:00,seller_posted,2026-10-04T08:02:00+00:00,,,9500,9800,,asking_comparables,high,0,1,none,,,,,weak_opportunity,fixture,SYNTHETIC ROW
+fixture,f5,2026-10-05T08:00:00+00:00,seller_posted,2026-10-05T08:30:00+00:00,,,6500,9200,,asking_comparables,low,0,1,none,,,,,genuine_opportunity,fixture,SYNTHETIC ROW (missed: low confidence)
+fixture,f6,,unknown,2026-10-06T08:00:00+00:00,2026-10-06T08:00:15+00:00,,4000,9000,,asking_comparables,medium,1,0,viewed,,,,,listing_unavailable,fixture,SYNTHETIC ROW

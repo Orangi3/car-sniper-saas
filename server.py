@@ -2429,6 +2429,15 @@ def api_admin_usage():
     return jsonify({"since": month, "rows": rows, "jobs": jq})
 
 
+@app.get("/api/admin/eval/report")
+@auth.admin_required
+def api_admin_eval_report():
+    """Real-world evaluation metrics (evaluation.py). ?fixtures=1 includes
+    synthetic demo rows and labels the report accordingly."""
+    import evaluation
+    return jsonify(evaluation.report(include_fixtures=request.args.get("fixtures") == "1"))
+
+
 @app.get("/m")
 def mobile_page():
     if not auth.current_user():
