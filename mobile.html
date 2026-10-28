@@ -291,39 +291,77 @@ async function showSetup() {
 
 async function renderSell() {
   const box = $("#sell-card");
-  let s;
+  let s, c;
   try { s = await api("/api/seller/listings"); } catch (e) { return; }
   if (!s.enabled) return;
+  try { c = await api("/api/seller/contact"); } catch (e) { c = {email: "", verified: false}; }
+  const label = {pending: "waiting for email confirmation", active: "live",
+                 expired: `hidden — confirm it's still for sale`};
   const mine = s.listings.map(l => `<div class="card pad row"><div><b>${esc(l.title)}</b>
-      <div class="muted">${money(l.price)} · ${Number(l.odometer || 0).toLocaleString()} mi · ${esc(l.zip)}${l.value_mid ? ` · est. value ${money(l.value_mid)} (${esc(l.confidence)})` : ""}</div></div>
-      <button class="btn" style="flex:0 0 auto" data-unlist="${Number(l.id)}">Remove</button></div>`).join("");
-  box.innerHTML = `<h3>Selling a car?</h3>${mine}<details class="card pad"><summary>List your car — buyers near you get alerted</summary>
+      <div class="muted">${money(l.price)} · ${Number(l.odometer || 0).toLocaleString()} mi · ${esc(l.zip)} · <b>${esc(label[l.status] || l.status)}</b>${l.value_mid ? ` · est. value ${money(l.value_mid)} (${esc(l.confidence)})` : ""}</div></div>
+      <div style="flex:0 0 auto;display:flex;flex-direction:column;gap:6px">
+      ${l.status === "expired" ? `<button class="btn" data-renew="${Number(l.id)}">Still for sale</button>` : ""}
+      <button class="btn" data-unlist="${Number(l.id)}">Remove</button></div></div>`).join("");
+  const contact = c.verified
+    ? `<p class="notice">Contact email <b>${esc(c.email)}</b> is confirmed. Paid buyers can see it on your listings.</p>`
+    : `<div class="card pad"><b>Confirm your contact email to publish</b>
+       <p class="muted">Listings stay hidden until you confirm the email buyers will use to reach you. Confirming proves you control the address — it doesn't verify the car.</p>
+       <label>Contact email</label><input id="c-email" type="email" value="${esc(c.email)}">
+       <button class="btn primary" id="c-send" style="width:100%;margin-top:8px">Email me a confirmation link</button>
+       <div class="err" id="c-err"></div></div>`;
+  box.innerHTML = `<h3>Selling a car?</h3>${contact}${mine}<details class="card pad"><summary>List your car — buyers near you get alerted</summary>
     <div class="grid2"><div><label>Year</label><input id="s-year" type="number"></div><div><label>Mileage</label><input id="s-mileage" type="number"></div></div>
     <div class="grid2"><div><label>Make</label><input id="s-make"></div><div><label>Model</label><input id="s-model"></div></div>
     <div class="grid2"><div><label>Trim (optional)</label><input id="s-trim"></div><div><label>Asking price ($)</label><input id="s-price" type="number"></div></div>
     <div class="grid2"><div><label>ZIP where the car is</label><input id="s-zip" inputmode="numeric" maxlength="5"></div>
-      <div><label>Title</label><select id="s-title_status"><option>clean</option><option>rebuilt</option><option>salvage</option><option>unknown</option></select></div></div>
+      <div><label>Title</label><select id="s-title_status"><option value="">choose…</option><option>clean</option><option>rebuilt</option><option>salvage</option><option value="unknown">not sure</option></select></div></div>
     <label>VIN (optional, helps buyers)</label><input id="s-vin" maxlength="17">
-    <label>Description</label><textarea id="s-description" rows="3" maxlength="2000"></textarea>
+    <label>Known mechanical problems</label><textarea id="s-mechanical_issues" rows="2" maxlength="1000" placeholder="none known"></textarea>
+    <label>Known cosmetic problems</label><textarea id="s-cosmetic_issues" rows="2" maxlength="1000" placeholder="none known"></textarea>
+    <label>Anything else (optional)</label><textarea id="s-description" rows="2" maxlength="2000"></textarea>
     <label><input type="checkbox" id="a1"> I own this car or am authorized to sell it</label>
     <label><input type="checkbox" id="a2"> The details above are accurate</label>
-    <label><input type="checkbox" id="a3"> Car Sniper buyers on paid plans may see my account email to contact me</label>
-    <p class="muted">You can remove the listing at any time. Up to ${Number(s.limits.active)} active listings.</p>
+    <label><input type="checkbox" id="a3"> Car Sniper buyers on paid plans may see my contact email to reach me</label>
+    <p class="muted">Remove it any time. Listings hide after ${Number(s.limits.confirm_days)} days unless you confirm they're still for sale. Up to ${Number(s.limits.active)} listings.</p>
     <button class="btn primary" id="s-submit" style="width:100%">List my car</button><div class="err" id="s-err"></div></details>`;
   box.querySelectorAll("[data-unlist]").forEach(b => b.onclick = async () => {
     if (!confirm("Remove this listing? It disappears for all buyers.")) return;
     try { await api("/api/seller/listings/" + b.dataset.unlist, {method: "DELETE"}); renderSell(); }
     catch (e) { alert(e.message); }
   });
+  box.querySelectorAll("[data-renew]").forEach(b => b.onclick = async () => {
+    try { await post("/api/seller/listings/" + b.dataset.renew + "/renew", {}); renderSell(); }
+    catch (e) { alert(e.message); }
+  });
+  const send = $("#c-send");
+  if (send) send.onclick = async () => {
+    send.disabled = true;
+    try { const r = await post("/api/seller/contact", {email: $("#c-email").value});
+          $("#c-err").textContent = r.sent ? "Check your inbox for the link (it works once, for 24 hours)." : ""; }
+    catch (e) { $("#c-err").textContent = e.message; send.disabled = false; }
+  };
   $("#s-submit").onclick = async () => {
     const body = {attest: {authorized_to_sell: $("#a1").checked, details_accurate: $("#a2").checked,
                            share_contact_with_buyers: $("#a3").checked}};
-    ["year", "mileage", "make", "model", "trim", "price", "zip", "title_status", "vin", "description"]
-      .forEach(k => body[k] = $("#s-" + k).value);
+    ["year", "mileage", "make", "model", "trim", "price", "zip", "title_status", "vin",
+     "mechanical_issues", "cosmetic_issues", "description"].forEach(k => body[k] = $("#s-" + k).value);
     $("#s-submit").disabled = true;
     try { await post("/api/seller/listings", body); renderSell(); }
     catch (e) { $("#s-err").textContent = ((e.body && e.body.errors) || [e.message]).join("; "); $("#s-submit").disabled = false; }
   };
+}
+
+async function verifyFromLink() {
+  // the link is /m#verify=<token>: the fragment never reaches the server logs
+  const m = location.hash.match(/^#verify=([A-Za-z0-9_-]+)$/);
+  if (!m) return false;
+  history.replaceState(null, "", "/m");
+  let msg;
+  try { const r = await post("/api/seller/contact/verify", {token: m[1]});
+        msg = `Email confirmed. ${r.published ? r.published + " listing(s) published." : ""}`; }
+  catch (e) { msg = e.message; }
+  $("#main").insertAdjacentHTML("beforebegin", `<p class="notice" style="margin:10px 12px">${esc(msg)}</p>`);
+  return true;
 }
 
 async function renderPlan() {
@@ -456,9 +494,12 @@ $("#sheet-back").onclick = () => { $("#sheet").classList.remove("open"); if (FEE
               $("#plan").textContent = {free: "Free", starter: "Lite", pro: "Pro"}[p] || p; } catch (x) {}
       }, wait);
     }
+    const verifying = await verifyFromLink();
+    // a link opened in a tab that already shows /m only changes the fragment
+    window.addEventListener("hashchange", async () => { if (await verifyFromLink()) showFeed("setup"); });
     let n = 0;
     try { n = (await api("/api/saved_searches")).length; } catch (e) {}
-    showFeed(n ? "mine" : "setup");
+    showFeed(verifying ? "setup" : (n ? "mine" : "setup"));
   } catch (e) { $("#main").innerHTML = `<div class="empty err">${esc(e.message)}</div>`; }
 })();
 </script>

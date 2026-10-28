@@ -2176,14 +2176,21 @@ def _deal_row(r: dict, psettings: dict, plan: Optional[str],
     return d
 
 
-def _display_limits() -> dict[str, int]:
+def _display_limits() -> dict:
     """source -> max hours since last confirmed by a poll, for sources whose
-    terms limit how stale displayed data may be (eBay: 6 h)."""
-    return {m.SOURCE_ID: m.DISPLAY_MAX_AGE_HOURS for m in sources.all_sources()
-            if getattr(m, "DISPLAY_MAX_AGE_HOURS", None)}
+    terms limit how stale displayed data may be (eBay: 6 h); plus the set of
+    seller listings that are currently discoverable (seller_listings)."""
+    import seller_listings as sl
+    out: dict = {m.SOURCE_ID: m.DISPLAY_MAX_AGE_HOURS for m in sources.all_sources()
+                 if getattr(m, "DISPLAY_MAX_AGE_HOURS", None)}
+    with sniper.db() as conn:
+        out["__direct__"] = sl.discoverable_ids(conn)
+    return out
 
 
-def _displayable(d: dict, limits: dict[str, int]) -> bool:
+def _displayable(d: dict, limits: dict) -> bool:
+    if d.get("source") == "direct":
+        return d.get("composite_id") in limits.get("__direct__", set())
     hrs = limits.get(d.get("source"))
     if not hrs:
         return True
@@ -2323,7 +2330,9 @@ def api_deal_detail(cid: str):
         import seller_listings as sl
         with sniper.db() as conn:
             d["seller_contact"] = sl.contact_for(conn, d["composite_id"], plan)
-        d["provenance"] = "Listed on Car Sniper by the seller; details not independently verified."
+        d["provenance"] = ("Listed on Car Sniper by the seller. The seller's email address is "
+                           "verified; the vehicle details are seller-reported and not "
+                           "independently verified.")
     return jsonify(d)
 
 
@@ -2496,7 +2505,8 @@ def api_seller_mine():
     import seller_listings as sl
     return jsonify({"enabled": sl.enabled(), "listings": sl.mine(auth.current_user()) if sl.enabled() else [],
                     "limits": {"active": sl.MAX_ACTIVE_PER_USER,
-                               "per_day": sl.MAX_NEW_PER_USER_PER_DAY}})
+                               "per_day": sl.MAX_NEW_PER_USER_PER_DAY,
+                               "confirm_days": sl.CONFIRM_DAYS}})
 
 
 @app.post("/api/seller/listings")
@@ -2505,6 +2515,54 @@ def api_seller_create():
     import seller_listings as sl
     try:
         return jsonify(sl.create(auth.current_user(), request.get_json(silent=True) or {})), 201
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+def _origin() -> str:
+    return (os.environ.get("BILLING_ORIGIN") or request.host_url).rstrip("/")
+
+
+@app.get("/api/seller/contact")
+@auth.login_required
+def api_seller_contact():
+    import mailer
+    import seller_listings as sl
+    with sniper.db() as conn:
+        c = sl.contact(conn, auth.current_user())
+    return jsonify({**c, "email_delivery": mailer.configured()})
+
+
+@app.post("/api/seller/contact")
+@auth.login_required
+def api_seller_contact_set():
+    """Set (or keep) the contact address and email a verification link."""
+    import seller_listings as sl
+    u = auth.current_user()
+    try:
+        sl.set_contact(u, (request.get_json(silent=True) or {}).get("email"))
+        return jsonify(sl.send_verification(u, _origin()))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.post("/api/seller/contact/verify")
+@auth.login_required
+def api_seller_contact_verify():
+    import seller_listings as sl
+    try:
+        return jsonify(sl.verify(auth.current_user(),
+                                 (request.get_json(silent=True) or {}).get("token")))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.post("/api/seller/listings/<int:sid>/renew")
+@auth.login_required
+def api_seller_renew(sid: int):
+    import seller_listings as sl
+    try:
+        return jsonify(sl.renew(auth.current_user(), sid))
     except sl.SubmissionError as e:
         return _seller_err(e)
 
