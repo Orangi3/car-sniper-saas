@@ -9,6 +9,9 @@ Runs two ways:
 - **Personal / local** (macOS, SQLite): double-click `START HERE.command`.
 - **Paid SaaS** (Linux, PostgreSQL, systemd): see `LAUNCH_CHECKLIST.md`,
   `DEPLOY.md` and `RUNBOOK.md`. Requires `SNIPER_COMMERCIAL_MODE=1`.
+  `python -m preflight` says what a deployment is actually ready for.
+- Business docs: `DATA_PROVIDER_DECISION.md`, `UNIT_ECONOMICS.md`,
+  `OWNER_ACTIONS.md`, `EVALUATION.md`.
 
 > **Data licensing matters.** Several sources this tool can read (Craigslist,
 > RSS feeds, scraped sold-price pages, the owner's own browser and inbox) are
@@ -48,7 +51,8 @@ See `SOURCES.md` for the full coverage + licensing table. Summary:
 | Craigslist (by owner) | implemented, terms prohibit automated collection | off |
 | Bring a Trailer, Hemmings, GovDeals RSS | implemented, redistribution permission unverified | off |
 | eBay Motors (Browse API) | implemented, needs `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | on |
-| MarketCheck (dealer inventory API, paid) | implemented, needs `MARKETCHECK_API_KEY` | on |
+| **MarketCheck private sellers (FSBO API, paid)** | implemented, fixture-tested; needs `MARKETCHECK_API_KEY` **and a signed agreement** (`MARKETCHECK_COMMERCIAL_AGREEMENT`) | off until agreement |
+| MarketCheck dealer inventory (retail asks, paid) | implemented; same agreement requirement | off until agreement |
 | Browser extension / email digests | owner's personal data only | off |
 | Cars & Bids, Copart, IAA, GSA, PublicSurplus | stubs (no code) | — |
 

@@ -157,7 +157,7 @@ def run() -> dict:
                  f"unverified — {h.get('status') or 'never polled'}"
                  + (f": {h.get('status_reason')}" if h.get("status_reason") else ""))
         add("providers", sid, OK if verified else WARN,
-            state + (f"; config: {issue}" if issue else ""))
+            state + (f"; config: {issue}" if issue and issue not in state else ""))
         if block:
             add("licensing", sid, WARN, block)
         elif verified:
@@ -211,12 +211,13 @@ def main(argv=None) -> int:
         print(json.dumps(r, indent=2))
     else:
         mark = {OK: "✓", WARN: "!", FAIL: "✗"}
-        cat = None
-        for c in r["checks"]:
-            if c["category"] != cat:
-                cat = c["category"]
+        order = ("config", "infrastructure", "providers", "licensing", "data", "payments")
+        for cat in order:
+            items = [c for c in r["checks"] if c["category"] == cat]
+            if items:
                 print(f"\n[{cat}]")
-            print(f"  {mark[c['status']]} {c['check']}: {c['detail']}")
+            for c in items:
+                print(f"  {mark[c['status']]} {c['check']}: {c['detail']}")
         print(f"\nREADY FOR: {r['ready_for'].replace('_', ' ').upper()}")
         for lvl, items in r["blockers"].items():
             print(f"  blocking {lvl.replace('_', ' ')}:")

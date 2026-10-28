@@ -1,5 +1,34 @@
 # Release readiness — controlled paid beta
 
+## Update 2 (branch `feat/commercial-launch-readiness`, 2026-10-28)
+
+**Verdict: GO FOR PRIVATE INTERNAL TESTING.** Not yet a free or paid beta.
+
+`python -m preflight` (real run, scratch DB, after a real scheduler tick)
+reports **READY FOR: PRIVATE INTERNAL TESTING**, blocked from a controlled
+free beta by: no source licensed for commercial use has delivered listings
+(MarketCheck needs credentials **and** a signed agreement; eBay needs
+credentials), commercial mode off, no HTTPS origin.
+
+| Criterion | Status |
+|---|---|
+| CI green on GitHub | ✓ run 40730382632 (SQLite, Postgres, browser smoke) for the CI fix; later commits verified in the PR |
+| Infrastructure (DB, migrations, scheduler, worker, recovery) | ✓ tested on SQLite + PostgreSQL 16 |
+| Licensed private-party data | ✗ MarketCheck FSBO adapter built and fixture-tested; fail-closed until agreement + key |
+| Real-world deal-finding performance | ✗ unmeasured — harness built (`EVALUATION.md`), no real observations yet |
+| Unit economics | Base break-even ~107 subscribers in one territory (`UNIT_ECONOMICS.md`) |
+| Payments | test-mode only; live products are an owner action |
+
+Changes this round: safe_http dual-stack fix (CI), MarketCheck FSBO adapter
++ provider call budgets + `requires_agreement` licensing, eBay Browse
+geography fix, ZIP/radius territories, explainable risk-adjusted ranking,
+dealer-comparable haircut, evaluation harness, preflight, owner actions.
+See `DATA_PROVIDER_DECISION.md`, `UNIT_ECONOMICS.md`, `OWNER_ACTIONS.md`.
+
+---
+
+## Original assessment (branch `feat/production-beta`)
+
 Branch `feat/production-beta` (from `fix/alert-pipeline-upgrade` @ `49cbd78`).
 Date: 2026-10-28.
 
