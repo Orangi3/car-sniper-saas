@@ -21,6 +21,7 @@ import os
 
 import requests
 
+from . import health
 from .base import (NormalizedListing, extract_make_model, extract_miles)
 
 SOURCE_ID = "marketcheck"
@@ -30,9 +31,13 @@ ACTIVE_URL = "https://api.marketcheck.com/v2/search/car/active"
 
 
 def enabled(cfg: dict) -> bool:
-    has_key = bool(os.environ.get("MARKETCHECK_API_KEY"))
-    src_cfg = cfg.get("sources", {}).get(SOURCE_ID, {})
-    return src_cfg.get("enabled", True) and has_key
+    return cfg.get("sources", {}).get(SOURCE_ID, {}).get("enabled", True)
+
+
+def config_issue(cfg: dict):
+    if not os.environ.get("MARKETCHECK_API_KEY"):
+        return "MARKETCHECK_API_KEY not set (paid licensed feed)"
+    return None
 
 
 def poll(cfg: dict) -> list[NormalizedListing]:
@@ -53,11 +58,15 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         "include_relevant_links": "true",
         "price_range": f"{cfg.get('min_price', 1500)}-{cfg.get('max_price', 60000)}",
     }
+    rep = health.report(SOURCE_ID)
+    r = rep.fetch("active", ACTIVE_URL, params=params, timeout=30)
+    if r is None:
+        return []
     try:
-        r = requests.get(ACTIVE_URL, params=params, timeout=30)
-        r.raise_for_status()
         data = r.json()
-    except (requests.RequestException, ValueError):
+        rep.parsed("active", len(data.get("listings", []) or []))
+    except (ValueError, AttributeError):
+        rep.malformed("active", "invalid JSON")
         return []
 
     out: list[NormalizedListing] = []

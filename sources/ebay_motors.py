@@ -23,6 +23,7 @@ from typing import Optional
 
 import requests
 
+from . import health
 from .base import (NormalizedListing, extract_make_model, extract_miles,
                     extract_year)
 
@@ -38,9 +39,13 @@ _TOKEN: dict = {"value": None, "expires_at": 0}
 
 
 def enabled(cfg: dict) -> bool:
-    has_keys = bool(os.environ.get("EBAY_CLIENT_ID") and os.environ.get("EBAY_CLIENT_SECRET"))
-    src_cfg = cfg.get("sources", {}).get(SOURCE_ID, {})
-    return src_cfg.get("enabled", True) and has_keys
+    return cfg.get("sources", {}).get(SOURCE_ID, {}).get("enabled", True)
+
+
+def config_issue(cfg: dict) -> Optional[str]:
+    if not (os.environ.get("EBAY_CLIENT_ID") and os.environ.get("EBAY_CLIENT_SECRET")):
+        return "EBAY_CLIENT_ID / EBAY_CLIENT_SECRET not set"
+    return None
 
 
 def _get_token() -> Optional[str]:
@@ -70,8 +75,10 @@ def _get_token() -> Optional[str]:
 
 
 def poll(cfg: dict) -> list[NormalizedListing]:
+    rep = health.report(SOURCE_ID)
     token = _get_token()
     if not token:
+        rep.record("oauth", health.AUTH, detail="could not obtain OAuth token")
         return []
 
     src_cfg = cfg.get("sources", {}).get(SOURCE_ID, {})
@@ -98,12 +105,16 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         "X-EBAY-C-ENDUSERCTX": f"contextualLocation=country=US,zip={zip_code}",
         "Accept": "application/json",
     }
-    try:
-        r = requests.get(BROWSE_URL, params=params, headers=headers, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-    except (requests.RequestException, ValueError):
+    r = rep.fetch("browse", BROWSE_URL, params=params, headers=headers, timeout=20)
+    if r is None:
         return []
+    try:
+        data = r.json()
+        items = data.get("itemSummaries", []) or []
+    except (ValueError, AttributeError):
+        rep.malformed("browse", "invalid JSON")
+        return []
+    rep.parsed("browse", len(items))
 
     out: list[NormalizedListing] = []
     for it in data.get("itemSummaries", []) or []:

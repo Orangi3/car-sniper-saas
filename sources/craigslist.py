@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 import feedparser
 import requests
 
+from . import health
 from .base import (NormalizedListing, extract_int, extract_price, extract_make_model,
                     extract_miles, extract_year, looks_like_dealer,
                     looks_cash_only, PRICE_RE)
@@ -124,32 +125,46 @@ def _parse_html_fallback(html: str, region: str) -> list:
 
 
 def _fetch_region(region: str, by_owner: bool, session: requests.Session) -> tuple[str, list, str]:
+    """Fetch one region: RSS first, HTML search page as fallback. Every
+    request outcome goes into the poll's health report, so a blocked or
+    malformed region is never mistaken for 'no new listings'."""
+    rep = health.report(SOURCE_ID)
     wait_s = _BACKOFF_UNTIL.get(region, 0) - time.monotonic()
     if wait_s > 0:
         return region, [], f"backing off ({int(wait_s)}s left after block)"
-    url = _feed_url(region, by_owner)
-    entries = []
-    status_note = ""
-    try:
-        r = session.get(url, headers=UA, timeout=8, allow_redirects=True)
-        status_note = f"rss {r.status_code}"
-        if r.status_code in (403, 429):
+    entries: list = []
+    r = rep.fetch(f"{region}:rss", _feed_url(region, by_owner), session=session,
+                  headers=UA, timeout=8, allow_redirects=True)
+    if r is None:
+        last = rep.attempts[-1]
+        if last["outcome"] in (health.BLOCKED, health.RATE_LIMITED):
             _BACKOFF_UNTIL[region] = time.monotonic() + BACKOFF_S
-            return region, [], status_note + " → backing off"
-        if r.status_code == 200:
-            feed = feedparser.parse(r.content)
-            entries = list(feed.entries)
-    except requests.RequestException as e:
-        status_note = f"rss error: {type(e).__name__}"
-    if not entries:
-        try:
-            r2 = session.get(_html_url(region, by_owner), headers=UA, timeout=8)
-            if r2.status_code == 200:
-                entries = _parse_html_fallback(r2.text, region)
-                status_note += f" → html {r2.status_code}: {len(entries)} parsed"
-        except requests.RequestException as e:
-            status_note += f" → html error: {type(e).__name__}"
-    return region, entries, status_note
+            return region, [], f"rss {last['outcome']} → backing off"
+        note = f"rss {last['outcome']}"
+    else:
+        feed = feedparser.parse(r.content)
+        entries = list(feed.entries)
+        if entries:
+            rep.parsed(f"{region}:rss", len(entries))
+            return region, entries, f"rss 200: {len(entries)} entries"
+        note = "rss 200 but no entries"
+        if feed.bozo:
+            rep.malformed(f"{region}:rss", "response is not a valid RSS feed")
+        else:
+            rep.parsed(f"{region}:rss", 0)
+    r2 = rep.fetch(f"{region}:html", _html_url(region, by_owner), session=session,
+                   headers=UA, timeout=8)
+    if r2 is None:
+        return region, [], note + f" → html {rep.attempts[-1]['outcome']}"
+    entries = _parse_html_fallback(r2.text, region)
+    if entries:
+        rep.parsed(f"{region}:html", len(entries))
+    elif ("ld_searchpage_results" in r2.text
+          or "cl-static-search-result" in r2.text):
+        rep.parsed(f"{region}:html", 0)          # recognizable page, just empty
+    else:
+        rep.malformed(f"{region}:html", "search page layout not recognized")
+    return region, entries, note + f" → html 200: {len(entries)} parsed"
 
 
 def poll(cfg: dict) -> list[NormalizedListing]:

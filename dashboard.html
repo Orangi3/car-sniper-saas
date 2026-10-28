@@ -2122,12 +2122,17 @@ async function refreshDiagnostics() {
     const list = await jget("/api/diagnostics");
     if (!list.length) { root.innerHTML = '<div class="empty">No sources registered.</div>'; return; }
     root.innerHTML = list.map(d => {
-      let status = "";
-      if (!d.enabled)             status = '<span style="color:var(--muted)">off</span>';
-      else if (d.error)           status = '<span style="color:var(--magenta)" title="'+(d.error||'').replace(/"/g,'&quot;')+'">⚠ '+(d.error||"").slice(0,40)+'</span>';
-      else if (d.count === 0)     status = '<span style="color:var(--gold)">0 found — not polled this tick</span>';
-      else if (d.count == null)   status = '<span style="color:var(--muted)">not polled yet</span>';
-      else                        status = '<span style="color:var(--neon)">✓ '+d.count+'</span>';
+      const esc = x => String(x == null ? "" : x).replace(/[&<>"']/g,
+        c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+      const colors = {healthy:"var(--neon)", degraded:"var(--gold)", unverified:"var(--gold)",
+                      blocked:"var(--magenta)", rate_limited:"var(--magenta)",
+                      timeout:"var(--magenta)", auth_config:"var(--muted)", disabled:"var(--muted)"};
+      const label = {healthy:"✓ healthy", degraded:"⚠ degraded", unverified:"? unverified",
+                     blocked:"⛔ blocked", rate_limited:"⏳ rate-limited", timeout:"⌛ timeout",
+                     auth_config:"🔑 needs setup", disabled:"off"}[d.status] || d.status;
+      const extra = d.status === "healthy" && d.count != null ? " · " + d.count : "";
+      const status = '<span style="color:' + (colors[d.status] || "var(--muted)") +
+        '" title="' + esc(d.reason) + '">' + esc(label + extra) + '</span>';
       const elapsed = d.elapsed_s != null ? ' <small class="muted">'+d.elapsed_s+'s</small>' : '';
       return `<div style="padding:3px 0;display:flex;justify-content:space-between;font:500 11px 'JetBrains Mono',monospace;">
         <span style="color:var(--ink-2);">${d.id}</span><span>${status}${elapsed}</span></div>`;

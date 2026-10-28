@@ -10,6 +10,7 @@ import feedparser
 import re
 import requests
 
+from . import health
 from .base import (NormalizedListing, extract_int, extract_price, extract_make_model,
                     extract_miles, extract_year, PRICE_RE)
 
@@ -32,20 +33,10 @@ def enabled(cfg: dict) -> bool:
 
 
 def poll(cfg: dict) -> list[NormalizedListing]:
-    content = None
-    for feed_url in FEEDS:
-        try:
-            r = requests.get(feed_url, headers=UA, timeout=10)
-            LAST_RESULTS["last_url"] = feed_url
-            LAST_RESULTS["last_status"] = r.status_code
-            if r.status_code == 200 and len(r.content) > 200:
-                content = r.content; break
-        except requests.RequestException as e:
-            LAST_RESULTS["last_error"] = f"{type(e).__name__}"
-            continue
-    if not content:
+    feed = health.fetch_feed(health.report(SOURCE_ID), SOURCE_ID, FEEDS,
+                             headers=UA, timeout=10)
+    if feed is None:
         return []
-    feed = feedparser.parse(content)
     out: list[NormalizedListing] = []
     for e in feed.entries:
         url = e.get("link") or ""

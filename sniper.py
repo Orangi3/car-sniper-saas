@@ -33,6 +33,7 @@ import config as _config_mod
 import jobqueue
 from config import CONFIG
 import sources
+from sources import health
 from sources.base import (NormalizedListing, looks_needs_work, looks_salvage,
                           to_iso)
 
@@ -518,115 +519,186 @@ def _freshness_factor(posted_at: Optional[str]) -> float:
         return 0.85
 
 
-_TICK_COUNTER = 0
+# Minimum seconds between polls of each source. A scheduler tick is not a
+# discovery guarantee: a source is only polled when it is due here AND not
+# backing off. Override per source with CONFIG["source_min_interval_s"].
+DEFAULT_MIN_INTERVAL_S = {
+    "craigslist": 60, "marketplace": 30, "email_imap": 120, "ebay": 300,
+    "bat": 300, "hemmings": 600, "govdeals": 600, "marketcheck": 900,
+}
+BACKOFF_BASE_S, BACKOFF_CAP_S, AUTH_RETRY_S = 60, 3600, 1800
 
 
-def _should_poll_source(source_id: str) -> bool:
-    """Tiered polling so Craigslist runs every tick, salvage every 4."""
-    global _TICK_COUNTER
-    if source_id == "craigslist":
-        return _TICK_COUNTER % CONFIG.get("craigslist_every_n_ticks", 1) == 0
-    if source_id in ("copart_live", "iaa_live"):
-        return _TICK_COUNTER % CONFIG.get("salvage_every_n_ticks", 4) == 0
-    if source_id in ("bat", "carsandbids", "hemmings", "govdeals", "gsa", "publicsurplus"):
-        return _TICK_COUNTER % CONFIG.get("auction_sites_every_n_ticks", 2) == 0
-    return True
+def _min_interval(source_id: str) -> int:
+    over = CONFIG.get("source_min_interval_s") or {}
+    return int(over.get(source_id, DEFAULT_MIN_INTERVAL_S.get(source_id, 60)))
+
+
+def _health_rows() -> dict[str, dict]:
+    try:
+        with db() as conn:
+            return {r["source_id"]: dict(r) for r in
+                    conn.execute("SELECT * FROM source_health").fetchall()}
+    except Exception as e:
+        print(f"[health] read failed: {e}", file=sys.stderr)
+        return {}
+
+
+def _due(source_id: str, row: Optional[dict], now: datetime,
+         force_all: bool) -> tuple[bool, str]:
+    """(due?, reason-if-not). Backoff is honoured even for manual polls."""
+    row = row or {}
+    nxt = row.get("next_poll_after")
+    if nxt and str(nxt) > now.isoformat():
+        return False, f"backing off until {nxt} ({row.get('status')})"
+    if force_all:
+        return True, ""
+    last = row.get("last_attempt_at")
+    if last:
+        try:
+            age = (now - datetime.fromisoformat(str(last))).total_seconds()
+            if age < _min_interval(source_id):
+                return False, "not due (min interval)"
+        except ValueError:
+            pass
+    return True, ""
+
+
+def _backoff_after(status: str, failures: int, retry_after: Optional[float]) -> Optional[float]:
+    import random
+    if status in (health.S_BLOCKED, health.S_RATE_LIMITED, health.S_TIMEOUT):
+        delay = min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2 ** max(0, failures - 1))
+        delay *= random.uniform(0.8, 1.2)
+        return max(delay, retry_after or 0)
+    if status == health.AUTH_CONFIG:
+        return AUTH_RETRY_S
+    return None
+
+
+def _ingest_latency(new: list[NormalizedListing], now: datetime) -> Optional[float]:
+    vals = []
+    for l in new:
+        try:
+            if l.posted_at:
+                d = (now - datetime.fromisoformat(l.posted_at)).total_seconds()
+                if 0 <= d < 7 * 86400:
+                    vals.append(d)
+        except ValueError:
+            continue
+    if not vals:
+        return None
+    vals.sort()
+    return round(vals[len(vals) // 2], 1)
 
 
 def poll_once(verbose: bool = True, only_sources: list[str] | None = None,
               force_all: bool = False) -> dict:
-    """Poll all enabled sources IN PARALLEL via ThreadPoolExecutor.
+    """Poll every due source in parallel, ingest new listings, and record an
+    honest health status per source (see sources/health.py).
 
-    force_all=True ignores the polling-tier schedule (used by the dashboard's
-    'Poll all sources now' button so every source fires immediately).
+    force_all=True ignores minimum intervals (dashboard "Poll now") but still
+    respects backoff after blocks / rate limits.
     """
-    global _TICK_COUNTER
-    _TICK_COUNTER += 1
-
     _config_mod.reload()
-    enabled = sources.iter_sources(CONFIG)
-    if only_sources is not None:
-        enabled = [s for s in enabled if s.SOURCE_ID in only_sources]
-    if not force_all:
-        enabled = [s for s in enabled if _should_poll_source(s.SOURCE_ID)]
+    now = datetime.now(timezone.utc)
+    rows = _health_rows()
+    enabled_ids = {s.SOURCE_ID for s in sources.iter_sources(CONFIG)}
+    candidates = [s for s in sources.all_sources()
+                  if only_sources is None or s.SOURCE_ID in only_sources]
+
+    to_poll, statuses = [], {}
+    for s in candidates:
+        sid = s.SOURCE_ID
+        issue = getattr(s, "config_issue", lambda cfg: None)(CONFIG)
+        if sid not in enabled_ids:
+            statuses[sid] = {"status": health.DISABLED, "reason": "disabled in settings",
+                             "polled": False}
+        elif issue:
+            statuses[sid] = {"status": health.AUTH_CONFIG, "reason": issue, "polled": False}
+        else:
+            due, why = _due(sid, rows.get(sid), now, force_all)
+            if due:
+                to_poll.append(s)
+            else:
+                statuses[sid] = {"status": (rows.get(sid) or {}).get("status")
+                                 or health.UNVERIFIED, "reason": why, "polled": False,
+                                 "skipped": True}
 
     by_source: dict[str, list[NormalizedListing]] = {}
+    reports: dict[str, health.PollReport] = {}
+    errors: dict[str, str] = {}
+    elapsed: dict[str, float] = {}
     t0 = time.time()
 
     def _poll_one(s):
+        rep = health.begin(s.SOURCE_ID)
+        t = time.time()
         try:
-            t = time.time()
             items = list(s.poll(CONFIG))
-            elapsed = round(time.time() - t, 2)
-            SOURCE_DIAG[s.SOURCE_ID] = {
-                "count": len(items),
-                "elapsed_s": elapsed,
-                "error": None,
-                "regions": getattr(s, "LAST_RESULTS", None),
-                "polled_at": datetime.now(timezone.utc).isoformat(),
-            }
-            return s.SOURCE_ID, items
+            err = None
         except Exception as e:
-            err = f"{type(e).__name__}: {e}"
+            items, err = [], f"{type(e).__name__}: {e}"
             print(f"[{s.SOURCE_ID}] poll failed: {err}", file=sys.stderr)
-            SOURCE_DIAG[s.SOURCE_ID] = {
-                "count": 0, "elapsed_s": None, "error": err,
-                "polled_at": datetime.now(timezone.utc).isoformat(),
-            }
-            return s.SOURCE_ID, []
+        return s.SOURCE_ID, items, rep, err, round(time.time() - t, 2)
 
-    # Parallel HTTP — hard wall-clock cap of 12s. Use wait() instead of
-    # as_completed(timeout=) so we never raise TimeoutError on slow sources;
-    # they're just recorded as "exceeded poll budget" in diagnostics.
-    POLL_BUDGET_S = 12
+    POLL_BUDGET_S = 20
     ex = ThreadPoolExecutor(max_workers=12)
     try:
-        futs = {ex.submit(_poll_one, s): s for s in enabled}
+        futs = {ex.submit(_poll_one, s): s for s in to_poll}
         done, not_done = wait(list(futs.keys()), timeout=POLL_BUDGET_S)
-
         for fut in done:
-            try:
-                src_id, listings = fut.result(timeout=0.5)
-                by_source[src_id] = listings
-            except Exception as e:
-                src = futs[fut]
-                SOURCE_DIAG[src.SOURCE_ID] = {
-                    "count": 0, "elapsed_s": None,
-                    "error": f"{type(e).__name__}: {str(e)[:80]}",
-                    "polled_at": datetime.now(timezone.utc).isoformat(),
-                }
-                by_source[src.SOURCE_ID] = []
+            sid, items, rep, err, el = fut.result()
+            by_source[sid], reports[sid], elapsed[sid] = items, rep, el
+            if err:
+                errors[sid] = err
         for fut in not_done:
             fut.cancel()
-            src = futs[fut]
-            SOURCE_DIAG[src.SOURCE_ID] = {
-                "count": 0, "elapsed_s": POLL_BUDGET_S,
-                "error": "exceeded poll budget (12s)",
-                "polled_at": datetime.now(timezone.utc).isoformat(),
-            }
-            by_source[src.SOURCE_ID] = []
+            sid = futs[fut].SOURCE_ID
+            rep = health.report(sid)
+            rep.record("poll", health.TIMEOUT, detail=f"exceeded {POLL_BUDGET_S}s budget")
+            by_source[sid], reports[sid], elapsed[sid] = [], rep, POLL_BUDGET_S
     finally:
-        # Don't block on shutdown — cancelled futures will release their threads
         ex.shutdown(wait=False)
-
     poll_secs = round(time.time() - t0, 2)
 
     total_fetched = sum(len(v) for v in by_source.values())
     total_new = 0
     per_source: dict[str, dict] = {}
-
-    # FAST PATH: ingest only. Scoring is queued + happens in background.
-    for src_id, listings in by_source.items():
+    for sid, listings in by_source.items():
         new = store_new(listings)
-        per_source[src_id] = {"fetched": len(listings), "new": len(new)}
         total_new += len(new)
+        prev = rows.get(sid) or {}
+        empty_streak = 0 if listings else int(prev.get("consecutive_empty") or 0) + 1
+        ever = bool(prev.get("last_genuine_success_at")) or bool(listings)
+        status, reason = health.classify(reports.get(sid), len(listings),
+                                         error=errors.get(sid),
+                                         consecutive_empty=empty_streak,
+                                         ever_succeeded=ever)
+        attempted, ok = health.request_counts(reports.get(sid))
+        statuses[sid] = {"status": status, "reason": reason, "polled": True,
+                         "requests_attempted": attempted, "requests_ok": ok,
+                         "listings_discovered": len(listings), "listings_new": len(new),
+                         "consecutive_empty": empty_streak,
+                         "elapsed_s": elapsed.get(sid),
+                         "ingest_latency_s": _ingest_latency(new, now),
+                         "retry_after_s": getattr(reports.get(sid), "retry_after_s", None),
+                         "attempts": (reports.get(sid).attempts[:20]
+                                      if reports.get(sid) else [])}
+        per_source[sid] = {"fetched": len(listings), "new": len(new),
+                           "status": status}
+        SOURCE_DIAG[sid] = {"count": len(listings), "elapsed_s": elapsed.get(sid),
+                            "error": None if status == health.HEALTHY else reason,
+                            "status": status,
+                            "regions": getattr(sys.modules.get(f"sources.{sid}"),
+                                               "LAST_RESULTS", None),
+                            "polled_at": now.isoformat()}
         if verbose:
-            print(f"  [{src_id:14s}] fetched={len(listings):4d}  new={len(new):3d}")
+            print(f"  [{sid:14s}] {status:12s} fetched={len(listings):4d} "
+                  f"new={len(new):3d}  {reason}")
 
-    # Persist per-source health + scheduler tick for the admin source-health
-    # endpoint. Wrapped so a DB hiccup never breaks the poll itself.
     try:
-        _persist_source_health(by_source, poll_secs, enabled)
+        _persist_source_health(statuses, rows, poll_secs,
+                               [s for s in candidates if s.SOURCE_ID in enabled_ids], now)
     except Exception as e:
         print(f"[health] persist failed: {e}", file=sys.stderr)
 
@@ -635,76 +707,76 @@ def poll_once(verbose: bool = True, only_sources: list[str] | None = None,
               f"(scoring pending: {get_scorer_stats()['pending']})")
     return {"fetched": total_fetched, "new": total_new,
             "scoring_pending": get_scorer_stats()["pending"],
-            "poll_secs": poll_secs, "per_source": per_source}
+            "poll_secs": poll_secs, "per_source": per_source,
+            "source_status": {k: {kk: vv for kk, vv in v.items() if kk != "attempts"}
+                              for k, v in statuses.items()}}
 
 
-def _persist_source_health(by_source: dict, poll_secs: float,
-                            enabled: list) -> None:
-    """Upsert one source_health row per source attempted this tick, and bump
-    the single scheduler_state row. Uses db.py (works for SQLite & Postgres
-    interchangeably) — kept separate from the legacy sqlite3 connect path
-    so the SaaS deployment can point at Postgres without rewriting poll_once."""
-    import db as _db
-    now = _db.now_utc_iso()
-    enabled_ids = [s.SOURCE_ID for s in enabled]
-    with _db.transaction() as conn:
-        cur = conn.cursor()
-        ph = _db.placeholder()
-        # listings_total per source
-        if _db.IS_PG:
-            cur.execute("SELECT source, COUNT(*) AS n FROM listings GROUP BY source")
-            totals = {r["source"]: int(r["n"]) for r in cur.fetchall()}
-        else:
-            totals = {r[0]: r[1] for r in cur.execute(
-                "SELECT source, COUNT(*) FROM listings GROUP BY source").fetchall()}
-        for src_id in {*by_source.keys(), *(SOURCE_DIAG.keys())}:
-            d = SOURCE_DIAG.get(src_id, {}) or {}
-            err = d.get("error")
-            count = d.get("count")
-            elapsed = d.get("elapsed_s")
-            ltot = int(totals.get(src_id, 0))
-            # Compute last_success_at: bump only if this tick succeeded (no err).
-            if _db.IS_PG:
-                cur.execute(
-                    "INSERT INTO source_health(source_id, last_attempt_at, "
-                    "  last_success_at, last_error, last_count, last_elapsed_s, "
-                    "  listings_total, updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
-                    "ON CONFLICT(source_id) DO UPDATE SET "
-                    "  last_attempt_at=excluded.last_attempt_at, "
-                    "  last_success_at=COALESCE(excluded.last_success_at, source_health.last_success_at), "
-                    "  last_error=excluded.last_error, "
-                    "  last_count=excluded.last_count, "
-                    "  last_elapsed_s=excluded.last_elapsed_s, "
-                    "  listings_total=excluded.listings_total, "
-                    "  updated_at=excluded.updated_at",
-                    (src_id, now, (now if not err else None), err, count, elapsed, ltot, now))
-            else:
-                cur.execute(
-                    "INSERT INTO source_health(source_id, last_attempt_at, "
-                    "  last_success_at, last_error, last_count, last_elapsed_s, "
-                    "  listings_total, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(source_id) DO UPDATE SET "
-                    "  last_attempt_at=excluded.last_attempt_at, "
-                    "  last_success_at=COALESCE(excluded.last_success_at, source_health.last_success_at), "
-                    "  last_error=excluded.last_error, "
-                    "  last_count=excluded.last_count, "
-                    "  last_elapsed_s=excluded.last_elapsed_s, "
-                    "  listings_total=excluded.listings_total, "
-                    "  updated_at=excluded.updated_at",
-                    (src_id, now, (now if not err else None), err, count, elapsed, ltot, now))
-        # Scheduler tick
-        if _db.IS_PG:
-            cur.execute(
-                "UPDATE scheduler_state SET last_tick_at=%s, last_tick_secs=%s, "
-                "  tick_counter=tick_counter+1, enabled_sources=%s WHERE id=1",
-                (now, poll_secs, ",".join(enabled_ids)))
-        else:
-            cur.execute(
-                "UPDATE scheduler_state SET last_tick_at=?, last_tick_secs=?, "
-                "  tick_counter=tick_counter+1, enabled_sources=? WHERE id=1",
-                (now, poll_secs, ",".join(enabled_ids)))
+def _persist_source_health(statuses: dict, prev_rows: dict, poll_secs: float,
+                           enabled: list, now: datetime) -> None:
+    """Upsert one source_health row per known source and bump the single
+    scheduler_state row."""
+    now_iso = now.isoformat()
+    with db() as conn:
+        totals = {r[0]: int(r[1]) for r in conn.execute(
+            "SELECT source, COUNT(*) FROM listings GROUP BY source").fetchall()}
+        for sid, st in statuses.items():
+            prev = prev_rows.get(sid) or {}
+            if not st.get("polled"):
+                # Not polled this tick: only refresh disabled/config state.
+                if st.get("skipped"):
+                    continue
+                conn.execute(
+                    "INSERT INTO source_health(source_id, status, status_reason, "
+                    "  listings_total, updated_at) VALUES (?,?,?,?,?) "
+                    "ON CONFLICT(source_id) DO UPDATE SET status=excluded.status, "
+                    "  status_reason=excluded.status_reason, "
+                    "  listings_total=excluded.listings_total, updated_at=excluded.updated_at",
+                    (sid, st["status"], st["reason"], totals.get(sid, 0), now_iso))
+                continue
+            status = st["status"]
+            failing = status in (health.S_BLOCKED, health.S_RATE_LIMITED,
+                                 health.S_TIMEOUT, health.AUTH_CONFIG)
+            failures = int(prev.get("consecutive_failures") or 0) + 1 if failing else 0
+            delay = _backoff_after(status, failures, st.get("retry_after_s"))
+            next_after = (now + timedelta(seconds=delay)).isoformat() if delay else None
+            success = st["requests_ok"] > 0 or (st["requests_attempted"] == 0
+                                                and status == health.HEALTHY)
+            genuine = st["listings_discovered"] > 0
+            conn.execute(
+                "INSERT INTO source_health(source_id, last_attempt_at, last_success_at, "
+                "  last_error, last_count, last_elapsed_s, listings_total, updated_at, "
+                "  status, status_reason, requests_attempted, requests_ok, listings_new, "
+                "  consecutive_empty, consecutive_failures, last_genuine_success_at, "
+                "  next_poll_after, ingest_latency_s) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(source_id) DO UPDATE SET "
+                "  last_attempt_at=excluded.last_attempt_at, "
+                "  last_success_at=COALESCE(excluded.last_success_at, source_health.last_success_at), "
+                "  last_error=excluded.last_error, last_count=excluded.last_count, "
+                "  last_elapsed_s=excluded.last_elapsed_s, "
+                "  listings_total=excluded.listings_total, updated_at=excluded.updated_at, "
+                "  status=excluded.status, status_reason=excluded.status_reason, "
+                "  requests_attempted=excluded.requests_attempted, "
+                "  requests_ok=excluded.requests_ok, listings_new=excluded.listings_new, "
+                "  consecutive_empty=excluded.consecutive_empty, "
+                "  consecutive_failures=excluded.consecutive_failures, "
+                "  last_genuine_success_at=COALESCE(excluded.last_genuine_success_at, "
+                "    source_health.last_genuine_success_at), "
+                "  next_poll_after=excluded.next_poll_after, "
+                "  ingest_latency_s=COALESCE(excluded.ingest_latency_s, "
+                "    source_health.ingest_latency_s)",
+                (sid, now_iso, now_iso if success else None,
+                 None if status == health.HEALTHY else st["reason"],
+                 st["listings_discovered"], st.get("elapsed_s"), totals.get(sid, 0),
+                 now_iso, status, st["reason"], st["requests_attempted"],
+                 st["requests_ok"], st["listings_new"], st["consecutive_empty"],
+                 failures, now_iso if genuine else None, next_after,
+                 st.get("ingest_latency_s")))
+        conn.execute(
+            "UPDATE scheduler_state SET last_tick_at=?, last_tick_secs=?, "
+            "  tick_counter=tick_counter+1, enabled_sources=? WHERE id=1",
+            (now_iso, poll_secs, ",".join(s.SOURCE_ID for s in enabled)))
 
 
 def daemon(interval: int = DEFAULT_POLL_SEC) -> None:

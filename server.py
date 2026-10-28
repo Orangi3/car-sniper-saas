@@ -724,18 +724,38 @@ def api_stats():
 
 @app.get("/api/diagnostics")
 def api_diagnostics():
-    """Per-source last-poll diagnostics: count, elapsed, error, regions.
-    Shown in dashboard so user can immediately see WHY a source is empty."""
-    out = []
+    """Per-source health, read from the source_health table the scheduler
+    writes (the web process never polls, so in-memory state would be empty
+    in production). See sources/health.py for status meanings."""
     enabled_ids = {s.SOURCE_ID for s in sources.iter_sources(CONFIG)}
+    try:
+        with sniper.db() as conn:
+            rows = {r["source_id"]: dict(r) for r in
+                    conn.execute("SELECT * FROM source_health").fetchall()}
+    except Exception:
+        rows = {}
+    out = []
     for s in sources.all_sources():
-        d = sniper.SOURCE_DIAG.get(s.SOURCE_ID, {})
+        h = rows.get(s.SOURCE_ID, {})
+        issue = getattr(s, "config_issue", lambda cfg: None)(CONFIG)
+        status = h.get("status") or ("disabled" if s.SOURCE_ID not in enabled_ids
+                                     else "auth_config" if issue else "unverified")
         out.append({
             "id": s.SOURCE_ID, "name": s.SOURCE_NAME,
             "enabled": s.SOURCE_ID in enabled_ids,
-            "count": d.get("count"), "elapsed_s": d.get("elapsed_s"),
-            "error": d.get("error"), "regions": d.get("regions"),
-            "polled_at": d.get("polled_at"),
+            "status": status,
+            "reason": h.get("status_reason") or issue,
+            "count": h.get("last_count"), "elapsed_s": h.get("last_elapsed_s"),
+            "error": None if status == "healthy" else (h.get("status_reason") or issue),
+            "requests_attempted": h.get("requests_attempted"),
+            "requests_ok": h.get("requests_ok"),
+            "listings_new": h.get("listings_new"),
+            "listings_total": h.get("listings_total"),
+            "polled_at": h.get("last_attempt_at"),
+            "last_success_at": h.get("last_success_at"),
+            "last_genuine_success_at": h.get("last_genuine_success_at"),
+            "next_poll_after": h.get("next_poll_after"),
+            "ingest_latency_s": h.get("ingest_latency_s"),
         })
     return jsonify(out)
 
@@ -816,7 +836,8 @@ def api_poll_all():
         attempted = enabled and (diag.get("polled_at") is not None
                                  or per.get("fetched") is not None)
         err       = diag.get("error")
-        success   = attempted and not err
+        st        = (base.get("source_status") or {}).get(sid, {})
+        success   = attempted and st.get("status") in ("healthy", "degraded")
         skipped   = None if enabled else "source disabled"
         if enabled and not attempted:
             skipped = "not run this tick (tiered schedule)"
@@ -830,7 +851,9 @@ def api_poll_all():
             "new_listings":      int(per.get("new") or 0),
             "elapsed_s":         diag.get("elapsed_s"),
             "error":             err,
-            "skipped_reason":    skipped,
+            "status":            st.get("status"),
+            "status_reason":     st.get("reason"),
+            "skipped_reason":    skipped or (st.get("reason") if st.get("skipped") else None),
         })
     # deals_n: count of below-comp listings — same threshold as the BEST
     # DEALS tab and /api/stats `deals` so the poll-button result, the hero

@@ -35,6 +35,7 @@ from email.header import decode_header
 from pathlib import Path
 from typing import Optional
 
+from . import health
 from .base import (NormalizedListing, extract_make_model, extract_miles,
                     extract_year)
 
@@ -63,10 +64,14 @@ def _cfg(cfg: dict, key: str, env_key: str, default=None):
 
 def enabled(cfg: dict) -> bool:
     src = cfg.get("sources", {}).get(SOURCE_ID, {})
-    if not src.get("enabled", True):
-        return False
-    return bool(_cfg(cfg, "imap_user", "EMAIL_IMAP_USER")
-                and _cfg(cfg, "imap_pass", "EMAIL_IMAP_PASS"))
+    return bool(src.get("enabled", True))
+
+
+def config_issue(cfg: dict):
+    if not (_cfg(cfg, "imap_user", "EMAIL_IMAP_USER")
+            and _cfg(cfg, "imap_pass", "EMAIL_IMAP_PASS")):
+        return "IMAP credentials not set"
+    return None
 
 
 def _load_seen() -> set:
@@ -126,9 +131,18 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         M = imaplib.IMAP4_SSL(host, port)
         M.login(user, pw)
         M.select(folder)
+    except imaplib.IMAP4.error as e:
+        LAST_RESULTS["status"] = f"login failed: {type(e).__name__}: {e}"
+        health.report(SOURCE_ID).record("imap", health.AUTH, detail=str(e)[:100])
+        return []
+    except TimeoutError:
+        health.report(SOURCE_ID).record("imap", health.TIMEOUT)
+        return []
     except Exception as e:
         LAST_RESULTS["status"] = f"login failed: {type(e).__name__}: {e}"
+        health.report(SOURCE_ID).record("imap", health.NETWORK, detail=type(e).__name__)
         return []
+    health.report(SOURCE_ID).record("imap", health.OK, detail="logged in")
 
     try:
         # Build OR'd FROM filter for all configured senders
