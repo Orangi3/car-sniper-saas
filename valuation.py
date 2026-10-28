@@ -32,11 +32,25 @@ Matching rules for asking comparables:
   * robust statistics: MAD outlier rejection, weighted median for the point
     value, weighted 25th/75th percentiles for the range
 
+  * geography: when the target has coordinates, peers within
+    REGIONAL_RADIUS_MI are used if there are enough; otherwise nationwide
+    asking prices are used and confidence drops (regional price differences
+    are not modeled)
+  * drivetrain / engine: matched when the target states one (structured
+    provider fields only) and enough peers share it
+  * every peer gets a match-quality score (year, mileage, distance, trim);
+    it multiplies the freshness weight and is reported per comparable
+
+Market segments are reported separately and never blended into one number:
+private asking, dealer asking, completed sales (of which auction results),
+historical/incomplete records, and a model estimate (none connected).
+
 Confidence is a label (high / medium / low / insufficient) derived from
 named evidence — sample size, spread, year span, trim match, mileage
 handling, evidence class, conflicts — and every point is reported as a
-reason. It is not a probability and has not been calibrated against
-realized sale prices.
+reason. Without completed-sale evidence it is capped at "medium" and the
+value range is widened by ASKING_UNCERTAINTY_PCT on each side. It is not a
+probability and has not been calibrated against realized sale prices.
 """
 from __future__ import annotations
 
@@ -60,6 +74,12 @@ STALE_FULL_WEIGHT_DAYS = 7
 STALE_DROP_DAYS = 45
 SLOPE_BOUNDS = (-0.30, 0.0)       # $ per mile; price never rises with miles
 CONFIRMED_SOURCES = {"ebay", "bat", "carsandbids", "pcarmarket"}
+AUCTION_SOURCES = {"bat", "carsandbids", "pcarmarket"}
+REGIONAL_RADIUS_MI = 150
+# Asking prices are not transactions: without completed sales the range is
+# widened by this fraction of the value on each side (a labeled assumption).
+ASKING_UNCERTAINTY_PCT = 0.03
+MATCH_ATTRS = ("drivetrain", "engine")
 
 TRIMS = {
     "lx", "ex", "ex-l", "exl", "se", "le", "xle", "xse", "sr", "sr5", "trd",
@@ -86,6 +106,10 @@ class Valuation:
     # share of the comparables that are DEALER retail asking prices; the
     # profit model discounts resale accordingly (dealer asks ≠ private sales)
     dealer_share: float = 0.0
+    # separately reported market segments (never blended); see module doc
+    segments: dict = field(default_factory=dict)
+    comp_quality: Optional[float] = None      # mean match quality 0–100
+    geography: str = "unknown"                # regional | national | unknown
 
     @property
     def basis(self) -> str:
@@ -98,7 +122,8 @@ class Valuation:
                 "n": self.n, "confidence": self.confidence, "reasons": self.reasons,
                 "comps": self.comps, "mileage_adjusted": self.mileage_adjusted,
                 "slope_per_mile": self.slope_per_mile, "basis": self.basis,
-                "dealer_share": self.dealer_share}
+                "dealer_share": self.dealer_share, "segments": self.segments,
+                "comp_quality": self.comp_quality, "geography": self.geography}
 
 
 # ---------- small helpers --------------------------------------------------
@@ -141,6 +166,93 @@ def _staleness_weight(last_seen, now: datetime) -> float:
     if age <= STALE_DROP_DAYS:
         return 0.3
     return 0.0
+
+
+def _attr(row: dict, key: str) -> Optional[str]:
+    """Structured attribute from the row or its provider extras (never parsed
+    from free text), normalized for comparison."""
+    v = row.get(key)
+    if v is None:
+        ex = row.get("extras")
+        if isinstance(ex, str):
+            try:
+                ex = json.loads(ex)
+            except ValueError:
+                ex = None
+        v = (ex or {}).get(key) if isinstance(ex, dict) else None
+    v = re.sub(r"[^a-z0-9.]+", "", str(v).lower()) if v not in (None, "") else ""
+    return {"4x4": "4wd", "fourwheeldrive": "4wd", "allwheeldrive": "awd",
+            "frontwheeldrive": "fwd", "rearwheeldrive": "rwd"}.get(v, v) or None
+
+
+def _coords(row: dict) -> Optional[tuple[float, float]]:
+    lat, lon = row.get("latitude"), row.get("longitude")
+    try:
+        return (float(lat), float(lon)) if lat is not None and lon is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def match_quality(c: dict, year: int, t_miles, t_trim, has_geo: bool) -> tuple[float, list]:
+    """0–1 similarity of a peer to the target and the factors behind it.
+    Gentle multipliers: they rank peers, they don't invent adjustments."""
+    q, why = 1.0, []
+    dy = abs(c["year"] - year)
+    if dy:
+        q *= 0.9 if dy == 1 else 0.75
+        why.append(f"{dy} model year(s) off")
+    if t_miles:
+        if c.get("odometer"):
+            d = abs(c["odometer"] - t_miles)
+            if d > 40000:
+                q *= 0.75
+                why.append("mileage >40k apart")
+            elif d > 15000:
+                q *= 0.9
+                why.append("mileage 15–40k apart")
+        else:
+            q *= 0.85
+            why.append("peer mileage unknown")
+    if has_geo:
+        dist = c.get("_dist")
+        if dist is None:
+            q *= 0.9
+            why.append("peer location unknown")
+        elif dist > REGIONAL_RADIUS_MI:
+            q *= 0.8
+            why.append(f"{dist:.0f} mi away")
+        elif dist > 50:
+            q *= 0.95
+    if t_trim:
+        ct = c.get("trim") or parse_trim(c.get("title") or "", c.get("model"))
+        if ct is None:
+            q *= 0.9
+            why.append("peer trim unknown")
+        elif ct != t_trim:
+            q *= 0.85
+            why.append(f"different trim ({ct})")
+    return q, why
+
+
+def _median(vals: list) -> Optional[float]:
+    return round(statistics.median(vals), 2) if vals else None
+
+
+def _segments(usable: list[dict], sold: dict) -> dict:
+    priv = [c["price"] for c in usable if not c.get("is_dealer")]
+    deal = [c["price"] for c in usable if c.get("is_dealer")]
+    conf = sold.get(CONFIRMED_SALES) or []
+    auc = [s["price"] for s in conf if s.get("source") in AUCTION_SOURCES]
+    hist = [s["price"] for s in sold.get(HISTORICAL) or []]
+    return {
+        "private_asking": {"n": len(priv), "median": _median(priv)},
+        "dealer_asking": {"n": len(deal), "median": _median(deal)},
+        "confirmed_sales": {"n": len(conf), "median": _median([s["price"] for s in conf])},
+        "auction_results": {"n": len(auc), "median": _median(auc)},
+        "historical_incomplete": {"n": len(hist), "median": _median(hist)},
+        "model_estimate": {"n": 0, "median": None,
+                           "note": "no licensed pricing model connected"},
+    }
 
 
 def _wquantile(pairs: list[tuple[float, float]], q: float) -> float:
@@ -278,6 +390,26 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
     reasons: list[str] = []
     points = 0
 
+    # geography: regional peers when the target's location is known
+    t_geo = _coords(target)
+    geography = "unknown"
+    if t_geo:
+        from geo import haversine_mi
+        for c in usable:
+            cg = _coords(c)
+            c["_dist"] = haversine_mi(t_geo, cg) if cg else None
+        local = [c for c in usable
+                 if c["_dist"] is not None and c["_dist"] <= REGIONAL_RADIUS_MI]
+        if len(local) >= MIN_COMPS:
+            usable, geography = local, "regional"
+            reasons.append(f"regional comparables within {REGIONAL_RADIUS_MI} mi")
+        elif usable:
+            geography = "national"
+            points -= 1
+            reasons.append(f"only {len(local)} peer(s) within {REGIONAL_RADIUS_MI} mi; "
+                           "wider-area asking prices used (regional differences not adjusted)")
+    segments = _segments(usable, sold)
+
     # private-party first
     private = [c for c in usable if not c.get("is_dealer")]
     dealer_fallback = False
@@ -302,6 +434,18 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
         if len(same) >= MIN_COMPS:
             usable, trim_matched = same, True
 
+    # structured drivetrain / engine (provider fields only)
+    for key in MATCH_ATTRS:
+        tv = _attr(target, key)
+        if not tv:
+            continue
+        same = [c for c in usable if _attr(c, key) == tv]
+        if len(same) >= MIN_COMPS:
+            usable = same
+            reasons.append(f"{key}-matched ({tv})")
+        else:
+            reasons.append(f"{key} not matched (too few {tv} peers)")
+
     # mileage
     slope, adjusted = None, False
     with_miles = [c for c in usable if c.get("odometer")]
@@ -320,7 +464,9 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
             v += slope * (t_miles - c["odometer"])
         elif adjusted:
             continue                       # can't adjust a peer w/o mileage
-        pairs.append((v, c["_w"], c))
+        q, why = match_quality(c, year, t_miles, t_trim, bool(t_geo))
+        c["_q"], c["_qwhy"] = q, why
+        pairs.append((v, c["_w"] * q, c))
     pairs, outliers = _mad_filter(pairs)
 
     asking_val = None
@@ -362,7 +508,12 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
                     "adjusted_value": round(val), "title": c.get("title"),
                     "url": c.get("url"), "year": c.get("year"),
                     "odometer": c.get("odometer"), "source": c.get("source"),
-                    "weight": round(w, 2), "kind": "asking"}
+                    "weight": round(w, 2), "kind": "asking",
+                    "seller_type": "dealer" if c.get("is_dealer") else "private",
+                    "distance_mi": (round(c["_dist"]) if c.get("_dist") is not None
+                                    else None),
+                    "match_quality": round(100 * c["_q"]),
+                    "match_notes": c["_qwhy"]}
                    for val, w, c in sorted(pairs, key=lambda p: -p[1])][:15]
     elif len(historical) >= MIN_COMPS:
         hp = [(float(s["price"]), 1.0, s) for s in historical]
@@ -372,11 +523,14 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
         points -= 1
         reasons.append(f"only {len(hp)} undated, old or unverified sale records")
         v.comps = [{**s, "kind": "historical"} for _, _, s in hp][:15]
+        v.segments, v.geography = segments, geography
         return _finish(v, points, reasons)
     else:
         n = len(pairs)
         return Valuation(INSUFFICIENT, n=n, confidence="insufficient",
-                         reasons=[f"only {n} usable comparable(s); need {MIN_COMPS}"])
+                         reasons=reasons + [f"only {n} usable comparable(s); need {MIN_COMPS}"],
+                         segments=segments, geography=geography)
+    v.segments, v.geography = segments, geography
 
     if v.evidence_class == ASKING:
         if v.n >= 10:
@@ -423,11 +577,21 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
     v.mileage_adjusted, v.slope_per_mile = adjusted, slope
     if v.evidence_class == ASKING and pairs:
         v.dealer_share = round(sum(1 for _, _, c in pairs if c.get("is_dealer")) / len(pairs), 2)
+        v.comp_quality = round(100 * sum(c["_q"] for _, _, c in pairs) / len(pairs), 1)
+        reasons.append(f"average comparable match quality {v.comp_quality:.0f}/100")
     return _finish(v, points, reasons)
 
 
 def _finish(v: Valuation, points: int, reasons: list[str]) -> Valuation:
     v.confidence = _confidence(points)
+    if v.evidence_class in (ASKING, HISTORICAL) and v.value_mid:
+        if v.confidence == "high":
+            v.confidence = "medium"
+            reasons.append("confidence capped at medium: no completed-sale evidence")
+        w = v.value_mid * ASKING_UNCERTAINTY_PCT
+        v.value_low, v.value_high = v.value_low - w, v.value_high + w
+        reasons.append(f"range widened ±{ASKING_UNCERTAINTY_PCT:.0%}: asking prices "
+                       "are not transaction prices")
     v.reasons = reasons
     for attr in ("value_low", "value_mid", "value_high"):
         val = getattr(v, attr)
@@ -442,7 +606,7 @@ def load_peers(conn, target: dict) -> list[dict]:
     rows = conn.execute(
         "SELECT composite_id, source, title, url, price, year, make, model, "
         "  odometer, is_dealer, is_salvage, needs_work, vehicle_key, trim, "
-        "  first_seen_at, last_seen_at "
+        "  first_seen_at, last_seen_at, latitude, longitude, extras "
         "FROM listings WHERE LOWER(make) = LOWER(?) AND LOWER(model) = LOWER(?) "
         "  AND year BETWEEN ? AND ? AND price IS NOT NULL",
         (target["make"], target["model"], target["year"] - 2, target["year"] + 2)
@@ -453,4 +617,6 @@ def load_peers(conn, target: dict) -> list[dict]:
 def evidence_json(v: Valuation) -> str:
     return json.dumps({"comps": v.comps, "mileage_adjusted": v.mileage_adjusted,
                        "slope_per_mile": v.slope_per_mile,
-                       "dealer_share": v.dealer_share}, default=str)
+                       "dealer_share": v.dealer_share, "segments": v.segments,
+                       "comp_quality": v.comp_quality, "geography": v.geography},
+                      default=str)

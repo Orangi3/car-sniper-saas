@@ -125,7 +125,7 @@ def normalize(it: dict) -> Optional[NormalizedListing]:
         extras={"provider": "marketcheck", "seller_type": it.get("seller_type") or "fsbo",
                 "origin_marketplace": it.get("source"), "vin": it.get("vin"),
                 "trim": build.get("trim"), "body_type": build.get("body_type"),
-                "drivetrain": build.get("drivetrain"),
+                "drivetrain": build.get("drivetrain"), "engine": build.get("engine"),
                 "transmission": build.get("transmission"),
                 "provider_ref_price": it.get("ref_price"),
                 "provider_dom": it.get("dom"),

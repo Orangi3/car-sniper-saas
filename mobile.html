@@ -221,7 +221,7 @@ async function openDeal(cid) {
     const hist = (d.price_history || []).map(h =>
       `<tr><td>${esc(h.event.replace("_", " "))}<div class="muted">${esc(new Date(h.observed_at).toLocaleString())}</div></td><td class="r">${money(h.price)}</td></tr>`).join("");
     const scen = p ? Object.entries(p.scenarios).map(([k, v]) =>
-      `<tr><td>${esc(k)}<div class="muted">resale ${money(v.resale)}</div></td><td class="r"><b>${money(v.profit)}</b><div class="muted">${v.roi_pct != null ? v.roi_pct + "% ROI" : ""}</div></td></tr>`).join("") : "";
+      `<tr><td>${esc(k)}<div class="muted">resale ${money(v.resale)}</div></td><td class="r"><b>${money(v.profit)}</b><div class="muted">${v.roi_pct != null ? v.roi_pct + "% ROI" : ""}${v.days_to_sell ? " · ~" + esc(v.days_to_sell) + " days" : ""}</div></td></tr>`).join("") : "";
     const link = safeUrl(d.url);
     body.innerHTML = `
       ${card(d)}
@@ -252,9 +252,10 @@ async function renderAssumptions(p, cid) {
   const box = $("#assume");
   const s = await api("/api/me/profit_settings").catch(() => null);
   if (!s) return;
-  const keys = ["negotiation_pct", "recon", "transport", "selling_fees", "misc",
-                "sales_tax_pct", "title_registration", "asking_to_sale_pct"];
-  box.innerHTML = `<div class="grid2">` + keys.map(k => `<div><label>${esc(s.labels[k])}${k.endsWith("_pct") ? " (%)" : " ($)"}</label>
+  const keys = ["negotiation_pct", "mechanical", "recon", "transport", "selling_fees",
+                "holding_per_day", "days_to_sell", "misc", "sales_tax_pct",
+                "title_registration", "asking_to_sale_pct"];
+  box.innerHTML = `<div class="grid2">` + keys.map(k => `<div><label>${esc(s.labels[k])}${k.endsWith("_pct") ? " (%)" : k === "days_to_sell" ? "" : " ($)"}</label>
      <input data-k="${k}" type="number" step="any" value="${s.effective[k] == null ? "" : esc(s.effective[k])}" placeholder="not set"></div>`).join("") +
     `</div><button class="btn primary" style="width:100%;margin-top:10px" id="assume-save">Save assumptions</button><div class="err" id="assume-err"></div>`;
   $("#assume-save").onclick = async () => {

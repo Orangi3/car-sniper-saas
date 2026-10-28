@@ -105,10 +105,23 @@ def test_years_beyond_one_flagged_not_depreciated():
     assert any("±2" in r for r in v.reasons)
 
 
-def test_confidence_high_needs_real_evidence():
+def test_asking_only_confidence_capped_at_medium_and_range_widened():
     many = [peer(i, 10000 + (i % 5) * 100, odo=80000 + i * 3000) for i in range(12)]
     v = V.value_listing({**TARGET, "odometer": 100000}, many, now=NOW)
-    assert v.confidence == "high"
+    assert v.confidence == "medium"               # would be "high" on points
+    assert any("capped at medium" in r for r in v.reasons)
+    w = v.value_mid * V.ASKING_UNCERTAINTY_PCT
+    assert v.value_high - v.value_low >= 2 * w
+    assert any("range widened" in r for r in v.reasons)
+
+
+def test_confirmed_sales_can_reach_high_and_are_not_widened():
+    d = (NOW - timedelta(days=20)).date().isoformat()
+    sold = {V.CONFIRMED_SALES: [{"price": 10000 + (i % 3) * 100, "source": "ebay",
+                                 "sale_date": d} for i in range(12)]}
+    v = V.value_listing(TARGET, [], sold, now=NOW)
+    assert v.evidence_class == V.CONFIRMED_SALES and v.confidence == "high"
+    assert not any("range widened" in r for r in v.reasons)
     few = V.value_listing(TARGET, [peer(i, 7000 + i * 3000) for i in range(3)], now=NOW)
     assert few.confidence == "low"
     assert any("listing mileage unknown" in r for r in few.reasons)
@@ -173,3 +186,72 @@ def test_comps_api_excludes_undated_from_sales(monkeypatch):
     out = comps.comps_for_listing(2015, "Toyota", "Camry")
     assert out["incomplete_records"] >= 3
     assert set(out["sources"]) <= set(comps.CONFIRMED_SALE_SOURCES)
+
+
+# ---------- v2: geography, structured attributes, segments, quality -------
+
+def _geo(i, price, lat, lon, **kw):
+    return peer(i, price, latitude=lat, longitude=lon, **kw)
+
+
+TUSC = (33.2098, -87.5692)          # target location
+BHAM = (33.5186, -86.8104)          # ~50 mi
+ATL = (33.7490, -84.3880)           # ~190 mi
+
+
+def test_regional_peers_preferred_when_enough():
+    peers = ([_geo(i, 9000 + i * 100, *BHAM) for i in range(4)]
+             + [_geo(10 + i, 14000 + i * 100, *ATL) for i in range(4)])
+    v = V.value_listing({**TARGET, "latitude": TUSC[0], "longitude": TUSC[1]}, peers, now=NOW)
+    assert v.geography == "regional" and v.n == 4
+    assert v.value_mid < 10000
+    assert all(c["distance_mi"] <= V.REGIONAL_RADIUS_MI for c in v.comps)
+
+
+def test_national_fallback_is_stated_and_lowers_confidence():
+    peers = [_geo(i, 9000 + i * 100, *ATL) for i in range(5)]
+    tgt = {**TARGET, "latitude": TUSC[0], "longitude": TUSC[1]}
+    v = V.value_listing(tgt, peers, now=NOW)
+    base = V.value_listing(TARGET, peers, now=NOW)            # location unknown
+    assert v.geography == "national" and base.geography == "unknown"
+    assert any("within 150 mi" in r for r in v.reasons)
+    order = ["insufficient", "low", "medium", "high"]
+    assert order.index(v.confidence) <= order.index(base.confidence)
+
+
+def test_drivetrain_matched_from_structured_fields_only():
+    awd = [peer(i, 12000 + i * 100, extras='{"drivetrain": "AWD"}') for i in range(3)]
+    fwd = [peer(10 + i, 9000 + i * 100, drivetrain="FWD") for i in range(3)]
+    v = V.value_listing({**TARGET, "extras": {"drivetrain": "All Wheel Drive"}},
+                        awd + fwd, now=NOW)
+    assert v.value_mid >= 12000 and any("drivetrain-matched (awd)" in r for r in v.reasons)
+    # title text never sets drivetrain
+    t2 = V.value_listing({**TARGET, "title": "2015 Toyota Camry AWD"}, awd + fwd, now=NOW)
+    assert not any("drivetrain" in r for r in t2.reasons)
+
+
+def test_segments_reported_separately_never_blended():
+    d = (NOW - timedelta(days=20)).date().isoformat()
+    peers = ([peer(i, 9000 + i * 100) for i in range(3)]
+             + [peer(10 + i, 13000 + i * 100, is_dealer=1) for i in range(2)])
+    sold = {V.CONFIRMED_SALES: [{"price": 9500, "source": "bat", "sale_date": d},
+                                {"price": 9700, "source": "ebay", "sale_date": d}],
+            V.HISTORICAL: [{"price": 8000}]}
+    v = V.value_listing(TARGET, peers, sold, now=NOW)
+    seg = v.segments
+    assert seg["private_asking"] == {"n": 3, "median": 9100}
+    assert seg["dealer_asking"] == {"n": 2, "median": 13050}
+    assert seg["confirmed_sales"]["n"] == 2 and seg["auction_results"]["n"] == 1
+    assert seg["historical_incomplete"]["n"] == 1
+    assert seg["model_estimate"]["median"] is None
+    assert v.evidence_class == V.ASKING            # 2 sales < MIN_COMPS: not used
+
+
+def test_match_quality_reported_and_ranks_closer_peers_higher():
+    peers = [peer(i, 10000 + i * 50, odo=100000 + i * 1000) for i in range(3)] + \
+            [peer(9, 10100, odo=190000)]
+    v = V.value_listing({**TARGET, "odometer": 101000}, peers, now=NOW)
+    q = {c["composite_id"]: c["match_quality"] for c in v.comps}
+    assert q["cl:p0"] == 100 and q["cl:p9"] < q["cl:p0"]
+    assert any("mileage >40k apart" in n for c in v.comps for n in c["match_notes"])
+    assert v.comp_quality is not None and 0 < v.comp_quality <= 100

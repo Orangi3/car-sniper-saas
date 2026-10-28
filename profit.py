@@ -14,7 +14,10 @@ Deliberately NOT assumed:
   * a negotiated purchase price — defaults to paying the asking price.
 
 Scenarios: conservative / base / optimistic resale = valuation low / mid /
-high. When the valuation comes from asking prices (not completed sales),
+high. They also differ in purchase price (expected discount ∓
+negotiation_spread_pct) and time to sell (days_to_sell × 1.5 / 1 / 0.5),
+which drives holding cost and annualized ROI. Days to sell is a labeled
+assumption, not a measured liquidity figure. When the valuation comes from asking prices (not completed sales),
 `asking_to_sale_pct` haircuts all three, because asking prices overstate
 what cars actually sell for; that haircut is itself a labeled assumption.
 
@@ -33,7 +36,11 @@ DEFAULTS: dict = {
     "transport": 0.0,
     "transport_per_mile": 0.0,    # round trip cost per mile of distance (optional)
     "dealer_to_private_pct": 10.0,  # dealer retail ask -> private resale, scaled by dealer share
-    "recon": 750.0,               # reconditioning / repair allowance
+    "negotiation_spread_pct": 5.0,  # ± around the expected discount (scenarios)
+    "mechanical": 500.0,          # mechanical repair allowance
+    "recon": 250.0,               # cosmetic reconditioning / detailing
+    "holding_per_day": 5.0,       # insurance, parking, capital cost per day held
+    "days_to_sell": 21.0,         # expected days from purchase to sale (base case)
     "selling_fees": 100.0,        # listing / platform fees when you resell
     "misc": 0.0,
 }
@@ -43,6 +50,8 @@ _BOUNDS = {
     "sales_tax_pct": (0, 15), "title_registration": (0, 5000),
     "transport": (0, 20000), "recon": (0, 100000), "selling_fees": (0, 20000),
     "misc": (0, 100000), "transport_per_mile": (0, 5), "dealer_to_private_pct": (0, 40),
+    "negotiation_spread_pct": (0, 30), "mechanical": (0, 100000),
+    "holding_per_day": (0, 500), "days_to_sell": (1, 365),
 }
 
 LABELS = {
@@ -53,7 +62,11 @@ LABELS = {
     "transport": "Transport",
     "transport_per_mile": "Transport per mile (round trip)",
     "dealer_to_private_pct": "Dealer-retail to private-sale haircut",
-    "recon": "Repairs / reconditioning allowance",
+    "negotiation_spread_pct": "Negotiation uncertainty (± scenarios)",
+    "mechanical": "Mechanical repair allowance",
+    "recon": "Cosmetic reconditioning",
+    "holding_per_day": "Holding cost per day",
+    "days_to_sell": "Expected days to sell",
     "selling_fees": "Selling fees",
     "misc": "Other costs",
 }
@@ -79,11 +92,18 @@ def clean_settings(raw: Optional[dict]) -> dict:
 
 def merged(settings: Optional[dict]) -> dict:
     a = dict(DEFAULTS)
-    a.update(clean_settings(settings or {}))
+    mine = clean_settings(settings or {})
+    if "recon" in mine and "mechanical" not in mine:
+        # saved before the split: "recon" was the whole repair allowance
+        a["mechanical"] = 0.0
+    a.update(mine)
     for k in ("negotiation_pct", "asking_to_sale_pct", "transport", "recon",
-              "selling_fees", "misc", "transport_per_mile", "dealer_to_private_pct"):
+              "selling_fees", "misc", "transport_per_mile", "dealer_to_private_pct",
+              "negotiation_spread_pct", "mechanical", "holding_per_day"):
         if a.get(k) is None:
             a[k] = 0.0
+    if not a.get("days_to_sell"):
+        a["days_to_sell"] = DEFAULTS["days_to_sell"]
     return a
 
 
@@ -109,22 +129,32 @@ def compute(price: float, value_low: Optional[float], value_mid: Optional[float]
     if not price or not value_mid:
         return None
     a = merged(settings)
-    acquisition = price * (1 - a["negotiation_pct"] / 100.0)
-    costs: dict[str, float] = {}
+    neg, spread, days = a["negotiation_pct"], a["negotiation_spread_pct"], a["days_to_sell"]
+    shape = {"conservative": (max(0.0, neg - spread), 1.5),
+             "base": (neg, 1.0), "optimistic": (min(60.0, neg + spread), 0.5)}
+
+    def buy_costs(discount_pct: float) -> tuple[float, dict]:
+        acq = price * (1 - discount_pct / 100.0)
+        c: dict[str, float] = {}
+        if a["sales_tax_pct"] is not None:
+            c["sales_tax_pct"] = acq * a["sales_tax_pct"] / 100.0
+        if a["title_registration"] is not None:
+            c["title_registration"] = a["title_registration"]
+        for k in ("transport", "mechanical", "recon", "selling_fees", "misc"):
+            if a[k]:
+                c[k] = a[k]
+        if a["transport_per_mile"] and distance_mi:
+            c["transport_per_mile"] = 2 * distance_mi * a["transport_per_mile"]
+        return acq, c
+
     not_included: list[str] = []
     if a["sales_tax_pct"] is None:
         not_included.append("sales tax — set your state's rate")
-    else:
-        costs["sales_tax_pct"] = acquisition * a["sales_tax_pct"] / 100.0
     if a["title_registration"] is None:
         not_included.append("title & registration — set your local fees")
-    else:
-        costs["title_registration"] = a["title_registration"]
-    for k in ("transport", "recon", "selling_fees", "misc"):
-        if a[k]:
-            costs[k] = a[k]
-    if a["transport_per_mile"] and distance_mi:
-        costs["transport_per_mile"] = 2 * distance_mi * a["transport_per_mile"]
+    acquisition, costs = buy_costs(neg)
+    if a["holding_per_day"]:
+        costs["holding"] = a["holding_per_day"] * days
     total_costs = sum(costs.values())
     invested = acquisition + total_costs
 
@@ -139,32 +169,51 @@ def compute(price: float, value_low: Optional[float], value_mid: Optional[float]
         resale_points = {"base": value_mid}
     out_scen = {}
     for name, v in resale_points.items():
+        disc, dmult = shape[name]
+        acq, c = buy_costs(disc)
+        hold_days = days * dmult
+        holding = a["holding_per_day"] * hold_days
+        inv = acq + sum(c.values()) + holding
         resale = v * (1 - haircut)
-        profit = resale - invested
-        out_scen[name] = {"resale": round(resale), "profit": round(profit),
-                          "roi_pct": round(100 * profit / invested, 1) if invested else None}
+        profit = resale - inv
+        roi = profit / inv if inv else None
+        out_scen[name] = {
+            "resale": round(resale), "purchase": round(acq), "holding": round(holding),
+            "days_to_sell": round(hold_days, 1), "invested": round(inv),
+            "profit": round(profit),
+            "roi_pct": round(100 * roi, 1) if roi is not None else None,
+            # simple (non-compounded) annualization; large for short holds
+            "annualized_roi_pct": (round(100 * roi * 365 / hold_days, 1)
+                                   if roi is not None and hold_days else None)}
 
+    LAB = dict(LABELS, holding="Holding cost")
     assumptions = []
-    for k in ("negotiation_pct", "asking_to_sale_pct", "dealer_to_private_pct",
-              "sales_tax_pct", "title_registration", "transport", "transport_per_mile",
-              "recon", "selling_fees", "misc"):
+    for k in ("negotiation_pct", "negotiation_spread_pct", "asking_to_sale_pct",
+              "dealer_to_private_pct", "sales_tax_pct", "title_registration", "transport",
+              "transport_per_mile", "mechanical", "recon", "holding_per_day", "days_to_sell",
+              "selling_fees", "misc"):
         if k == "asking_to_sale_pct" and evidence_class == "confirmed_sales":
             continue
         if k == "dealer_to_private_pct" and not dealer_cut:
             continue
         if k == "transport_per_mile" and "transport_per_mile" not in costs:
             continue
+        if k == "negotiation_spread_pct" and not scenarios:
+            continue
         v = a.get(k)
         if v is None:
             continue
         assumptions.append({"key": k, "label": LABELS[k], "value": v,
-                            "unit": "%" if k.endswith("_pct") else "$",
+                            "unit": ("%" if k.endswith("_pct") else
+                                     "days" if k == "days_to_sell" else "$"),
                             "is_default": settings is None or k not in (settings or {})})
     explanation = [
         f"Buy at ${acquisition:,.0f}" + (f" ({a['negotiation_pct']:g}% under asking)"
                                          if a["negotiation_pct"] else " (asking price)"),
         f"Plus costs ${total_costs:,.0f}: " + (", ".join(
-            f"{LABELS[k].lower()} ${v:,.0f}" for k, v in costs.items()) or "none entered"),
+            f"{LAB[k].lower()} ${v:,.0f}" for k, v in costs.items()) or "none entered")
+        + (f" (holding = ${a['holding_per_day']:g}/day × {days:g} days)"
+           if a["holding_per_day"] else ""),
         (f"Resale = market value × (1 − {haircut * 100:.1f}%): "
          f"{a['asking_to_sale_pct']:g}% asking-to-sale"
          + (f" + {dealer_cut * 100:.1f}% because {dealer_share:.0%} of comparables were "
@@ -172,7 +221,11 @@ def compute(price: float, value_low: Optional[float], value_mid: Optional[float]
          + " — the value comes from asking prices, not completed sales")
         if haircut else "Resale = market value from completed sales",
         "Profit = resale − purchase − costs. Estimate only; not guaranteed.",
-    ]
+    ] + ([
+        f"Scenarios: conservative pays {shape['conservative'][0]:g}% under asking and "
+        f"sells in {days * 1.5:g} days at the low value; optimistic pays "
+        f"{shape['optimistic'][0]:g}% under and sells in {days * 0.5:g} days at the high value",
+    ] if scenarios else [])
     return {
         "known": {"asking_price": price, "value_low": value_low, "value_mid": value_mid,
                   "value_high": value_high, "evidence_class": evidence_class},

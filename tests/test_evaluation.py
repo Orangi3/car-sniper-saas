@@ -84,3 +84,27 @@ def test_snapshot_captures_system_timeline_then_human_label(client, world):
     assert r["detection_latency"]["n"] == 1 and 400 < r["detection_latency"]["median_s"] < 600
     assert r["precision_of_alerts"]["value"] == 1.0
     assert r["opportunities_per_active_user"]["active_users"] == 1
+
+
+def test_valuation_error_and_coverage_from_fixture(app):
+    import evaluation
+    evaluation.import_csv(FIX, fixture=True)
+    r = evaluation.report(include_fixtures=True)
+    ve = r["valuation_error"]
+    # f1: estimated 10,000 vs confirmed sale 9,800 -> +2.0%
+    assert ve["n"] == 1 and ve["median_abs_pct_error"] == 2.0 and ve["mean_bias_pct"] == 2.0
+    assert ve["interval_coverage"]["value"] is None          # fixture stores no range
+    assert set(ve["by_evidence_class"]) == {"asking_comparables"}
+    assert ve["enough_samples"] is False
+    cov = r["coverage"]
+    assert cov["by_source"]["fixture"]["observations"] == 6
+    assert cov["by_source"]["fixture"]["valued_pct"] == 100.0
+    assert cov["by_source"]["fixture"]["alerted"] == 4
+    assert cov["by_territory"] == {"unknown": cov["by_source"]["fixture"]}
+
+
+def test_valuation_error_not_claimed_without_sales(app):
+    import evaluation
+    evaluation.label("craigslist", "x1", "genuine_opportunity")
+    r = evaluation.report()
+    assert r["valuation_error"] == {"n": 0, "why": "no confirmed sale amounts recorded"}
