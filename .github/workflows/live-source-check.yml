@@ -19,9 +19,9 @@ on:
         required: false
         default: "35401"
       radius:
-        description: "radius in miles"
+        description: "radius in miles (150 = Tuscaloosa launch test assumption)"
         required: false
-        default: "75"
+        default: "150"
 
 permissions:
   contents: read

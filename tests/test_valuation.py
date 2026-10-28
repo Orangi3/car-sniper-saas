@@ -95,7 +95,7 @@ def test_outliers_rejected():
 def test_dealer_fallback_lowers_confidence_and_is_stated():
     peers = [peer(i, 13000 + i * 50, is_dealer=1) for i in range(4)] + [peer(9, 9000)]
     v = V.value_listing(TARGET, peers, now=NOW)
-    assert any("dealer asking prices" in r for r in v.reasons)
+    assert any("dealer or unknown-seller asking prices" in r for r in v.reasons)
 
 
 def test_years_beyond_one_flagged_not_depreciated():

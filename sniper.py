@@ -323,8 +323,11 @@ def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str
         flags.append("branded_title")
     if l.get("needs_work"):
         flags.append("needs_work")
-    if l.get("is_dealer"):
+    seller = valuation.seller_kind(l)
+    if seller == "dealer":
         flags.append("dealer")
+    elif seller == "unknown":
+        flags.append("seller_type_unknown")     # can't confirm a private seller
     if not l.get("odometer"):
         flags.append("mileage_unknown")
     if l.get("relist_of"):
