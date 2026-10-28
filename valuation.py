@@ -305,7 +305,9 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
         slope = theil_sen_slope([(c["odometer"], c["price"]) for c in with_miles])
         if slope is not None:
             slope = max(SLOPE_BOUNDS[0], min(SLOPE_BOUNDS[1], slope))
-            adjusted = True
+            adjusted = slope < 0          # 0 = no detectable mileage effect
+        if not adjusted:
+            slope = None
 
     pairs = []
     for c in usable:
@@ -403,6 +405,8 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
         elif not t_miles:
             points -= 1
             reasons.append("listing mileage unknown")
+        elif len(with_miles) >= MIN_MILEAGE_POINTS:
+            reasons.append("no mileage effect detectable among peers; not adjusted")
         else:
             reasons.append("not mileage-adjusted (too few peers with mileage)")
         if dealer_fallback:

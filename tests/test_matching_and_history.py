@@ -234,9 +234,18 @@ def test_unchanged_repoll_is_not_rescored(world):
     assert after["last_seen_at"] >= before["last_seen_at"]
 
 
+def _age_listing(cid, hours):
+    import db
+    from datetime import datetime, timedelta, timezone
+    with db.session() as c:
+        c.execute("UPDATE listings SET last_seen_at = ? WHERE composite_id = ?",
+                  ((datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(), cid))
+
+
 def test_relisted_cheaper_is_detected_as_price_drop(world):
     world.ingest([L("tuscaloosa:111", 9000, title="2015 Toyota Camry SE one owner",
                     odo=142345)])
+    _age_listing("craigslist:tuscaloosa:111", 24)      # old post taken down
     world.ingest([L("tuscaloosa:222", 7900, title="2015 Toyota Camry SE one owner",
                     odo=142345)])
     row = q("SELECT relist_of, previous_price FROM listings "
@@ -244,6 +253,13 @@ def test_relisted_cheaper_is_detected_as_price_drop(world):
     assert row == {"relist_of": "craigslist:tuscaloosa:111", "previous_price": 9000}
     assert q("SELECT event FROM listing_prices WHERE composite_id = "
              "'craigslist:tuscaloosa:222'") == [{"event": "relist"}]
+
+
+def test_two_live_identical_posts_are_not_a_relist(world):
+    world.ingest([L("tuscaloosa:1", 9000, title="2015 Toyota Camry SE", odo=128000),
+                  L("tuscaloosa:2", 8500, title="2015 Toyota Camry SE", odo=128000)])
+    rows = q("SELECT relist_of FROM listings WHERE composite_id LIKE 'craigslist:tuscaloosa:%'")
+    assert all(r["relist_of"] is None for r in rows)
 
 
 def test_lookalike_cars_are_not_merged(world):

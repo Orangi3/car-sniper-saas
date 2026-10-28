@@ -81,6 +81,7 @@ def db():
 VIN_RE = re.compile(r"\b([A-HJ-NPR-Z0-9]{17})\b")
 MATERIAL_DROP_PCT = 3.0
 MATERIAL_DROP_USD = 250
+RELIST_GAP_HOURS = 6
 
 
 def find_vin(*texts: str) -> Optional[str]:
@@ -110,7 +111,9 @@ def _find_relist(conn, l: NormalizedListing, vehicle_key: Optional[str],
     """An earlier listing of the SAME vehicle, matched cautiously:
       1. same verified VIN (any source), or
       2. same source + region, identical normalized title, identical
-         non-null odometer, and (if both have photos) the same first photo.
+         non-null odometer, (if both have photos) the same first photo, AND
+         the earlier post has been gone for RELIST_GAP_HOURS — two posts that
+         are both live are two listings, not a relist.
     Never on year/make/model/price alone."""
     if vehicle_key:
         r = conn.execute(
@@ -128,9 +131,13 @@ def _find_relist(conn, l: NormalizedListing, vehicle_key: Optional[str],
         (l.source, l.odometer, l.year, cid)).fetchall()
     nt = _norm_title(l.title)
     first_img = (l.image_urls or [None])[0]
+    gone_before = (datetime.now(timezone.utc)
+                   - timedelta(hours=RELIST_GAP_HOURS)).isoformat()
     for r in rows:
         if _norm_title(r["title"]) != nt:
             continue
+        if str(r["last_seen_at"] or "") > gone_before:
+            continue                      # still live: a different listing
         if region and not str(r["source_id"]).startswith(region + ":"):
             continue
         try:

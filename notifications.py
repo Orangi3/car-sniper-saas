@@ -360,6 +360,27 @@ def _user_destination(user_id: int) -> Optional[dict]:
     return dict(r) if r else None
 
 
+_USAGE_KIND = {"twilio": "sms", "ntfy": "push", "pushover": "push", "imessage": "push",
+               "webhook": "webhook", "discord": "webhook"}
+
+
+def _record_usage(user_id: Optional[int], channel: str) -> None:
+    """Meter a successful send (feeds SMS caps and /api/admin/usage).
+    Never fails the delivery."""
+    try:
+        import db as _db
+        import plans
+        kind = _USAGE_KIND.get(channel, channel)
+        with _db.session() as conn:
+            conn.execute(
+                "INSERT INTO usage_events(user_id, kind, units, cost_cents, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (user_id, kind, 1, plans.UNIT_COST_CENTS.get(kind, 0.0),
+                 datetime.now(timezone.utc).isoformat()))
+    except Exception as e:
+        print(f"[usage] {e}", file=sys.stderr)
+
+
 def deliver_job(job: dict) -> dict:
     """jobs/worker.py handler for kind='notify'."""
     p = job["payload"]
@@ -389,6 +410,7 @@ def deliver_job(job: dict) -> dict:
                           else os.environ.get("ALERT_WEBHOOK_URL"))}
     try:
         detail = _deliver(ch, deal, **kw)
+        _record_usage(p.get("user_id") if p.get("audience") == "user" else None, ch)
     except safe_http.UnsafeDestination as e:
         raise jobqueue.PermanentError(f"unsafe destination: {e}") from None
     except safe_http.DeliveryError as e:

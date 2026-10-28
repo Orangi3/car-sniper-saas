@@ -2102,6 +2102,271 @@ def api_me_alerts():
     return jsonify(rows)
 
 
+# ---- Deals API (mobile app) ---------------------------------------------
+#
+# Everything a deal card / detail sheet needs, from the shared valuation
+# (near_misses) plus the caller's own state (saved_v2, user_matches, profit
+# settings). Feeds:
+#   mine     this user's personalized matches (saved searches)
+#   trusted  shared feed: trusted valuations at least 10% under value
+#   risk     shared, clearly labeled: risk-flagged listings 10%+ under
+#   search   preview: current listings that satisfy one of the user's
+#            saved searches (used right after onboarding)
+
+_DEAL_COLS = (
+    "l.composite_id, l.source, l.url, l.title, l.price, l.previous_price, "
+    "l.price_changed_at, l.year, l.make, l.model, l.odometer, l.location, l.state, "
+    "l.posted_at, l.first_seen_at, l.last_seen_at, l.image_urls, l.is_dealer, "
+    "l.is_salvage, l.needs_work, l.is_auction, l.relist_of, l.scam_score, "
+    "nm.discount_pct, nm.comp_avg AS value_mid, nm.value_low, nm.value_high, "
+    "nm.comp_n, nm.evidence_class, nm.confidence, nm.trust, nm.risk_flags, "
+    "nm.refreshed_at AS valued_at")
+
+
+def _deal_row(r: dict, psettings: dict, plan: Optional[str]) -> dict:
+    import plans
+    import profit as profit_mod
+    d = dict(r)
+    try:
+        imgs = json.loads(d.pop("image_urls") or "[]")
+    except ValueError:
+        imgs = []
+    d["image"] = imgs[0] if imgs else None
+    try:
+        d["risk_flags"] = json.loads(d.get("risk_flags") or "[]")
+    except ValueError:
+        d["risk_flags"] = []
+    pr = profit_mod.compute(d.get("price"), d.get("value_low"), d.get("value_mid"),
+                            d.get("value_high"), d.get("evidence_class"), psettings,
+                            scenarios=plans.limits(plan)["profit_scenarios"])
+    d["profit"] = ({k: v["profit"] for k, v in pr["scenarios"].items()} if pr else None)
+    return d
+
+
+def _user_ctx(conn, u):
+    import profit as profit_mod
+    return profit_mod.load_user_settings(conn, u.id), u.plan
+
+
+@app.get("/api/deals")
+@auth.login_required
+def api_deals():
+    u = auth.current_user()
+    feed = (request.args.get("feed") or "trusted").lower()
+    limit = max(1, min(100, int(request.args.get("limit", 30))))
+    with sniper.db() as conn:
+        psettings, plan = _user_ctx(conn, u)
+        if feed == "mine":
+            rows = conn.execute(
+                f"SELECT {_DEAL_COLS}, m.id AS match_id, m.event, m.created_at AS matched_at, "
+                "  s.name AS search_name, sv.status AS user_status "
+                "FROM user_matches m JOIN listings l ON l.composite_id = m.composite_id "
+                "LEFT JOIN near_misses nm ON nm.composite_id = m.composite_id "
+                "LEFT JOIN saved_searches s ON s.id = m.saved_search_id "
+                "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
+                "WHERE m.user_id = ? AND m.dismissed = FALSE "
+                "ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+                (u.id, u.id, limit)).fetchall()
+        elif feed in ("trusted", "risk"):
+            rows = conn.execute(
+                f"SELECT {_DEAL_COLS}, sv.status AS user_status FROM near_misses nm "
+                "JOIN listings l ON l.composite_id = nm.composite_id "
+                "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
+                "WHERE nm.trust = ? AND nm.discount_pct >= 10 "
+                "  AND (sv.status IS NULL OR sv.status <> 'passed') "
+                "ORDER BY nm.score DESC LIMIT ?",
+                (u.id, feed, limit)).fetchall()
+        elif feed == "search":
+            import plans
+            import saved_search_alerts as ssa
+            sid = int(request.args.get("search_id", 0))
+            s = conn.execute("SELECT filter_json FROM saved_searches WHERE id = ? "
+                             "AND user_id = ?", (sid, u.id)).fetchone()
+            if not s:
+                return jsonify({"error": "saved search not found"}), 404
+            f = json.loads(s[0] or "{}")
+            cands = conn.execute(
+                f"SELECT {_DEAL_COLS}, sv.status AS user_status FROM near_misses nm "
+                "JOIN listings l ON l.composite_id = nm.composite_id "
+                "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
+                "WHERE nm.discount_pct > 0 ORDER BY nm.score DESC LIMIT 500",
+                (u.id,)).fetchall()
+            lim = plans.limits(plan)
+            rows = []
+            for r in cands:
+                d = _deal_row(dict(r), psettings, plan)
+                opp = {**d, "est_profit": (d.get("profit") or {}).get("base"),
+                       "event": "new"}
+                if ssa.criteria_match(f, opp, lim)[0]:
+                    rows.append(r)
+                if len(rows) >= limit:
+                    break
+        else:
+            return jsonify({"error": "feed must be mine|trusted|risk|search"}), 400
+    return jsonify([_deal_row(dict(r), psettings, plan) for r in rows])
+
+
+@app.get("/api/deals/<path:cid>")
+@auth.login_required
+def api_deal_detail(cid: str):
+    import plans
+    import profit as profit_mod
+    u = auth.current_user()
+    with sniper.db() as conn:
+        r = conn.execute(
+            f"SELECT {_DEAL_COLS}, l.description, nm.confidence_reasons, nm.evidence, "
+            "  sv.status AS user_status, sv.note AS user_note "
+            "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
+            "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
+            "WHERE l.composite_id = ?", (u.id, cid)).fetchone()
+        if not r:
+            return jsonify({"error": "not found"}), 404
+        hist = [dict(h) for h in conn.execute(
+            "SELECT price, event, observed_at FROM listing_prices "
+            "WHERE composite_id = ? ORDER BY observed_at, id", (cid,)).fetchall()]
+        psettings, plan = _user_ctx(conn, u)
+    d = _deal_row(dict(r), psettings, plan)
+    for k in ("confidence_reasons", "evidence"):
+        try:
+            d[k] = json.loads(d.get(k) or ("[]" if k == "confidence_reasons" else "{}"))
+        except ValueError:
+            d[k] = None
+    d["description"] = (d.get("description") or "")[:2000]
+    d["price_history"] = hist
+    d["profit_detail"] = profit_mod.compute(
+        d.get("price"), d.get("value_low"), d.get("value_mid"), d.get("value_high"),
+        d.get("evidence_class"), psettings,
+        scenarios=plans.limits(plan)["profit_scenarios"])
+    d["plan"] = {"plan": plan, "name": plans.display_name(plan), **plans.limits(plan)}
+    return jsonify(d)
+
+
+_DEAL_ACTIONS = {"save": "saved", "contacted": "contacted", "dismiss": "passed",
+                 "passed": "passed", "negotiating": "negotiating",
+                 "going_to_see": "going_to_see", "bought": "bought"}
+
+
+@app.post("/api/deals/<path:cid>/action")
+@auth.plan_required("starter")
+def api_deal_action(cid: str):
+    u = auth.current_user()
+    action = str((request.get_json(silent=True) or {}).get("action") or "").lower()
+    if action not in _DEAL_ACTIONS and action != "clear":
+        return jsonify({"error": f"action must be one of {sorted(_DEAL_ACTIONS)} or clear"}), 400
+    now = _db.now_utc_iso()
+    with sniper.db() as conn:
+        if not conn.execute("SELECT 1 FROM listings WHERE composite_id = ?", (cid,)).fetchone():
+            return jsonify({"error": "not found"}), 404
+        if action == "clear":
+            conn.execute("DELETE FROM saved_v2 WHERE user_id = ? AND composite_id = ?",
+                         (u.id, cid))
+            conn.execute("UPDATE user_matches SET dismissed = FALSE WHERE user_id = ? "
+                         "AND composite_id = ?", (u.id, cid))
+            return jsonify({"ok": True, "status": None})
+        status = _DEAL_ACTIONS[action]
+        conn.execute(
+            "INSERT INTO saved_v2(user_id, composite_id, note, saved_at, status, updated_at) "
+            "VALUES (?,?,?,?,?,?) ON CONFLICT(user_id, composite_id) DO UPDATE SET "
+            "status = excluded.status, updated_at = excluded.updated_at",
+            (u.id, cid, "", now, status, now))
+        if action == "dismiss":
+            conn.execute("UPDATE user_matches SET dismissed = TRUE WHERE user_id = ? "
+                         "AND composite_id = ?", (u.id, cid))
+        conn.execute("UPDATE user_matches SET seen = TRUE WHERE user_id = ? "
+                     "AND composite_id = ?", (u.id, cid))
+    return jsonify({"ok": True, "status": status})
+
+
+@app.get("/api/me/profit_settings")
+@auth.login_required
+def api_profit_settings_get():
+    import profit as profit_mod
+    u = auth.current_user()
+    with sniper.db() as conn:
+        mine = profit_mod.load_user_settings(conn, u.id)
+    return jsonify({"settings": mine, "defaults": profit_mod.DEFAULTS,
+                    "effective": profit_mod.merged(mine), "labels": profit_mod.LABELS})
+
+
+@app.post("/api/me/profit_settings")
+@auth.plan_required("starter")
+def api_profit_settings_post():
+    import plans
+    import profit as profit_mod
+    u = auth.current_user()
+    if not plans.limits(u.plan)["custom_profit_assumptions"]:
+        return jsonify({"error": "upgrade required", "required_plan": "pro"}), 402
+    body = request.get_json(silent=True) or {}
+    with sniper.db() as conn:
+        cur = profit_mod.load_user_settings(conn, u.id)
+        cur.update(profit_mod.clean_settings(body))
+        cur = {k: v for k, v in cur.items() if v is not None or k in
+               ("sales_tax_pct", "title_registration")}
+        conn.execute("UPDATE users SET profit_settings = ? WHERE id = ?",
+                     (json.dumps(cur), u.id))
+    return api_profit_settings_get()
+
+
+@app.get("/api/plans")
+def api_plans():
+    import plans
+    u = auth.current_user()
+    return jsonify({"plans": plans.public_table(),
+                    "current": u.plan if u else None,
+                    "note": "Prices are set in Stripe; limits are enforced server-side."})
+
+
+@app.get("/api/me/usage")
+@auth.login_required
+def api_me_usage():
+    import plans
+    u = auth.current_user()
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    with sniper.db() as conn:
+        by_kind = {r["kind"]: int(r["n"]) for r in conn.execute(
+            "SELECT kind, COALESCE(SUM(units), 0) AS n FROM usage_events "
+            "WHERE user_id = ? AND created_at >= ? GROUP BY kind", (u.id, month))}
+        searches = int(conn.execute("SELECT COUNT(*) FROM saved_searches WHERE user_id = ?",
+                                    (u.id,)).fetchone()[0])
+        today = int(conn.execute("SELECT COUNT(*) FROM user_matches WHERE user_id = ? "
+                                 "AND notified = TRUE AND created_at >= ?",
+                                 (u.id, day)).fetchone()[0])
+    return jsonify({"plan": u.plan, "plan_name": plans.display_name(u.plan),
+                    "limits": plans.limits(u.plan), "saved_searches": searches,
+                    "alerts_today": today, "sends_this_month": by_kind})
+
+
+@app.get("/api/admin/usage")
+@auth.admin_required
+def api_admin_usage():
+    """Per-account billable usage this month with ESTIMATED cost (unit costs
+    are operator-set assumptions — see plans.UNIT_COST_CENTS)."""
+    from datetime import datetime, timezone
+    month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0,
+                                               microsecond=0).isoformat()
+    with sniper.db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT e.user_id, u.email, u.plan, e.kind, SUM(e.units) AS units, "
+            "  SUM(e.cost_cents) AS est_cost_cents "
+            "FROM usage_events e LEFT JOIN users u ON u.id = e.user_id "
+            "WHERE e.created_at >= ? GROUP BY e.user_id, u.email, u.plan, e.kind "
+            "ORDER BY est_cost_cents DESC", (month,))]
+        jq = __import__("jobqueue").stats()
+    return jsonify({"since": month, "rows": rows, "jobs": jq})
+
+
+@app.get("/m")
+def mobile_page():
+    if not auth.current_user():
+        return redirect("/login", code=302)
+    resp = send_from_directory(ROOT, "mobile.html")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 # ---- Admin: source health + manual poll trigger -------------------------
 
 @app.get("/api/admin/sources/health")
