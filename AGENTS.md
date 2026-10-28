@@ -11,7 +11,7 @@ checks, branch protection — not by trusting an agent to behave.
 | Nightly maintenance (`.github/workflows/maintenance.yml`) | Active once merged. Plain CI, no AI. Opens/updates one deduplicated `maintenance-failure` issue on failure. |
 | Live data probe (`live-source-check.yml`) | Manual dispatch; needs provider secrets. |
 | Agent runs (`agent-task.yml`) | **Inactive.** Needs the owner's `ANTHROPIC_API_KEY` secret and an `AGENT_MODEL` variable. Not yet verified end to end. |
-| Branch protection on `main` | **Not enabled** — owner action (see below). Until it is, "agents never merge" is a convention, not a guarantee. |
+| Branch protection on `main` | **Not enabled** — owner action (see below). `agent-task` refuses to start until it is. |
 
 Nothing runs continuously. Agent work happens only when the owner starts it,
 and stops when the owner's API budget or the run limits are reached.

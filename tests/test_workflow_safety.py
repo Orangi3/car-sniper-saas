@@ -23,13 +23,18 @@ def test_ci_token_is_read_only():
 
 def test_agent_runs_only_for_owner_written_owner_labeled_issues():
     s = _read("agent-task.yml")
-    on_block = s.split("\non:\n", 1)[1].split("\nconcurrency:", 1)[0]
+    on_block = s.split("\non:\n", 1)[1].split("\njobs:", 1)[0]
+    # no workflow-level group: unrelated label events must not cancel a queued run
+    assert "\nconcurrency:" not in s.split("\njobs:", 1)[0]
+    run_job = s.split("\n  run:\n", 1)[1].split("\n  report:\n", 1)[0]
+    assert "group: agent-task" in run_job
     assert "issues:" in on_block and "pull_request" not in on_block
     assert "issue_comment" not in on_block          # comments can't start runs
     for gate in ("github.event.sender.login == github.repository_owner",
                  "github.event.issue.user.login == github.repository_owner",
                  "vars.AGENT_PAUSED != 'true'", "AGENT_MAX_RUNS_PER_DAY",
-                 "agent-running", "group: agent-task"):
+                 "agent-running", "group: agent-task", '.protected',
+                 'issue lock "$ISSUE"', 'issue unlock "$ISSUE"'):
         assert gate in s, gate
 
 

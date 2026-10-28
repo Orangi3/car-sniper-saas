@@ -14,7 +14,12 @@ name: agent-task
 #   * comments and any listing/provider data are untrusted data, not
 #     instructions (stated in the prompt; tools are allow-listed)
 #   * the agent can push only branches; branch protection on `main`
-#     (OWNER_ACTIONS A) is what makes "never merges" enforceable
+#     (OWNER_ACTIONS A) is what makes "never merges" enforceable, so the
+#     gate REFUSES to start while the default branch is unprotected
+#     (a command allow-list alone can't stop `git push origin agent/x:main`)
+#   * comments are a prompt-injection channel: the gate refuses if anyone
+#     other than the owner (or a bot) has commented, then LOCKS the issue
+#     conversation for the duration of the run (unlocked by the report job)
 #   * the workflow never runs on pull_request events, so fork PRs can't
 #     reach the API key
 #
@@ -28,9 +33,10 @@ on:
   issues:
     types: [labeled]
 
-concurrency:
-  group: agent-task           # one agent run at a time across the repo
-  cancel-in-progress: false
+# No workflow-level concurrency group: every `labeled` event (any label, any
+# issue) starts a run, and GitHub keeps only ONE pending run per group, so a
+# workflow-level group let unrelated label events cancel a queued agent
+# task. The group sits on the `run` job instead (only gated runs reach it).
 
 jobs:
   gate:
@@ -45,6 +51,7 @@ jobs:
     permissions:
       issues: write
       actions: read
+      contents: read
     outputs:
       go: ${{ steps.check.outputs.go }}
     steps:
@@ -53,6 +60,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
+          OWNER: ${{ github.repository_owner }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
           MAX_RUNS: ${{ vars.AGENT_MAX_RUNS_PER_DAY || '3' }}
           LABELS: ${{ toJSON(github.event.issue.labels.*.name) }}
@@ -61,6 +70,16 @@ jobs:
           say() { gh issue comment "$ISSUE" --repo "$REPO" --body "agent-task: $1"; }
           if [ "$HAS_KEY" != "true" ]; then
             say "not started — ANTHROPIC_API_KEY is not configured."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          protected=$(gh api "repos/$REPO/branches/$DEFAULT_BRANCH" --jq '.protected')
+          if [ "$protected" != "true" ]; then
+            say "not started — \`$DEFAULT_BRANCH\` is not protected. Enable branch protection first (OWNER_ACTIONS A)."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          others=$(gh api --paginate "repos/$REPO/issues/$ISSUE/comments" \
+                     --jq "[.[] | select(.user.login != \"$OWNER\" and .user.type != \"Bot\")] | length" \
+                   | awk '{s+=$1} END {print s+0}')
+          if [ "$others" != "0" ]; then
+            say "not started — the issue has comments from other accounts (possible prompt injection). Copy what you need into the issue body, delete those comments, then re-add \`agent-go\`."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           for l in agent-running agent-pr-opened; do
             if echo "$LABELS" | grep -q "\"$l\""; then
@@ -77,12 +96,16 @@ jobs:
           fi
           gh label create agent-running --repo "$REPO" --color FBCA04 2>/dev/null || true
           gh issue edit "$ISSUE" --repo "$REPO" --add-label agent-running --remove-label agent-failed || true
+          gh issue lock "$ISSUE" --repo "$REPO"   # no new comments while the agent runs
           say "started (run ${GITHUB_RUN_ID}, run $runs of $MAX_RUNS today)."
           echo "go=true" >> "$GITHUB_OUTPUT"
 
   run:
     needs: gate
     if: needs.gate.outputs.go == 'true'
+    concurrency:
+      group: agent-task         # one agent run at a time across the repo
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MIN || '45') }}
     permissions:
@@ -131,6 +154,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           pr=$(gh pr list --repo "$REPO" --head "agent/issue-$ISSUE" --state open --json url --jq '.[0].url')
+          gh issue unlock "$ISSUE" --repo "$REPO" || true
           gh issue edit "$ISSUE" --repo "$REPO" --remove-label agent-running --remove-label agent-go || true
           if [ "$RESULT" = "success" ] && [ -n "$pr" ]; then
             gh label create agent-pr-opened --repo "$REPO" --color 0E8A16 2>/dev/null || true
