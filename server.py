@@ -2176,6 +2176,27 @@ def _deal_row(r: dict, psettings: dict, plan: Optional[str],
     return d
 
 
+def _display_limits() -> dict[str, int]:
+    """source -> max hours since last confirmed by a poll, for sources whose
+    terms limit how stale displayed data may be (eBay: 6 h)."""
+    return {m.SOURCE_ID: m.DISPLAY_MAX_AGE_HOURS for m in sources.all_sources()
+            if getattr(m, "DISPLAY_MAX_AGE_HOURS", None)}
+
+
+def _displayable(d: dict, limits: dict[str, int]) -> bool:
+    hrs = limits.get(d.get("source"))
+    if not hrs:
+        return True
+    from datetime import datetime, timedelta, timezone
+    seen = d.get("last_seen_at") or d.get("first_seen_at")
+    try:
+        t = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
+        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) - t <= timedelta(hours=hrs)
+
+
 def _rank(rows: list[dict]) -> list[dict]:
     """Highest risk-adjusted profit first; unvalued last."""
     return sorted(rows, key=lambda d: -(d["opportunity"]["risk_adjusted_profit"]
@@ -2249,7 +2270,9 @@ def api_deals():
                     break
         else:
             return jsonify({"error": "feed must be mine|trusted|risk|search"}), 400
-    out = [_deal_row(dict(r), psettings, plan, home_zip) for r in rows]
+    limits = _display_limits()
+    out = [_deal_row(dict(r), psettings, plan, home_zip) for r in rows
+           if _displayable(dict(r), limits)]
     if feed in ("trusted", "risk") and home_zip and home_radius:
         # shared feeds respect the user's territory too
         out = [d for d in out if d["distance_mi"] is not None
@@ -2272,6 +2295,9 @@ def api_deal_detail(cid: str):
             "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
             "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
             "WHERE l.composite_id = ?", (u.id, cid)).fetchone()
+        if r and not _displayable(dict(r), _display_limits()):
+            return jsonify({"error": "this listing hasn't been re-confirmed by its source "
+                                     "recently and may no longer be available"}), 410
         if not r:
             return jsonify({"error": "not found"}), 404
         hist = [dict(h) for h in conn.execute(

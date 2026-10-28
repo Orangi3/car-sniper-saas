@@ -207,3 +207,28 @@ def test_db_failure_mid_ingest_rolls_back_and_recovers(ebay_feed, monkeypatch):
     monkeypatch.setattr(sniper, "enqueue_score", real)
     assert _poll()["source_status"]["ebay"]["listings_new"] == 2   # next tick recovers
     assert len(q("SELECT 1 FROM jobs WHERE dedupe_key LIKE 'score:ebay:%'")) == 2
+
+
+def test_ebay_listings_hidden_once_not_reconfirmed_for_6_hours(client, ebay_feed):
+    """eBay API License Agreement: displayed listing data may be at most 6 h
+    older than eBay's site. A listing no poll has re-confirmed is hidden."""
+    import db
+    from datetime import datetime, timedelta, timezone
+    make_user(client, "fresh@example.com", searches=[("camry", {"max_price": 9000})])
+    ebay_feed["items"] = [_ebay_item("v1|700|0", 6900)]
+    _poll(); score_all()
+    login(client, "fresh@example.com")
+    ids = lambda: [d["composite_id"] for d in client.get("/api/deals?feed=mine").get_json()]
+    assert "ebay:v1|700|0" in ids()
+    old = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
+    with db.session() as c:
+        c.execute("UPDATE listings SET last_seen_at = ? WHERE composite_id = 'ebay:v1|700|0'",
+                  (old,))
+    assert "ebay:v1|700|0" not in ids()
+    assert client.get("/api/deals/ebay:v1|700|0").status_code == 410
+    _poll()                                     # still listed on eBay: re-confirmed
+    assert "ebay:v1|700|0" in ids()
+    # sources without such a rule are unaffected
+    with db.session() as c:
+        c.execute("UPDATE listings SET last_seen_at = ? WHERE source = 'craigslist'", (old,))
+    assert client.get("/api/deals/craigslist:peer0").status_code == 200

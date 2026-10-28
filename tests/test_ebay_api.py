@@ -226,3 +226,19 @@ def test_a_real_block_stays_blocked(eb):
     st["pages"] = [R(403, {"errors": [{"errorId": 1, "message": "Forbidden"}]})]
     _, _, (status, _) = _poll(mod)
     assert status == "blocked"
+
+
+def test_epn_campaign_adds_affiliate_context_and_links(eb, monkeypatch):
+    mod, st = eb
+    monkeypatch.setenv("EBAY_EPN_CAMPAIGN_ID", "5338000000")
+    page = copy.deepcopy(EBAY)
+    page["itemSummaries"][0]["itemAffiliateWebUrl"] = "https://www.ebay.test/itm/1001?mkcid=1&campid=5338000000"
+    st["pages"] = [R(200, page)]
+    out, _, _ = _poll(mod)
+    ctx = st["gets"][0]["headers"]["X-EBAY-C-ENDUSERCTX"]
+    assert ctx.startswith("affiliateCampaignId=5338000000,contextualLocation=")
+    by = {x.source_id: x for x in out}
+    assert "campid=5338000000" in by["v1|1001|0"].url
+    assert by["v1|1002|0"].url == "https://www.ebay.test/itm/1002"   # no affiliate url given
+    monkeypatch.setenv("EBAY_EPN_CAMPAIGN_ID", "abc;evil")         # non-numeric ignored
+    assert "affiliateCampaignId" not in mod._enduser_ctx("35401")
