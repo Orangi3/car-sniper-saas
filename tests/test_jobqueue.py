@@ -249,3 +249,53 @@ def test_pending_notification_survives_worker_kill_and_restart(app, monkeypatch)
         assert _Ntfy.received[0]["click"] == "https://example.com/1"
     finally:
         srv.shutdown()
+
+
+class _Counter(BaseHTTPRequestHandler):
+    hits: list = []
+    lock = threading.Lock()
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+        with _Counter.lock:
+            _Counter.hits.append(body["click"])
+        time.sleep(0.01)
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *a):
+        pass
+
+
+def test_two_worker_processes_deliver_each_job_exactly_once(app, monkeypatch):
+    import db, notifications
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Counter)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    _Counter.hits.clear()
+    try:
+        monkeypatch.setenv("NTFY_TOPIC", "sniper-multi-proc-1")
+        monkeypatch.setenv("NTFY_SERVER", f"http://127.0.0.1:{srv.server_address[1]}")
+        for k in ("PUSHOVER_TOKEN", "TWILIO_ACCOUNT_SID", "DISCORD_WEBHOOK_URL",
+                  "ALERT_WEBHOOK_URL"):
+            monkeypatch.delenv(k, raising=False)
+        with db.session() as c:
+            for i in range(30):
+                notifications.enqueue_owner(c, {"composite_id": f"x:{i}",
+                                                "url": f"https://example.com/{i}"},
+                                            f"alert{i}")
+        env = {**os.environ}
+        procs = [subprocess.Popen([sys.executable, "-m", "jobs.worker", "--once",
+                                   "--threads", "2"], cwd=ROOT, env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                 for _ in range(2)]
+        for p in procs:
+            p.wait(120)
+        # SQLite may make a claimer back off under contention; drain leftovers
+        subprocess.run([sys.executable, "-m", "jobs.worker", "--once"], cwd=ROOT,
+                       env=env, capture_output=True, timeout=120)
+        assert sorted(_Counter.hits) == sorted(f"https://example.com/{i}" for i in range(30))
+        with db.session() as c:
+            assert c.execute("SELECT COUNT(*) FROM jobs WHERE status = 'done'"
+                             ).fetchone()[0] == 30
+    finally:
+        srv.shutdown()
