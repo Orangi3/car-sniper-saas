@@ -138,13 +138,15 @@ function card(d) {
     <div class="pad">
       <div class="row"><p class="title">${esc(d.title)}</p></div>
       <div class="muted">${esc(d.source)} · ${d.odometer ? Number(d.odometer).toLocaleString() + " mi" : "mileage unknown"}
-        · ${esc(d.location || d.state || "")} · seen ${esc(ago(d.first_seen_at))}</div>
+        · ${esc(d.location || d.state || "")}${d.distance_mi != null ? " (" + Math.round(d.distance_mi) + " mi away)" : ""}
+        · seen ${esc(ago(d.first_seen_at))}</div>
       <div class="row" style="margin-top:6px">
         <div><span class="price">${money(d.price)}</span>${drop}</div>
         <div class="disc">${d.discount_pct != null ? Math.round(d.discount_pct) + "% under" : ""}</div>
       </div>
       <div class="muted">Value ${d.value_low ? money(d.value_low) + " – " + money(d.value_high) : money(d.value_mid)}
         · est. profit ${pr}</div>
+      ${d.opportunity && d.opportunity.risk_adjusted_profit != null ? `<div class="muted">Rank: <b>${money(d.opportunity.risk_adjusted_profit)}</b> risk-adjusted (see Details)</div>` : ""}
       <div class="chips">${event}${conf}${ev}${flags}${status}</div>
       <div class="actions">
         <button class="btn primary" data-open>Details</button>
@@ -228,6 +230,9 @@ async function openDeal(cid) {
         <br><span class="muted">Based on ${esc(EVIDENCE[d.evidence_class] || "—")}, ${esc(d.comp_n || 0)} comparables, ${esc(d.confidence || "—")} confidence.</span></p>
       <ul class="reasons">${(d.confidence_reasons || []).map(r => `<li>${esc(r)}</li>`).join("")}</ul>
       ${comps ? `<h3>Comparables used</h3><table>${comps}</table>` : ""}
+      ${d.opportunity && d.opportunity.factors ? `<h3>Why it ranks here</h3>
+        <p class="muted">Conservative profit ${money(d.opportunity.conservative_profit)} × ${esc(d.opportunity.multiplier)} = <b>${money(d.opportunity.risk_adjusted_profit)}</b> risk-adjusted</p>
+        <table>${d.opportunity.factors.map(f => `<tr><td>${esc(f.name)}<div class="muted">${esc(f.why)}</div></td><td class="r">×${esc(f.value)}</td></tr>`).join("")}</table>` : ""}
       <h3>Profit estimate</h3>
       ${p ? `<table>${scen}</table>
         <ul class="reasons">${p.explanation.map(x => `<li>${esc(x)}</li>`).join("")}</ul>
@@ -286,10 +291,10 @@ function renderStep() {
       <div class="grid2"><div><label>Max price ($)</label><input id="f-max_price" type="number" value="${v("max_price")}"></div>
       <div><label>Max miles</label><input id="f-max_miles" type="number" value="${v("max_miles")}"></div></div>
       <label>Oldest model year</label><input id="f-min_year" type="number" placeholder="2008" value="${v("min_year")}">`,
-    () => `${stepper(1)}<b>2. Where?</b>
-      <label>States (comma separated, blank = anywhere we cover)</label>
-      <input id="f-state" placeholder="AL, MS, GA" value="${v("state")}">
-      <p class="notice">Coverage depends on which sources are healthy — see the Trusted tab for current status.</p>`,
+    () => `${stepper(1)}<b>2. Your buying territory</b>
+      <div class="grid2"><div><label>Home ZIP</label><input id="f-zip" inputmode="numeric" maxlength="5" placeholder="35401" value="${v("zip")}"></div>
+      <div><label>Max distance (miles)</label><input id="f-radius_mi" type="number" min="10" max="500" value="${v("radius_mi") || 75}"></div></div>
+      <p class="notice">Only cars within this distance alert you. Listings with no reliable location are skipped. Coverage depends on which sources are healthy.</p>`,
     () => `${stepper(2)}<b>3. What's a deal to you?</b>
       <div class="grid2"><div><label>Min % under market</label><input id="f-min_discount_pct" type="number" value="${v("min_discount_pct") || 15}"></div>
       <div><label>Min est. profit ($)</label><input id="f-min_profit" type="number" placeholder="optional" value="${v("min_profit")}"></div></div>
@@ -317,9 +322,10 @@ function renderStep() {
     collect();
     if (STEP < 3) { STEP++; return renderStep(); }
     const f = {};
-    ["make", "model", "max_price", "max_miles", "min_year", "state", "min_discount_pct",
+    ["make", "model", "max_price", "max_miles", "min_year", "min_discount_pct",
      "min_profit", "risk_mode"].forEach(k => { if (DRAFT[k] !== undefined && DRAFT[k] !== "") f[k] = DRAFT[k]; });
     try {
+      if (DRAFT.zip) await post("/api/me/territory", {home_zip: DRAFT.zip, radius_mi: Number(DRAFT.radius_mi || 75)});
       const hook = ($("#f-webhook").value || "").trim();
       if (hook) await post("/api/me/alert_channels", {alert_webhook: hook});
       const r = await post("/api/saved_searches", {name: DRAFT.name || "My search", notify_enabled: true, filter: f});

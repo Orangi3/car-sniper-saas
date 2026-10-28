@@ -420,7 +420,8 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
         weight = CONFIG.get("source_weights", {}).get(l["source"], 1.0)
         score = max(0.0, discount) * 100 * weight * _freshness_factor(l.get("posted_at"))
         pr = profit_mod.compute(l["price"], v.value_low, v.value_mid, v.value_high,
-                                v.evidence_class, None, scenarios=False)
+                                v.evidence_class, None, scenarios=False,
+                                dealer_share=v.dealer_share)
         est_profit = pr["scenarios"]["base"]["profit"] if pr else None
         label = {"confirmed_sales": "sold comps"}.get(v.evidence_class, "asking comps")
         note = (f"[{l['source']}] {l['year']} {l['make']} {l['model']}"
@@ -436,7 +437,8 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
                "comp_avg": v.value_mid, "comp_n": v.n, "basis": v.basis,
                "evidence_class": v.evidence_class, "confidence": v.confidence,
                "trust": trust, "risk_flags": flags, "score": score,
-               "est_profit": est_profit, "event": event}
+               "est_profit": est_profit, "event": event,
+               "dealer_share": v.dealer_share}
 
         alert_id = None
         if _owner_alert_ok(l, v, discount, trust):
