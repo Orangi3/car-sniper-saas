@@ -1,0 +1,15 @@
+name: Owner action / blocker
+description: Something only the owner can do (credentials, agreements, purchases, approvals).
+labels: ["owner-action", "blocked"]
+body:
+  - type: textarea
+    id: what
+    attributes: { label: What is needed and why }
+    validations: { required: true }
+  - type: textarea
+    id: unblocks
+    attributes: { label: What it unblocks }
+    validations: { required: true }
+  - type: input
+    id: cost
+    attributes: { label: Expected cost (if any) }

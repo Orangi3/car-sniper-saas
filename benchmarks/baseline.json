@@ -1,0 +1,40 @@
+{
+  "metrics": {
+    "cases": 29,
+    "fn": 0,
+    "fp": 1,
+    "tn": 18,
+    "tp": 10
+  },
+  "outcomes": {
+    "conflict-sold-vs-asking": "TN",
+    "dealer-retail": "TN",
+    "dollar-one": "TN",
+    "dup-heavy-market": "TP",
+    "fair-price": "TN",
+    "high-miles-not-a-deal": "TN",
+    "legit-camry-30": "TP",
+    "legit-civic-28": "TP",
+    "legit-modest-22": "TP",
+    "legit-silverado-25": "TP",
+    "legit-tacoma-k-price": "TP",
+    "low-miles-real-deal": "TP",
+    "monthly-teaser": "TN",
+    "needs-motor": "TN",
+    "no-make-in-title": "TP",
+    "overpriced": "TN",
+    "payment-teaser": "TN",
+    "price-dropped-now-deal": "TP",
+    "rebuilt-title": "TN",
+    "salvage-in-desc": "TN",
+    "scam-deployed": "TN",
+    "scam-giftcard": "TN",
+    "slightly-under": "TN",
+    "sold-confirms-deal": "TP",
+    "sparse-market": "TN",
+    "too-good-mileage-unknown": "TN",
+    "trim-matched-not-deal": "TN",
+    "trim-mismatch-fp": "FP",
+    "wont-start": "TN"
+  }
+}

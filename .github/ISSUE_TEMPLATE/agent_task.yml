@@ -1,0 +1,56 @@
+name: Agent task
+description: A scoped engineering task an agent (or a person) can pick up. See AGENTS.md.
+labels: ["agent-task"]
+body:
+  - type: dropdown
+    id: role
+    attributes:
+      label: Owning role
+      description: Which role owns this (OWNERSHIP.md maps roles to files).
+      options: [Architect, Backend, Data, Valuation, Frontend, QA, Product Intelligence]
+    validations: { required: true }
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options: ["P0 correctness/security", "P1 real data", "P2 accuracy", "P3 commercial", "P4 autonomy", "P5 competitive"]
+    validations: { required: true }
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and evidence
+      description: What is wrong or missing, and how we know (logs, failing test, metric). No guesses presented as facts.
+    validations: { required: true }
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Observable, testable conditions. "Done" means all of these hold.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations: { required: true }
+  - type: textarea
+    id: tests
+    attributes:
+      label: Required tests
+      description: New/updated tests, and which suites must pass (SQLite, Postgres, benchmark drift, browser smoke).
+    validations: { required: true }
+  - type: checkboxes
+    id: guardrails
+    attributes:
+      label: Guardrails
+      options:
+        - label: Needs no credentials, purchases, agreements or production access (otherwise it is an owner action — see OWNER_ACTIONS.md)
+          required: true
+        - label: Does not weaken licensing, security or preflight gates
+          required: true
+        - label: Output is a pull request; no merge or deploy without owner approval
+          required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk class
+      description: high = touches auth, billing, licensing gates, migrations or data deletion (needs owner review before merge).
+      options: [low, medium, high]
+    validations: { required: true }

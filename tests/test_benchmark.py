@@ -39,3 +39,12 @@ def test_known_limitation_is_still_visible():
     import run_benchmark
     case = {c["id"]: c for c in run_benchmark.run()["cases"]}["trim-mismatch-fp"]
     assert case["outcome"] == "FP"
+
+
+def test_outcomes_match_committed_baseline():
+    """Any outcome change must come with a deliberate baseline update
+    (python benchmarks/check_drift.py --update) in the same PR."""
+    import check_drift
+    import json
+    base = json.loads(check_drift.BASELINE.read_text())
+    assert check_drift.diff(base, check_drift.current()) == []

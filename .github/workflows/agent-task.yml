@@ -1,0 +1,61 @@
+name: agent-task
+
+# OPTIONAL and INACTIVE until the owner sets it up (AGENTS.md § Activation):
+#   * repository secret ANTHROPIC_API_KEY (the owner's own, budgeted key)
+#   * repository variable AGENT_MODEL (see AGENTS.md § Model routing)
+# Starts only when the REPOSITORY OWNER adds the `agent-go` label to an issue
+# that already has `agent-task`. The agent works on a new branch and opens a
+# pull request. It never merges or deploys; branch protection on the default
+# branch (OWNER_ACTIONS.md) makes that a hard guarantee rather than a promise.
+#
+# Pause everything: set repository variable AGENT_PAUSED=true.
+# NOT VERIFIED: this workflow has not been run; the action's inputs follow its
+# public README at the time of writing.
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: agent-task           # one agent run at a time across the repo
+  cancel-in-progress: false
+
+jobs:
+  run:
+    if: >-
+      github.event.label.name == 'agent-go' &&
+      contains(github.event.issue.labels.*.name, 'agent-task') &&
+      github.event.sender.login == github.repository_owner &&
+      vars.AGENT_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MIN || '45') }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Require the owner's API key
+        env: { KEY: "${{ secrets.ANTHROPIC_API_KEY }}" }
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::warning::ANTHROPIC_API_KEY is not set; agent-task is inactive."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: >-
+            --max-turns ${{ vars.AGENT_MAX_TURNS || '30' }}
+            ${{ vars.AGENT_MODEL && format('--model {0}', vars.AGENT_MODEL) || '' }}
+          prompt: |
+            You are working on issue #${{ github.event.issue.number }} in this repository.
+            Read AGENTS.md and OWNERSHIP.md first and follow them exactly.
+            Implement the issue's acceptance criteria on a new branch named
+            agent/issue-${{ github.event.issue.number }}, run the required tests,
+            and open a pull request that fills in .github/pull_request_template.md.
+            Never merge, never push to the default branch, never deploy, never
+            change licensing/security gates or billing configuration, and never
+            add secrets. If the task needs a credential, purchase, agreement or a
+            human decision, comment on the issue explaining the blocker and stop.
