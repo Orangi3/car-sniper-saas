@@ -5,6 +5,10 @@ on:
     branches: [main, "fix/**", "feat/**"]
   pull_request:
 
+# Read-only token: CI never needs to write, and fork PRs get no secrets.
+permissions:
+  contents: read
+
 jobs:
   tests-sqlite:
     runs-on: ubuntu-latest
