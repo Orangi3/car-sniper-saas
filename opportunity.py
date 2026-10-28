@@ -27,6 +27,7 @@ CONDITION = {  # multiplied together for each flag present
     "scam_signals": 0.0, "branded_title": 0.4, "needs_work": 0.5,
     "too_good_to_be_true": 0.3, "mileage_unknown": 0.85, "relisted": 0.9,
     "dealer": 0.9,
+    "seller_type_unknown": 0.95,
 }
 FRESHNESS = ((2, 1.0, "posted in the last 2 hours"), (24, 0.9, "posted today"),
              (72, 0.75, "1–3 days old"), (None, 0.6, "older than 3 days (likely contacted)"))

@@ -218,8 +218,22 @@ def run(argv=None) -> int:
 
             # Refresh the lease and sleep until next tick. If refresh
             # returns False, another process stole the lock — exit safely.
-            if not joblock.refresh(SCHEDULER_JOB_NAME, holder=holder,
-                                    lease_seconds=args.lease_seconds):
+            # If the DATABASE is unreachable, keep running and retry next
+            # tick: exiting here would strand our lease (release fails too)
+            # and turn a short DB blip into a long scheduler outage. If the
+            # lease expired meanwhile and someone took over, the next
+            # successful refresh returns False and we exit then.
+            try:
+                still_ours = joblock.refresh(SCHEDULER_JOB_NAME, holder=holder,
+                                             lease_seconds=args.lease_seconds)
+            except Exception as e:
+                sys.stdout.write(json.dumps({
+                    "event": "lease_refresh_error",
+                    "error": f"{type(e).__name__}: {str(e)[:200]}",
+                }) + "\n")
+                sys.stdout.flush()
+                still_ours = True
+            if not still_ours:
                 sys.stdout.write(json.dumps({
                     "event": "lock_lost", "holder": holder,
                 }) + "\n")
@@ -232,7 +246,11 @@ def run(argv=None) -> int:
                 time.sleep(step)
                 slept += step
     finally:
-        joblock.release(SCHEDULER_JOB_NAME, holder=holder)
+        try:
+            joblock.release(SCHEDULER_JOB_NAME, holder=holder)
+        except Exception as e:          # DB down at exit: lease expires on its own
+            sys.stdout.write(json.dumps({"event": "release_error",
+                                         "error": f"{type(e).__name__}: {str(e)[:200]}"}) + "\n")
         sys.stdout.write(json.dumps({
             "event": "stopped", "holder": holder, "ticks": ticks,
         }) + "\n")

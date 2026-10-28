@@ -185,6 +185,14 @@ def _attr(row: dict, key: str) -> Optional[str]:
             "frontwheeldrive": "fwd", "rearwheeldrive": "rwd"}.get(v, v) or None
 
 
+def seller_kind(row: dict) -> str:
+    """private | dealer | unknown. A provider that cannot say (eBay US has
+    no account type) is unknown — never assumed private."""
+    if row.get("is_dealer"):
+        return "dealer"
+    return "unknown" if _attr(row, "seller_type") == "unknown" else "private"
+
+
 def _coords(row: dict) -> Optional[tuple[float, float]]:
     lat, lon = row.get("latitude"), row.get("longitude")
     try:
@@ -239,14 +247,16 @@ def _median(vals: list) -> Optional[float]:
 
 
 def _segments(usable: list[dict], sold: dict) -> dict:
-    priv = [c["price"] for c in usable if not c.get("is_dealer")]
-    deal = [c["price"] for c in usable if c.get("is_dealer")]
+    priv = [c["price"] for c in usable if seller_kind(c) == "private"]
+    deal = [c["price"] for c in usable if seller_kind(c) == "dealer"]
+    unk = [c["price"] for c in usable if seller_kind(c) == "unknown"]
     conf = sold.get(CONFIRMED_SALES) or []
     auc = [s["price"] for s in conf if s.get("source") in AUCTION_SOURCES]
     hist = [s["price"] for s in sold.get(HISTORICAL) or []]
     return {
         "private_asking": {"n": len(priv), "median": _median(priv)},
         "dealer_asking": {"n": len(deal), "median": _median(deal)},
+        "unknown_seller_asking": {"n": len(unk), "median": _median(unk)},
         "confirmed_sales": {"n": len(conf), "median": _median([s["price"] for s in conf])},
         "auction_results": {"n": len(auc), "median": _median(auc)},
         "historical_incomplete": {"n": len(hist), "median": _median(hist)},
@@ -411,7 +421,7 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
     segments = _segments(usable, sold)
 
     # private-party first
-    private = [c for c in usable if not c.get("is_dealer")]
+    private = [c for c in usable if seller_kind(c) == "private"]
     dealer_fallback = False
     if len(private) >= MIN_COMPS:
         usable = private
@@ -509,7 +519,7 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
                     "url": c.get("url"), "year": c.get("year"),
                     "odometer": c.get("odometer"), "source": c.get("source"),
                     "weight": round(w, 2), "kind": "asking",
-                    "seller_type": "dealer" if c.get("is_dealer") else "private",
+                    "seller_type": seller_kind(c),
                     "distance_mi": (round(c["_dist"]) if c.get("_dist") is not None
                                     else None),
                     "match_quality": round(100 * c["_q"]),
@@ -569,14 +579,17 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
             reasons.append("not mileage-adjusted (too few peers with mileage)")
         if dealer_fallback:
             points -= 1
-            reasons.append("includes dealer asking prices (retail, usually higher)")
+            reasons.append("includes dealer or unknown-seller asking prices "
+                           "(often retail, usually higher)")
         if collapsed:
             reasons.append(f"{collapsed} duplicate/cross-posted peer(s) collapsed")
         if outliers:
             reasons.append(f"{outliers} outlier peer(s) excluded")
     v.mileage_adjusted, v.slope_per_mile = adjusted, slope
     if v.evidence_class == ASKING and pairs:
-        v.dealer_share = round(sum(1 for _, _, c in pairs if c.get("is_dealer")) / len(pairs), 2)
+        # unknown sellers are discounted like dealers: we can't show they're private
+        v.dealer_share = round(sum(1 for _, _, c in pairs if seller_kind(c) != "private")
+                               / len(pairs), 2)
         v.comp_quality = round(100 * sum(c["_q"] for _, _, c in pairs) / len(pairs), 1)
         reasons.append(f"average comparable match quality {v.comp_quality:.0f}/100")
     return _finish(v, points, reasons)

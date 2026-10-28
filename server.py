@@ -2438,6 +2438,27 @@ def api_admin_eval_report():
     return jsonify(evaluation.report(include_fixtures=request.args.get("fixtures") == "1"))
 
 
+@app.get("/api/admin/ops")
+@auth.admin_required
+def api_admin_ops():
+    """Owner operations snapshot (ops.py): data health, deals, system, costs.
+    Unmeasurable values are returned as unavailable, never estimated."""
+    import ops
+    try:
+        hours = max(1, min(168, int(request.args.get("hours", 24))))
+    except ValueError:
+        hours = 24
+    return jsonify(ops.snapshot(hours))
+
+
+@app.get("/admin/ops")
+@auth.admin_required
+def admin_ops_page():
+    resp = send_from_directory(ROOT, "ops.html")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.get("/m")
 def mobile_page():
     if not auth.current_user():

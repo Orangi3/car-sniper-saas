@@ -18,10 +18,15 @@ on:
         description: "territory ZIP"
         required: false
         default: "35401"
+      ebay_environment:
+        description: "eBay keys: production (real listings) or sandbox (eBay test data — proves auth only)"
+        type: choice
+        options: [production, sandbox]
+        default: production
       radius:
-        description: "radius in miles"
+        description: "radius in miles (150 = Tuscaloosa launch test assumption)"
         required: false
-        default: "75"
+        default: "150"
 
 permissions:
   contents: read
@@ -42,6 +47,7 @@ jobs:
       IN_SOURCES: ${{ inputs.sources }}
       IN_ZIP: ${{ inputs.zip }}
       IN_RADIUS: ${{ inputs.radius }}
+      EBAY_ENVIRONMENT: ${{ inputs.ebay_environment }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
