@@ -13,7 +13,11 @@ User=sniper
 Group=sniper
 WorkingDirectory=/opt/sniper/current
 EnvironmentFile=/etc/sniper/env
-ExecStart=/opt/sniper/.venv/bin/python3 -m jobs.scheduler --interval 60
+# Lease 180s, refreshed every tick (~60s). --steal-after-seconds 0: a
+# replacement takes over as soon as a crashed holder's lease EXPIRES
+# (worst case ~3 min) instead of lease + 600s. A live but stalled holder
+# is fenced: its next refresh fails and it exits.
+ExecStart=/opt/sniper/.venv/bin/python3 -m jobs.scheduler --interval 60 --lease-seconds 180 --steal-after-seconds 0
 Restart=on-failure
 RestartSec=10
 # Graceful shutdown: scheduler catches SIGTERM, finishes the current

@@ -43,8 +43,23 @@ SOURCE_NAME = "eBay Motors"
 # Data-licensing class (see SOURCES.md): Official eBay Browse API; use is governed by the eBay API License Agreement.
 LICENSING = "licensed_api"
 
-OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
-BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+def _api_base() -> str:
+    """https://api.ebay.com, or eBay's Sandbox (EBAY_ENVIRONMENT=sandbox,
+    for testing keys before production access), or EBAY_API_BASE for a
+    staging stand-in. Plain http is accepted only for a local address."""
+    base = (os.environ.get("EBAY_API_BASE") or "").rstrip("/")
+    if base:
+        if not (base.startswith("https://") or base.startswith("http://127.0.0.1")
+                or base.startswith("http://localhost")):
+            raise ValueError("EBAY_API_BASE must be https (or a local http address)")
+        return base
+    if os.environ.get("EBAY_ENVIRONMENT", "").lower() == "sandbox":
+        return "https://api.sandbox.ebay.com"
+    return "https://api.ebay.com"
+
+
+OAUTH_URL = _api_base() + "/identity/v1/oauth2/token"
+BROWSE_URL = _api_base() + "/buy/browse/v1/item_summary/search"
 EBAY_MOTORS_CATEGORY = "6001"  # Cars & Trucks
 PAGE_LIMIT = 200               # documented max per search call
 # A further page is fetched only when the newest page is full and entirely

@@ -8,3 +8,4 @@ pytest>=8.0                 # tests/
 # --- Phase 2A: Stripe billing (TEST MODE) ---
 stripe>=8.0                 # Checkout sessions + webhook signature verify
 psycopg2-binary>=2.9       # Postgres driver (production DATABASE_URL + PG test suite)
+gunicorn>=22.0              # production web server (deploy/systemd/sniper-web.service)

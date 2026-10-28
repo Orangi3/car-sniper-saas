@@ -177,3 +177,17 @@ def test_probe_reports_territory_metrics_and_records_aggregates(eb):
         row = dict(c.execute("SELECT * FROM source_probe_runs").fetchone())
     assert row["source"] == "ebay" and row["listings"] == 3 and row["origin"] == "test"
     assert "ebay.test" not in row["summary"]          # aggregates only
+
+
+def test_api_base_selection(monkeypatch):
+    import sources.ebay_motors as eb
+    monkeypatch.delenv("EBAY_API_BASE", raising=False)
+    monkeypatch.delenv("EBAY_ENVIRONMENT", raising=False)
+    assert eb._api_base() == "https://api.ebay.com"
+    monkeypatch.setenv("EBAY_ENVIRONMENT", "sandbox")
+    assert eb._api_base() == "https://api.sandbox.ebay.com"
+    monkeypatch.setenv("EBAY_API_BASE", "http://127.0.0.1:9999/")
+    assert eb._api_base() == "http://127.0.0.1:9999"
+    monkeypatch.setenv("EBAY_API_BASE", "http://evil.example.com")
+    with pytest.raises(ValueError):
+        eb._api_base()               # credentials never go over plain http remotely

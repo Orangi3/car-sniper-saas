@@ -236,3 +236,44 @@ def test_billing_reconciliation_route_still_absent(client, monkeypatch):
     logout(client); login(client, "admin@example.com")
     r = client.post("/api/admin/billing/reconcile")
     assert r.status_code in (404, 405)
+
+
+def test_scheduler_survives_db_error_on_lease_refresh(client, monkeypatch, capsys):
+    """A DB blip during the lease refresh must not kill the scheduler (that
+    strands the lease and blocks every restart until it is stealable)."""
+    import sniper, joblock
+    monkeypatch.setattr(sniper, "poll_once",
+        lambda **k: {"fetched": 0, "new": 0, "scoring_pending": 0,
+                     "poll_secs": 0.01, "per_source": {}})
+    monkeypatch.setattr(sniper, "ensure_scorer_started", lambda: None)
+    real = joblock.refresh
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("could not connect to server")
+        return real(*a, **k)
+    monkeypatch.setattr(joblock, "refresh", flaky)
+    rc, out, err = _run_scheduler(["--max-ticks", "3", "--interval", "0"], capsys)
+    events = [json.loads(l)["event"] for l in out.strip().splitlines() if l.startswith("{")]
+    assert rc == 0, out
+    assert events.count("tick") == 3 and "lease_refresh_error" in events
+    assert "lock_lost" not in events
+    assert joblock.current_holder("scheduler")["holder"] in (None, "")
+
+
+def test_expired_lease_is_taken_over_immediately_with_steal_after_zero(client):
+    """Production runs --steal-after-seconds 0: a crashed holder's lease is
+    taken as soon as it expires, not lease + 600 s later."""
+    import joblock
+    assert joblock.acquire("scheduler", holder="crashed", lease_seconds=1,
+                           steal_after_seconds=0)
+    assert not joblock.acquire("scheduler", holder="new", lease_seconds=60,
+                               steal_after_seconds=0)          # still leased
+    import time
+    time.sleep(1.2)
+    assert not joblock.acquire("scheduler", holder="new", lease_seconds=60,
+                               steal_after_seconds=600)        # old default: blocked
+    assert joblock.acquire("scheduler", holder="new", lease_seconds=60,
+                           steal_after_seconds=0)
