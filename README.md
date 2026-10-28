@@ -10,8 +10,11 @@ Runs two ways:
 - **Paid SaaS** (Linux, PostgreSQL, systemd): see `LAUNCH_CHECKLIST.md`,
   `DEPLOY.md` and `RUNBOOK.md`. Requires `SNIPER_COMMERCIAL_MODE=1`.
   `python -m preflight` says what a deployment is actually ready for.
-- Business docs: `DATA_PROVIDER_DECISION.md`, `UNIT_ECONOMICS.md`,
-  `OWNER_ACTIONS.md`, `EVALUATION.md`.
+- Business docs: `CURRENT_STATE.md` (start here), `DATA_PROVIDER_DECISION.md`,
+  `UNIT_ECONOMICS.md`, `COMPETITIVE_ANALYSIS.md`, `OWNER_ACTIONS.md`,
+  `EVALUATION.md`.
+- Engineering process: `AGENTS.md`, `OWNERSHIP.md`; live data check:
+  `python -m verify_sources`.
 
 > **Data licensing matters.** Several sources this tool can read (Craigslist,
 > RSS feeds, scraped sold-price pages, the owner's own browser and inbox) are

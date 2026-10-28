@@ -4,6 +4,20 @@ Things only you can authorize or do. Engineering cannot buy plans, sign
 agreements, create live billing, or give legal sign-off for you. Ordered by
 what unblocks the most.
 
+## Do first (under 15 minutes each, $0)
+
+| Action | How | Unlocks |
+|---|---|---|
+| **A. Protect `main`** | GitHub → Settings → Branches → add rule for `main`: require a pull request, require status checks `tests-sqlite`, `tests-postgres`, `browser-smoke`; block force pushes; do not allow bypass | Makes "agents never merge" enforced, not promised (`AGENTS.md`) |
+| **B. First live data check (eBay)** | After #4 below: Settings → Secrets and variables → Actions → add `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`. Then Actions → *live-source-check* → Run workflow (ZIP, radius). Download the `live-source-probe` artifact | First real listings ever seen by the adapter; aggregate counts and field coverage only. One search call |
+| **C. Same for MarketCheck** (after #3) | add secret `MARKETCHECK_API_KEY`, run the workflow with `marketcheck_fsbo` | Live FSBO field mapping + listing count for the territory (one call ≈ $0.01). The probe stores nothing; it does not replace the written agreement for production use |
+| **D. Accept or change the launch-stage thresholds** | Read `CURRENT_STATE.md` §5 and edit the numbers | Fixes the bar before data arrives |
+
+Optional: activate agent runs (`AGENTS.md` § Activation) — your own
+spend-limited `ANTHROPIC_API_KEY`, `AGENT_MODEL` variable, `agent-go` label.
+
+## Full list
+
 | # | Action | Why it's required | Plan / permission | Expected cost | Unlocks |
 |---|---|---|---|---|---|
 | 1 | **Send the MarketCheck inquiry below** | Their public Terms restrict persistent datasets and caching outside "normal application use"; our model stores listings, tracks prices and pushes alerts. Only written confirmation makes it usable for a paid product. | Written commercial agreement covering: central polling, storage of listings + price history for N days, alerts to paying subscribers, display of listing details + source link | Unknown until quoted (public Basic is $299/mo + $0.01/FSBO call) | Path to the primary private-party data source |
