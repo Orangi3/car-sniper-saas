@@ -282,3 +282,16 @@ def requeue_dead(job_id: int) -> bool:
             "  updated_at = ?, finished_at = NULL WHERE id = ? AND status = ?",
             (PENDING, ts(), ts(), job_id, DEAD))
         return cur.rowcount == 1
+
+
+def prune(done_older_than_days: int = 14, dead_older_than_days: int = 60) -> int:
+    """Delete finished jobs past retention (dead letters kept longer for
+    investigation). Dedupe keys of pruned jobs become reusable, which is
+    fine: by then the event they guarded is long past. Returns rows deleted."""
+    now = datetime.now(timezone.utc)
+    with _db.session() as conn:
+        a = conn.execute("DELETE FROM jobs WHERE status = ? AND finished_at < ?",
+                         (DONE, ts(now - timedelta(days=done_older_than_days)))).rowcount
+        b = conn.execute("DELETE FROM jobs WHERE status = ? AND finished_at < ?",
+                         (DEAD, ts(now - timedelta(days=dead_older_than_days)))).rowcount
+    return (a or 0) + (b or 0)

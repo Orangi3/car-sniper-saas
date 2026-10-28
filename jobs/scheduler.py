@@ -164,6 +164,7 @@ def run(argv=None) -> int:
     sniper.ensure_scorer_started()
 
     ticks = 0
+    last_prune = 0.0
     try:
         while True:
             t0 = time.time()
@@ -200,6 +201,16 @@ def run(argv=None) -> int:
                 sys.stdout.flush()
 
             ticks += 1
+            # Hourly housekeeping: drop finished jobs past retention.
+            if time.time() - last_prune > 3600:
+                try:
+                    import jobqueue
+                    n = jobqueue.prune()
+                    sys.stdout.write(json.dumps({"event": "prune", "deleted": n}) + "\n")
+                except Exception as e:
+                    sys.stdout.write(json.dumps({"event": "prune_error",
+                                                 "error": str(e)[:200]}) + "\n")
+                last_prune = time.time()
             if args.once or (args.max_ticks and ticks >= args.max_ticks):
                 break
             if stop_requested["v"]:

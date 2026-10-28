@@ -299,3 +299,20 @@ def test_two_worker_processes_deliver_each_job_exactly_once(app, monkeypatch):
                              ).fetchone()[0] == 30
     finally:
         srv.shutdown()
+
+
+def test_prune_respects_retention(app):
+    import db, jobqueue
+    old = jobqueue.ts(datetime.now(timezone.utc) - timedelta(days=30))
+    with db.session() as c:
+        for k, st in (("a", "done"), ("b", "dead"), ("c", "pending")):
+            jobqueue.enqueue(c, "notify", k, {})
+            c.execute("UPDATE jobs SET status = ?, finished_at = ? WHERE dedupe_key = ?",
+                      (st, old if st != "pending" else None, k))
+        jobqueue.enqueue(c, "notify", "recent", {})
+        c.execute("UPDATE jobs SET status='done', finished_at=? WHERE dedupe_key='recent'",
+                  (jobqueue.ts(),))
+    assert jobqueue.prune() == 1                  # only the 30-day-old done job
+    with db.session() as c:
+        keys = {r[0] for r in c.execute("SELECT dedupe_key FROM jobs")}
+    assert keys == {"b", "c", "recent"}
