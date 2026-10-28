@@ -1,0 +1,22 @@
+{
+  "_fixture_note": "SYNTHETIC. Shaped after MarketCheck's documented listing schema (FSBO detail documented as identical to Car Listing Details). Not a captured live response.",
+  "num_found": 3,
+  "listings": [
+    {"id": "fsbo-1001", "vin": "1HGCM82633A004352", "heading": "2014 Toyota Camry SE",
+     "price": 7900, "miles": 128000, "seller_type": "fsbo", "inventory_type": "used",
+     "vdp_url": "https://example-marketplace.test/listing/1001", "source": "example-marketplace.test",
+     "first_seen_at_date": "2026-10-28T13:05:00.000Z", "last_seen_at_date": "2026-10-28T15:00:00.000Z",
+     "dom": 0, "ref_price": 8400,
+     "build": {"year": 2014, "make": "Toyota", "model": "Camry", "trim": "SE", "body_type": "Sedan",
+               "drivetrain": "FWD", "transmission": "Automatic"},
+     "dealer": {"city": "Tuscaloosa", "state": "AL", "zip": "35401", "latitude": "33.2098", "longitude": "-87.5692"},
+     "media": {"photo_links": ["https://img.example-marketplace.test/1001/1.jpg"]}},
+    {"id": "fsbo-1002", "heading": "2011 Honda Accord EX",
+     "price": 6200, "miles": 151000, "seller_type": "fsbo",
+     "vdp_url": "https://example-marketplace.test/listing/1002", "source": "example-marketplace.test",
+     "first_seen_at_date": "2026-10-28T11:40:00.000Z",
+     "build": {"year": 2011, "make": "Honda", "model": "Accord", "trim": "EX"},
+     "dealer": {"city": "Northport", "state": "AL", "zip": "35473"}},
+    {"id": "fsbo-1003", "heading": "no url record", "price": 5000, "build": {"year": 2010}}
+  ]
+}

@@ -439,7 +439,7 @@ COMP_SOURCE_LICENSING = {
     "ebay": "terms_prohibit_automation",   # HTML scrape of sold listings
     "bat": "unverified", "carsandbids": "unverified", "pcarmarket": "unverified",
     "hemmings": "unverified", "copart": "unverified",
-    "marketcheck": "licensed_api",
+    "marketcheck": "requires_agreement",   # Terms restrict persistent storage
 }
 
 
@@ -466,8 +466,10 @@ def _fetch_all(q: str, year: int, make: str, model: str) -> dict:
         "marketcheck": lambda: marketcheck_sold(q, year, make, model),
     }
     if _commercial_mode():
+        agreed = bool(os.environ.get("MARKETCHECK_COMMERCIAL_AGREEMENT", "").strip())
         sources = {k: v for k, v in sources.items()
-                   if COMP_SOURCE_LICENSING.get(k) == "licensed_api"}
+                   if COMP_SOURCE_LICENSING.get(k) == "licensed_api"
+                   or (COMP_SOURCE_LICENSING.get(k) == "requires_agreement" and agreed)}
     results = {k: [] for k in ("ebay", "bat", "carsandbids", "pcarmarket",
                                "hemmings", "copart", "marketcheck")}
     if not sources:

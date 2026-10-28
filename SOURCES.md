@@ -19,8 +19,9 @@ be repeated from the production host (`python sniper.py poll`, then
 | Bring a Trailer RSS | `bring_a_trailer.py` | Implemented | No — blocked | `unverified` | **Off** |
 | Hemmings RSS | `hemmings.py` | Implemented | No — blocked | `unverified` | **Off** |
 | GovDeals RSS | `govdeals.py` | Implemented; code notes feed URLs may be deprecated | No — blocked | `unverified` | **Off** |
-| eBay Motors (Browse API) | `ebay_motors.py` | Implemented | No — no credentials | `licensed_api` | On (needs `EBAY_CLIENT_ID`/`SECRET`) |
-| MarketCheck (dealer aggregator API) | `marketcheck.py` | Implemented | No — no credentials | `licensed_api` | On (needs `MARKETCHECK_API_KEY`) |
+| eBay Motors (Browse API) | `ebay_motors.py` | Implemented; geography now uses the Browse pickup filters (it previously sent the Finding-API `buyerPostalCode`, which Browse ignores) | No — no credentials | `licensed_api` (click-through API License Agreement: ≤6 h display freshness, delete within 30 days) | On (needs `EBAY_CLIENT_ID`/`SECRET`) |
+| **MarketCheck private sellers (FSBO)** | `marketcheck_fsbo.py` | Implemented against documented `/v2/search/car/fsbo/active`; fixture-tested only | No — no credentials | `requires_agreement` | **Off until** `MARKETCHECK_COMMERCIAL_AGREEMENT` set |
+| MarketCheck dealer inventory (retail asking prices) | `marketcheck.py` | Implemented | No — no credentials | `requires_agreement` | **Off until** `MARKETCHECK_COMMERCIAL_AGREEMENT` set |
 | Browser-extension imports (FB Marketplace, OfferUp, Nextdoor, Cars.com, Autotrader, CarGurus, C&B) | `marketplace_import.py` + `marketplace_extension/` | Implemented | Not exercised | `personal_use_only` | **Off** |
 | Email digests (owner's inbox via IMAP) | `email_imap.py` | Implemented | No — no credentials | `personal_use_only` | **Off** |
 | Cars & Bids, Copart, IAA, GSA Auctions, PublicSurplus | `cars_and_bids.py` etc. | **Stub only** (empty files) | — | — | — |
@@ -33,7 +34,9 @@ be repeated from the production host (`python sniper.py poll`, then
 | BaT / Cars & Bids / PCarMarket results | HTML scrape | confirmed_sales (dated) | `unverified` | **Off** |
 | Hemmings "sold" | HTML scrape | historical_incomplete (last asking price) | `unverified` | **Off** |
 | Copart | JSON endpoint | salvage floor only (not used for value) | `unverified` | **Off** |
-| MarketCheck `/sales` | Licensed API | historical_incomplete (last asking price of delisted cars) | `licensed_api` | On |
+| MarketCheck `/sales` | Licensed API | historical_incomplete (last asking price of delisted cars) | `requires_agreement` | Off until agreement recorded |
+
+See `DATA_PROVIDER_DECISION.md` for the provider comparison.
 
 Implication: in commercial mode there is **no confirmed-sales feed** today.
 Valuations fall back to asking-price comparables (clearly labeled as such)
@@ -60,7 +63,13 @@ until a licensed sold-price feed is contracted.
 ## Commercial mode
 
 `SNIPER_COMMERCIAL_MODE=1` (required for any paid deployment) turns off every
-listing source and comp feed whose class isn't `licensed_api`. Disabled
+listing source and comp feed whose class isn't `licensed_api`.
+`requires_agreement` sources (MarketCheck) stay off until the owner sets
+`MARKETCHECK_COMMERCIAL_AGREEMENT` to the reference of a **signed** agreement
+that covers central polling, storage of listings/price history and pushed
+alerts to paying subscribers (MarketCheck's public Terms restrict persistent
+datasets and caching outside "normal application use"). Every paid MarketCheck
+call is counted against a hard monthly budget (`provider_budget.py`). Disabled
 sources show as `disabled` with the licensing reason in `/api/diagnostics`.
 Personal local use (`SNIPER_COMMERCIAL_MODE` unset) behaves as before.
 
@@ -71,7 +80,7 @@ Drop `sources/<name>.py`; it is auto-discovered.
 ```python
 SOURCE_ID = "acme_feed"            # short slug, unique
 SOURCE_NAME = "Acme Dealer Feed"
-LICENSING = "licensed_api"         # licensed_api | unverified |
+LICENSING = "licensed_api"         # licensed_api | requires_agreement | unverified |
                                    # terms_prohibit_automation | personal_use_only
 
 def enabled(cfg) -> bool:          # user toggle only

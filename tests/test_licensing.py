@@ -9,14 +9,18 @@ import sources
 def test_every_source_declares_licensing():
     for m in sources.all_sources():
         assert getattr(m, "LICENSING", None) in {
-            "licensed_api", "terms_prohibit_automation", "unverified",
-            "personal_use_only"}, m.SOURCE_ID
+            "licensed_api", "requires_agreement", "terms_prohibit_automation",
+            "unverified", "personal_use_only"}, m.SOURCE_ID
 
 
 def test_commercial_mode_keeps_only_licensed_sources(monkeypatch):
+    monkeypatch.delenv("MARKETCHECK_COMMERCIAL_AGREEMENT", raising=False)
     cfg = {"commercial_mode": True, "sources": {}}
     ids = {m.SOURCE_ID for m in sources.iter_sources(cfg)}
-    assert ids == {"ebay", "marketcheck"}
+    assert ids == {"ebay"}                 # MarketCheck fail-closed without agreement
+    monkeypatch.setenv("MARKETCHECK_COMMERCIAL_AGREEMENT", "MC-2026-001")
+    ids = {m.SOURCE_ID for m in sources.iter_sources(cfg)}
+    assert ids == {"ebay", "marketcheck", "marketcheck_fsbo"}
     off = {m.SOURCE_ID for m in sources.iter_sources({"sources": {}})}
     assert {"craigslist", "marketplace"} <= off            # personal mode unchanged
 
@@ -43,6 +47,10 @@ def test_commercial_mode_skips_unlicensed_comp_scrapers(monkeypatch):
     monkeypatch.setattr(comps, "marketcheck_sold",
                         lambda *a, **k: called.append("marketcheck") or [])
     monkeypatch.setitem(CONFIG, "commercial_mode", True)
+    monkeypatch.delenv("MARKETCHECK_COMMERCIAL_AGREEMENT", raising=False)
+    out = comps._fetch_all("2015 Toyota Camry", 2015, "Toyota", "Camry")
+    assert called == []                     # nothing licensed without agreement
+    monkeypatch.setenv("MARKETCHECK_COMMERCIAL_AGREEMENT", "MC-2026-001")
     out = comps._fetch_all("2015 Toyota Camry", 2015, "Toyota", "Camry")
     assert called == ["marketcheck"]
     assert set(out) >= {"ebay", "marketcheck"}

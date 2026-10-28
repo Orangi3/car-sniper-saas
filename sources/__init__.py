@@ -55,12 +55,24 @@ COMMERCIAL_OK = {"licensed_api"}
 
 
 def licensing_block(m: ModuleType, cfg: dict) -> str | None:
-    """Why this source may not run in commercial mode (None = allowed)."""
+    """Why this source may not run in commercial mode (None = allowed).
+
+    `requires_agreement` sources (e.g. MarketCheck) are licensed APIs whose
+    public terms don't clearly cover Car Sniper's use; they unlock only when
+    the owner records a signed agreement reference in the source's
+    AGREEMENT_ENV variable."""
     if not cfg.get("commercial_mode"):
         return None
     cls = getattr(m, "LICENSING", "unverified")
     if cls in COMMERCIAL_OK:
         return None
+    if cls == "requires_agreement":
+        import os
+        env = getattr(m, "AGREEMENT_ENV", None)
+        if env and os.environ.get(env, "").strip():
+            return None
+        return (f"requires a written commercial agreement — set {env} to the "
+                f"signed agreement reference (see OWNER_ACTIONS.md)")
     return f"not licensed for commercial use ({cls}) — see SOURCES.md"
 
 

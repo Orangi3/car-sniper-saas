@@ -94,7 +94,9 @@ class PollReport:
                 self.retry_after_s = max(self.retry_after_s or 0, float(ra))
             except (TypeError, ValueError):
                 pass
-            self.record(label, RATE_LIMITED, s)
+            # keep the provider's message: "monthly quota exhausted" and
+            # "rate limit exceeded" need different backoff
+            self.record(label, RATE_LIMITED, s, (getattr(r, "text", "") or "")[:160])
         elif s in (401, 407):
             self.record(label, AUTH, s)
         elif s == 403:
