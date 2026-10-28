@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Car Sniper Ops</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#15181d; --muted:#6b7280; --line:#e5e7eb;
+          --ok:#15803d; --warn:#b45309; --bad:#b91c1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1115; --card:#171a21; --ink:#e7e9ee; --muted:#9aa3b2; --line:#2a2f3a;
+            --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; } }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 2px; } h2 { font-size:15px; margin:0 0 8px; }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  table { width:100%; border-collapse:collapse; } td,th { text-align:left; padding:4px 6px;
+          border-top:1px solid var(--line); vertical-align:top; font-size:13px; }
+  th { color:var(--muted); font-weight:500; } .r { text-align:right; }
+  .muted { color:var(--muted); } .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .na { color:var(--muted); font-style:italic; } .wrap { overflow-x:auto; }
+  td { overflow-wrap:break-word; } .r { white-space:nowrap; } .na { overflow-wrap:anywhere; }
+  #data { grid-column:1 / -1; }
+  .kpi { display:flex; gap:16px; flex-wrap:wrap; margin:6px 0 10px; }
+  .kpi div b { display:block; font-size:20px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Car Sniper — operations</h1>
+  <p class="muted" id="meta">Loading…</p>
+  <div class="grid">
+    <section id="data"><h2>Data health</h2></section>
+    <section id="deals"><h2>Deal intelligence</h2></section>
+    <section id="system"><h2>System health</h2></section>
+    <section id="costs"><h2>Costs this month</h2></section>
+  </div>
+</main>
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const val = v => (v && typeof v === "object" && "unavailable" in v)
+  ? `<span class="na">unavailable — ${esc(v.unavailable)}</span>` : esc(v ?? "—");
+const cls = s => s === "healthy" || s === "ok" ? "ok" : (s === "never polled" || s === "warn" || s === "disabled") ? "warn" : "bad";
+const money = n => n == null ? "—" : "$" + Number(n).toLocaleString();
+const table = (head, rows) => `<div class="wrap"><table><tr>${head.map(h => `<th>${esc(h)}</th>`).join("")}</tr>${rows.join("")}</table></div>`;
+
+fetch("/api/admin/ops").then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }).then(d => {
+  document.getElementById("meta").textContent =
+    `Generated ${new Date(d.generated_at).toLocaleString()} · readiness: ${d.system_health.ready_for.replaceAll("_", " ")} · values marked unavailable are not measured by the app.`;
+  const dh = d.data_health;
+  document.getElementById("data").innerHTML += `<div class="kpi"><div><b>${dh.working.length}</b>working</div><div><b>${dh.failing.length}</b>failing</div><div><b>${dh.vehicles_seen_on_multiple_listings}</b>vehicles cross-posted</div></div>` +
+    table(["Source", "Status", "Last real success", "New in window", "Live probe"], dh.sources.map(s =>
+      `<tr><td>${esc(s.source)}${s.commercially_blocked ? '<div class="muted">not licensed for paid use</div>' : ""}</td>
+       <td class="${cls(s.status)}">${esc(s.status)}${s.reason ? `<div class="muted">${esc(s.reason)}</div>` : ""}</td>
+       <td>${esc(s.last_genuine_success_at || "never")}</td><td class="r">${esc(s.listings_first_seen_in_window)}</td>
+       <td>${s.last_live_probe.unavailable ? '<span class="na">none</span>' : `${esc(s.last_live_probe.status)} · ${esc(s.last_live_probe.listings)} listings<div class="muted">${esc(s.last_live_probe.checked_at)}</div>`}</td></tr>`)) +
+    `<p class="muted">Duplicates rejected per poll: ${val(dh.duplicates_rejected_per_poll)}</p>`;
+  const di = d.deal_intelligence, n = di.notifications;
+  document.getElementById("deals").innerHTML += `<div class="kpi"><div><b>${di.qualified_deals}</b>qualified (${di.window_hours}h)</div><div><b>${di.trusted_valuations}</b>trusted</div><div><b>${di.valued_listings}</b>valued</div><div><b>${di.subscriber_matches}</b>subscriber matches</div><div><b>${n.delivered_to_provider}</b>alerts delivered</div><div><b class="${n.failed_permanently ? "bad" : ""}">${n.failed_permanently}</b>failed</div></div>` +
+    (di.top_by_conservative_profit.length ? table(["Vehicle", "Price", "Conservative", "Confidence"], di.top_by_conservative_profit.map(t =>
+      `<tr><td>${esc(t.vehicle)}<div class="muted">${esc(t.source)} · ${esc(t.comps)} comps</div></td><td class="r">${money(t.price)}</td><td class="r">${money(t.conservative_profit)}</td><td>${esc(t.confidence)}</td></tr>`))
+      : '<p class="na">No qualified deals in this window.</p>') +
+    `<p class="muted">Confidence: ${esc(JSON.stringify(di.by_confidence))} · evidence: ${esc(JSON.stringify(di.by_evidence_class))} · comparable quality: ${val(di.mean_comparable_quality)}<br>${esc(di.profit_basis)}. ${esc(n.note)}.</p>`;
+  const sh = d.system_health, q = sh.queue.totals;
+  document.getElementById("system").innerHTML += `<div class="kpi"><div><b>${q.pending}</b>queued</div><div><b>${q.running}</b>running</div><div><b class="${q.dead ? "bad" : ""}">${q.dead}</b>dead</div></div>` +
+    table(["Check", "Status"], sh.checks.map(c => `<tr><td>${esc(c.check)}</td><td class="${cls(c.status)}">${esc(c.detail)}</td></tr>`)) +
+    (sh.recent_job_errors.length ? "<h2 style='margin-top:10px'>Recent job errors</h2>" + table(["Job", "Error"], sh.recent_job_errors.map(e =>
+      `<tr><td>${esc(e.kind)} ×${esc(e.attempts)}<div class="muted">${esc(e.updated_at)}</div></td><td>${esc(e.last_error)}</td></tr>`)) : '<p class="muted">No job errors recorded.</p>');
+  const c = d.costs;
+  document.getElementById("costs").innerHTML +=
+    (c.providers.length ? table(["Provider", "Calls", "Budget left", "Call fees"], c.providers.map(p =>
+      `<tr><td>${esc(p.source)}</td><td class="r">${esc(p.calls_this_month)}</td><td class="r">${esc(p.remaining)} / ${esc(p.budget)}</td><td class="r">${money(p.estimated_call_fees_usd)}</td></tr>`)) : "") +
+    table(["Item", "Monthly"], [
+      `<tr><td>Data platform fee</td><td>${c.data_platform_fee.unavailable ? val(c.data_platform_fee) : money(c.data_platform_fee.value) + " (configured)"}</td></tr>`,
+      `<tr><td>Hosting</td><td>${c.hosting.unavailable ? val(c.hosting) : money(c.hosting.value) + " (configured)"}</td></tr>`,
+      `<tr><td>Notifications</td><td>${c.notifications_this_month.unavailable ? val(c.notifications_this_month) : esc(JSON.stringify(c.notifications_this_month))}</td></tr>`,
+      `<tr><td>AI agent spend</td><td>${val(c.ai_agent_spend)}</td></tr>`]);
+}).catch(e => { document.getElementById("meta").innerHTML = `<span class="bad">Could not load: ${esc(e.message)} (admin login required)</span>`; });
+</script>
+</body>
+</html>
