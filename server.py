@@ -473,7 +473,8 @@ def api_near_misses():
                l.url, l.title, l.price, l.year, l.make, l.model,
                l.odometer, l.source, l.state, l.posted_at, l.first_seen_at,
                l.is_auction, l.is_cash_only, l.scam_score, l.scam_reasons,
-               l.image_urls,
+               l.image_urls, nm.evidence_class, nm.confidence, nm.trust,
+               nm.risk_flags, nm.value_low, nm.value_high,
                (CASE WHEN s.composite_id IS NULL THEN 0 ELSE 1 END) AS is_saved,
                s.status AS save_status
         FROM near_misses nm JOIN listings l ON l.composite_id = nm.composite_id

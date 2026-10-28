@@ -41,6 +41,8 @@ from .base import (NormalizedListing, extract_make_model, extract_miles,
 
 SOURCE_ID = "email_imap"
 SOURCE_NAME = "Email digest (IMAP)"
+# Data-licensing class (see SOURCES.md): Reads the owner's private inbox; not licensed for redistribution to other subscribers.
+LICENSING = "personal_use_only"
 
 SEEN_PATH = Path(__file__).resolve().parent.parent / "imap_seen.json"
 

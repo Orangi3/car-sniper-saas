@@ -169,6 +169,9 @@ if $DO_ROLLBACK; then
         sudo systemctl restart sniper-web.service
         if systemctl is-enabled --quiet sniper-scheduler.service; then
             sudo systemctl restart sniper-scheduler.service
+        fi
+        if systemctl is-enabled --quiet sniper-worker.service; then
+            sudo systemctl restart sniper-worker.service
         fi"
     echo "▸ rollback complete; current is $PREV"
     exit 0
@@ -371,6 +374,9 @@ if ! $NO_RESTART; then
         sudo systemctl restart sniper-web.service
         if systemctl is-enabled --quiet sniper-scheduler.service; then
             sudo systemctl restart sniper-scheduler.service
+        fi
+        if systemctl is-enabled --quiet sniper-worker.service; then
+            sudo systemctl restart sniper-worker.service
         fi"
 fi
 

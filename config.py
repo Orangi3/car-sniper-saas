@@ -94,6 +94,13 @@ _OVERRIDES = _load_overrides()
 
 
 CONFIG: dict = {
+    # ----- Commercial mode ----------------------------------------------
+    # ON for the paid SaaS: only sources and comp feeds whose licensing
+    # permits a paid multi-user product are used (see SOURCES.md). OFF keeps
+    # the original personal, local-use behavior.
+    "commercial_mode": os.environ.get("SNIPER_COMMERCIAL_MODE", "").lower()
+                       in ("1", "true", "yes"),
+
     # ----- Where you are (live-editable from dashboard) -----------------
     "zip": _OVERRIDES.get("zip", "35401"),
     "radius_mi": _OVERRIDES.get("radius_mi", 100),

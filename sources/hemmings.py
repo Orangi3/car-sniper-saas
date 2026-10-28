@@ -14,6 +14,8 @@ from .base import (NormalizedListing, extract_int, extract_price, extract_make_m
 
 SOURCE_ID = "hemmings"
 SOURCE_NAME = "Hemmings (classics)"
+# Data-licensing class (see SOURCES.md): Public RSS feed; permission to redistribute in a paid product not confirmed.
+LICENSING = "unverified"
 FEEDS = [
     "https://www.hemmings.com/classifieds/cars-for-sale/feed/",
     "https://www.hemmings.com/feed/cars-for-sale.xml",

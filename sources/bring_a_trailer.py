@@ -16,6 +16,8 @@ from .base import (NormalizedListing, extract_int, extract_price, extract_make_m
 
 SOURCE_ID = "bat"
 SOURCE_NAME = "Bring a Trailer"
+# Data-licensing class (see SOURCES.md): Public RSS feed; permission to redistribute in a paid product not confirmed.
+LICENSING = "unverified"
 # BaT has multiple feed endpoints — try them in order
 FEEDS = [
     "https://bringatrailer.com/feed/",

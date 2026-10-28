@@ -22,6 +22,8 @@ from .base import (NormalizedListing, extract_int, extract_price, extract_make_m
 
 SOURCE_ID = "craigslist"
 SOURCE_NAME = "Craigslist (by owner)"
+# Data-licensing class (see SOURCES.md): Craigslist terms bar automated collection and commercial reuse without a written license.
+LICENSING = "terms_prohibit_automation"
 
 DEFAULT_REGIONS = ["tuscaloosa", "bham", "montgomery", "huntsville", "auburn",
                    "gadsden", "shoals", "dothan", "mobile", "meridian",

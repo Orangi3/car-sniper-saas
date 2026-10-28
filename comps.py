@@ -427,7 +427,28 @@ def raw_sold(year: int, make: str, model: str) -> tuple[dict, int]:
     """Raw per-source sold records (cached 24h) and their fetch time —
     consumed by valuation.classify_sold_items()."""
     q = f"{year} {make} {model}".strip()
-    return cached_get(f"comps:{q}", lambda: _fetch_all(q, year, make, model))
+    # Commercial mode has its own cache key: scraped results never leak in.
+    key = f"comps{':licensed' if _commercial_mode() else ''}:{q}"
+    return cached_get(key, lambda: _fetch_all(q, year, make, model))
+
+
+# Licensing of each sold-comp feed (see SOURCES.md). In commercial mode only
+# licensed feeds run: eBay's user agreement prohibits scraping its pages,
+# and permission for the auction sites' result pages is not confirmed.
+COMP_SOURCE_LICENSING = {
+    "ebay": "terms_prohibit_automation",   # HTML scrape of sold listings
+    "bat": "unverified", "carsandbids": "unverified", "pcarmarket": "unverified",
+    "hemmings": "unverified", "copart": "unverified",
+    "marketcheck": "licensed_api",
+}
+
+
+def _commercial_mode() -> bool:
+    try:
+        from config import CONFIG
+        return bool(CONFIG.get("commercial_mode"))
+    except Exception:
+        return False
 
 
 def _fetch_all(q: str, year: int, make: str, model: str) -> dict:
@@ -444,7 +465,13 @@ def _fetch_all(q: str, year: int, make: str, model: str) -> dict:
         "copart":      lambda: copart_sold(q),
         "marketcheck": lambda: marketcheck_sold(q, year, make, model),
     }
-    results = {k: [] for k in sources}
+    if _commercial_mode():
+        sources = {k: v for k, v in sources.items()
+                   if COMP_SOURCE_LICENSING.get(k) == "licensed_api"}
+    results = {k: [] for k in ("ebay", "bat", "carsandbids", "pcarmarket",
+                               "hemmings", "copart", "marketcheck")}
+    if not sources:
+        return results
     ex = ThreadPoolExecutor(max_workers=len(sources))
     try:
         futures = {ex.submit(fn): name for name, fn in sources.items()}

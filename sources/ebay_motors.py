@@ -29,6 +29,8 @@ from .base import (NormalizedListing, extract_make_model, extract_miles,
 
 SOURCE_ID = "ebay"
 SOURCE_NAME = "eBay Motors"
+# Data-licensing class (see SOURCES.md): Official eBay Browse API; use is governed by the eBay API License Agreement.
+LICENSING = "licensed_api"
 
 OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"

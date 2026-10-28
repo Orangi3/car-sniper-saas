@@ -19,6 +19,8 @@ from .base import (NormalizedListing, extract_int, extract_price, extract_make_m
 
 SOURCE_ID = "govdeals"
 SOURCE_NAME = "GovDeals (gov surplus)"
+# Data-licensing class (see SOURCES.md): Public RSS feed (URLs may be deprecated); redistribution terms not confirmed.
+LICENSING = "unverified"
 # Category 13: Cars/Trucks/Vehicles. They deprecated several feed URLs;
 # we try both the old and new patterns. If both fail this source silently
 # returns 0 and the diagnostics panel will say so.

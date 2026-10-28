@@ -56,6 +56,7 @@ fi
 # --- Stop any old instance --------------------------------------------------
 pkill -f "sniper.py daemon"   2>/dev/null   # legacy entry, retired
 pkill -f "jobs.scheduler"     2>/dev/null
+pkill -f "jobs.worker"        2>/dev/null
 pkill -f "server.py"          2>/dev/null
 sleep 1
 
@@ -69,6 +70,12 @@ echo ""
 echo "Starting the source-polling scheduler..."
 nohup .venv/bin/python -m jobs.scheduler --interval 60 > sniper.log 2>&1 &
 echo $! > sniper.pid
+
+# --- Start the job worker (scores listings, sends alerts) -------------------
+# Work is stored in the database, so nothing is lost if this stops; it
+# simply resumes where it left off on the next start.
+nohup .venv/bin/python -m jobs.worker --threads 2 > worker.log 2>&1 &
+echo $! > worker.pid
 
 # --- Start the dashboard in the background ----------------------------------
 nohup .venv/bin/python server.py > server.log 2>&1 &

@@ -26,6 +26,8 @@ from .base import (NormalizedListing, extract_make_model, extract_miles)
 
 SOURCE_ID = "marketcheck"
 SOURCE_NAME = "MarketCheck (Cars.com/Autotrader/CarGurus)"
+# Data-licensing class (see SOURCES.md): Paid licensed API; caching/redistribution governed by your MarketCheck contract.
+LICENSING = "licensed_api"
 
 ACTIVE_URL = "https://api.marketcheck.com/v2/search/car/active"
 

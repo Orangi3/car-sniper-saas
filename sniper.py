@@ -639,7 +639,10 @@ def poll_once(verbose: bool = True, only_sources: list[str] | None = None,
     for s in candidates:
         sid = s.SOURCE_ID
         issue = getattr(s, "config_issue", lambda cfg: None)(CONFIG)
-        if sid not in enabled_ids:
+        blocked = sources.licensing_block(s, CONFIG)
+        if blocked:
+            statuses[sid] = {"status": health.DISABLED, "reason": blocked, "polled": False}
+        elif sid not in enabled_ids:
             statuses[sid] = {"status": health.DISABLED, "reason": "disabled in settings",
                              "polled": False}
         elif issue:

@@ -173,6 +173,7 @@ echo "▸ Installing systemd units"
 install -m 0644 "$HERE/systemd/sniper-migrate.service"     /etc/systemd/system/
 install -m 0644 "$HERE/systemd/sniper-web.service"         /etc/systemd/system/
 install -m 0644 "$HERE/systemd/sniper-scheduler.service"   /etc/systemd/system/
+install -m 0644 "$HERE/systemd/sniper-worker.service"      /etc/systemd/system/
 install -m 0644 "$HERE/systemd/sniper-reconcile.service"   /etc/systemd/system/
 install -m 0644 "$HERE/systemd/sniper-reconcile.timer"     /etc/systemd/system/
 install -m 0644 "$HERE/systemd/sniper-backup.service"      /etc/systemd/system/

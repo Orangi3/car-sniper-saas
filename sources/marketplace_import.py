@@ -23,6 +23,8 @@ from .base import (NormalizedListing, extract_make_model, extract_miles,
 
 SOURCE_ID = "marketplace"
 SOURCE_NAME = "Marketplace (browser extension)"
+# Data-licensing class (see SOURCES.md): Captured from the owner's own logged-in browsing; not licensed for redistribution to other subscribers.
+LICENSING = "personal_use_only"
 # Imports are kept in the main database (table marketplace_inbox, migration
 # 0008) — previously a separate marketplace_inbox.sqlite next to the code,
 # invisible to other hosts and outside backups. poll() only re-reads recent

@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "fix/**", "feat/**"]
+  pull_request:
+
+jobs:
+  tests-sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13", cache: pip }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - name: Valuation benchmark (synthetic labeled cases)
+        run: python benchmarks/run_benchmark.py
+
+  tests-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      # one throwaway database per test (tests/conftest.py)
+      SNIPER_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13", cache: pip }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+
+  browser-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13", cache: pip }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: pip install -r requirements.txt
+      - run: npm install --no-save playwright@1.47.2 && npx playwright install --with-deps chromium
+      - name: Seed throwaway DB and start server
+        env: { SNIPER_DB_PATH: /tmp/smoke.db, ALLOW_REGISTRATION: "1" }
+        run: |
+          python tests/browser/seed_demo.py
+          nohup python server.py > /tmp/server.log 2>&1 &
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8765/health && break; sleep 0.5; done
+      - name: Mobile UI smoke test
+        env:
+          BASE: http://127.0.0.1:8765
+          SHOTS: /tmp
+          PROMOTE_CMD: >-
+            SNIPER_DB_PATH=/tmp/smoke.db python -c "import auth;
+            auth.set_plan(auth.get_user_by_email('{email}').id, 'starter')"
+        run: node tests/browser/smoke_mobile.js
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-screenshots
+          path: /tmp/m-*.png
