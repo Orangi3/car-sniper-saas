@@ -251,6 +251,19 @@ Put `DATABASE_URL`, `SECRET_KEY`, `ALLOW_REGISTRATION`,
 `GUNICORN_WORKERS`, and all `STRIPE_*` test-mode keys in
 `/etc/sniper/env` (0600, owned by sniper).
 
+### 3. `sniper-worker.service` — durable jobs (one or more)
+
+Scores listings and delivers notifications from the `jobs` table. Safe to
+run several (atomic claims, leases). Unit file: `deploy/systemd/sniper-worker.service`
+(`python3 -m jobs.worker --threads 4`). Without it nothing is scored or
+alerted. Enable with `systemctl enable --now sniper-worker.service`.
+
+### Preflight
+
+After every deploy run `python3 -m preflight --target paid` (or `--target
+free`). It exits non-zero and lists the blockers unless the deployment is
+actually ready for that stage; `/health` returning 200 is not that check.
+
 **Why no `/api/admin/poll` HTTP route.** Phase 2C.1 deliberately removed
 the previous admin-only poll trigger. Web workers must never call
 `sniper.poll_once` — N gunicorn workers could each spawn the scorer
