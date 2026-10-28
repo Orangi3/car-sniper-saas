@@ -1133,14 +1133,14 @@ def billing_health(conn) -> dict:
     # Unresolved anomalies by severity
     cur.execute(
         "SELECT severity, COUNT(*) AS n FROM billing_anomalies "
-        "WHERE resolved = 0 GROUP BY severity")
+        "WHERE resolved = FALSE GROUP BY severity")
     by_sev = {(r["severity"]): int(r["n"]) for r in cur.fetchall()}
     # Top recent anomalies for quick triage
     cur.execute(
         "SELECT id, type, severity, user_id, stripe_subscription_id, "
         "       stripe_event_id, details, created_at "
         "FROM billing_anomalies "
-        "WHERE resolved = 0 ORDER BY created_at DESC LIMIT 25")
+        "WHERE resolved = FALSE ORDER BY created_at DESC LIMIT 25")
     recent = []
     for r in cur.fetchall():
         d = dict(r)

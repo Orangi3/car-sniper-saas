@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
 import threading
 import time
@@ -68,115 +67,19 @@ def _resolve_db_path() -> Path:
 # the env-driven path on re-import.
 DB_PATH = _resolve_db_path()
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS listings (
-    composite_id    TEXT PRIMARY KEY,
-    source          TEXT NOT NULL,
-    source_id       TEXT NOT NULL,
-    url             TEXT NOT NULL,
-    title           TEXT NOT NULL,
-    price           INTEGER,
-    year            INTEGER,
-    make            TEXT,
-    model           TEXT,
-    odometer        INTEGER,
-    location        TEXT,
-    state           TEXT,
-    description     TEXT,
-    posted_at       TEXT,
-    first_seen_at   TEXT NOT NULL,
-    is_dealer       INTEGER DEFAULT 0,
-    is_salvage      INTEGER DEFAULT 0,
-    is_auction      INTEGER DEFAULT 0,
-    auction_end_at  TEXT,
-    bid_count       INTEGER,
-    buy_now_price   INTEGER,
-    is_cash_only    INTEGER DEFAULT 0,
-    accepts_financing INTEGER DEFAULT 0,
-    scam_score      INTEGER DEFAULT 0,
-    scam_reasons    TEXT,
-    image_urls      TEXT,
-    extras          TEXT
-);
-
-CREATE TABLE IF NOT EXISTS alerts (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    composite_id    TEXT NOT NULL REFERENCES listings(composite_id),
-    comp_avg        REAL,
-    comp_median     REAL,
-    comp_n          INTEGER,
-    discount_pct    REAL,
-    score           REAL,
-    note            TEXT,
-    created_at      TEXT NOT NULL,
-    UNIQUE(composite_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_listings_first_seen ON listings(first_seen_at DESC);
-CREATE INDEX IF NOT EXISTS idx_listings_source     ON listings(source);
-CREATE INDEX IF NOT EXISTS idx_listings_auction    ON listings(is_auction, auction_end_at);
-CREATE INDEX IF NOT EXISTS idx_listings_scam       ON listings(scam_score);
-CREATE INDEX IF NOT EXISTS idx_listings_make_model ON listings(make, model);
-CREATE INDEX IF NOT EXISTS idx_alerts_created      ON alerts(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_alerts_score        ON alerts(score DESC);
-
-CREATE TABLE IF NOT EXISTS saved (
-    composite_id TEXT PRIMARY KEY REFERENCES listings(composite_id),
-    note         TEXT,
-    saved_at     TEXT NOT NULL
-);
-
--- "Near miss" cache so we can always surface SOMETHING even when nothing
--- meets the user's discount threshold. Discount must be > 0 (priced below
--- comp avg by any amount). Updated on every poll.
-CREATE TABLE IF NOT EXISTS near_misses (
-    composite_id  TEXT PRIMARY KEY REFERENCES listings(composite_id),
-    discount_pct  REAL,
-    score         REAL,
-    comp_avg      REAL,
-    note          TEXT,
-    refreshed_at  TEXT NOT NULL
-);
-"""
-
 DEAL_THRESHOLD = CONFIG["deal_threshold_pct"] / 100.0
 MIN_PRICE = CONFIG["min_price"]
 MAX_PRICE = CONFIG["max_price"]
 DEFAULT_POLL_SEC = CONFIG["poll_interval_sec"]
 
 
-def db() -> sqlite3.Connection:
-    # Re-resolve every call so a test that swapped SNIPER_DB_PATH after
-    # import (e.g. via the conftest fixture) still gets the right file.
-    path = _resolve_db_path()
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    # WAL + busy timeout: readers never block writers and concurrent writers
-    # wait politely instead of raising "database is locked". This removes the
-    # main source of intermittent scoring errors under the 6-thread scorer.
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=8000")
-        conn.execute("PRAGMA synchronous=NORMAL")
-    except sqlite3.OperationalError:
-        pass
-    conn.executescript(SCHEMA)
-    # Forward-compat ALTERs — safely add columns to pre-existing DBs
-    for stmt in (
-        "ALTER TABLE listings ADD COLUMN scam_score INTEGER DEFAULT 0",
-        "ALTER TABLE listings ADD COLUMN scam_reasons TEXT",
-        "ALTER TABLE listings ADD COLUMN image_urls TEXT",
-        "ALTER TABLE near_misses ADD COLUMN comp_n INTEGER",
-        "ALTER TABLE near_misses ADD COLUMN basis TEXT",
-        "ALTER TABLE alerts ADD COLUMN basis TEXT",
-        "ALTER TABLE saved ADD COLUMN status TEXT DEFAULT 'saved'",
-        "ALTER TABLE saved ADD COLUMN updated_at TEXT",
-    ):
-        try:
-            conn.execute(stmt)
-        except sqlite3.OperationalError:
-            pass  # column already exists
-    return conn
+def db():
+    """Portable connection to the configured database (SQLite locally,
+    Postgres when DATABASE_URL is set) — the SAME store auth, billing and
+    saved searches use. Schema comes only from migrations/; nothing is
+    created at connect time. Use as `with db() as conn:`."""
+    import db as _db_mod  # noqa: PLC0415 — re-resolved per call for tests
+    return _db_mod.session()
 
 
 def _record_score(conn, cid: str, comp_avg: float, comp_n: int,
@@ -213,7 +116,7 @@ def instant_estimate(year, make, model, price, odometer=None, conn=None):
                 """SELECT price, year FROM listings
                    WHERE LOWER(make)=LOWER(?) AND LOWER(model)=LOWER(?)
                      AND price IS NOT NULL AND price BETWEEN 1000 AND 250000
-                     AND year IS NOT NULL AND is_salvage=0""",
+                     AND year IS NOT NULL AND is_salvage = FALSE""",
                 (str(make).strip(), str(model).strip())).fetchall()
         finally:
             if own:
@@ -266,33 +169,34 @@ def store_new(listings: Iterable[NormalizedListing]) -> list[NormalizedListing]:
                 continue
             _normalize_listing(l)
             sc, reasons = scam_score_listing(l.title, l.description, l.price, None)
-            try:
-                conn.execute(
-                    """INSERT INTO listings(composite_id, source, source_id, url, title,
-                            price, year, make, model, odometer, location, state,
-                            description, posted_at, first_seen_at, is_dealer,
-                            is_salvage, is_auction, auction_end_at, bid_count,
-                            buy_now_price, is_cash_only, accepts_financing,
-                            scam_score, scam_reasons, image_urls, extras)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (l.composite_id(), l.source, l.source_id, l.url, l.title,
-                     l.price, l.year, l.make, l.model, l.odometer, l.location, l.state,
-                     l.description, l.posted_at, now,
-                     1 if l.is_dealer else 0, 1 if l.is_salvage else 0,
-                     1 if l.is_auction else 0, l.auction_end_at, l.bid_count,
-                     l.buy_now_price,
-                     1 if l.is_cash_only else 0, 1 if l.accepts_financing else 0,
-                     sc, json.dumps(reasons),
-                     json.dumps(getattr(l, 'image_urls', []) or []),
-                     json.dumps(l.extras)),
-                )
-                new.append(l)
-                # Enqueue for async scoring (only if it has the data we need)
-                if l.year and l.make and l.model and not l.is_salvage:
-                    _SCORE_QUEUE.put(l.composite_id())
-                    _SCORE_STATS["pending"] = _SCORE_QUEUE.qsize()
-            except sqlite3.IntegrityError:
-                pass
+            row = conn.execute(
+                """INSERT INTO listings(composite_id, source, source_id, url, title,
+                        price, year, make, model, odometer, location, state,
+                        description, posted_at, first_seen_at, is_dealer,
+                        is_salvage, is_auction, auction_end_at, bid_count,
+                        buy_now_price, is_cash_only, accepts_financing,
+                        scam_score, scam_reasons, image_urls, extras)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(composite_id) DO NOTHING
+                   RETURNING composite_id""",
+                (l.composite_id(), l.source, l.source_id, l.url, l.title,
+                 l.price, l.year, l.make, l.model, l.odometer, l.location, l.state,
+                 l.description, l.posted_at, now,
+                 bool(l.is_dealer), bool(l.is_salvage),
+                 bool(l.is_auction), to_iso(l.auction_end_at), l.bid_count,
+                 l.buy_now_price,
+                 bool(l.is_cash_only), bool(l.accepts_financing),
+                 sc, json.dumps(reasons),
+                 json.dumps(getattr(l, 'image_urls', []) or []),
+                 json.dumps(l.extras)),
+            ).fetchone()
+            if row is None:
+                continue  # already known
+            new.append(l)
+            # Enqueue for async scoring (only if it has the data we need)
+            if l.year and l.make and l.model and not l.is_salvage:
+                _SCORE_QUEUE.put(l.composite_id())
+                _SCORE_STATS["pending"] = _SCORE_QUEUE.qsize()
     ensure_scorer_started()
 
     # INSTANT SCORING PASS — give every brand-new listing a peer-estimate
@@ -339,7 +243,10 @@ def _normalize_listing(l: NormalizedListing) -> None:
         bonus could never parse)
       * branded-title / parts-car wording → is_salvage
       * runs/drives problems → extras["needs_work"]"""
-    l.posted_at = to_iso(l.posted_at) or l.posted_at
+    raw_posted = l.posted_at
+    l.posted_at = to_iso(raw_posted)
+    if raw_posted and not l.posted_at:
+        l.extras = {**(l.extras or {}), "posted_raw": str(raw_posted)[:64]}
     if not l.is_salvage and looks_salvage(l.title, l.description):
         l.is_salvage = True
     if looks_needs_work(l.title, l.description):
@@ -499,17 +406,17 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
             _record_score(conn, composite_id, avg, comp_n, discount * 100,
                           score, basis, note, now)
             if alertable:
-                try:
-                    cur = conn.execute(
-                        """INSERT INTO alerts(composite_id, comp_avg, comp_median,
-                                 comp_n, discount_pct, score, note, created_at, basis)
-                           VALUES(?,?,?,?,?,?,?,?,?)""",
-                        (composite_id, avg, comp_median, comp_n,
-                         discount * 100, score, note, now, basis))
-                    alert_id = cur.lastrowid
+                row = conn.execute(
+                    """INSERT INTO alerts(composite_id, comp_avg, comp_median,
+                             comp_n, discount_pct, score, note, created_at, basis)
+                       VALUES(?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(composite_id) DO NOTHING
+                       RETURNING id""",
+                    (composite_id, avg, comp_median, comp_n,
+                     discount * 100, score, note, now, basis)).fetchone()
+                if row is not None:
+                    alert_id = row[0]
                     new_alert = True
-                except sqlite3.IntegrityError:
-                    pass
     except Exception as e:
         print(f"[score] {composite_id} write failed: {e}", file=sys.stderr)
         return None
@@ -572,7 +479,7 @@ def backfill_unscored() -> int:
             LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id
             WHERE (nm.composite_id IS NULL OR nm.basis IS NULL OR nm.basis='estimate')
               AND l.year IS NOT NULL AND l.make IS NOT NULL AND l.model IS NOT NULL
-              AND l.is_salvage = 0 AND l.price IS NOT NULL
+              AND l.is_salvage = FALSE AND l.price IS NOT NULL
             ORDER BY l.first_seen_at DESC LIMIT 500
         """).fetchall()
         # INSTANT pass — estimate everything that has no score row at all,
@@ -639,90 +546,6 @@ def _freshness_factor(posted_at: Optional[str]) -> float:
         return 0.60
     except (ValueError, TypeError):
         return 0.85
-
-
-def score_and_alert(listings: list[NormalizedListing]) -> list[dict]:
-    """Score listings against sold comps. Always record near-misses (any
-    listing priced below comp avg) so the dashboard never goes empty."""
-    try:
-        from comps import comps_for_listing
-    except ImportError:
-        comps_for_listing = None
-
-    # Re-read overrides every call so live threshold changes apply immediately
-    _config_mod.reload()
-    threshold = CONFIG["deal_threshold_pct"] / 100.0
-    weights = CONFIG.get("source_weights", {})
-    alerts: list[dict] = []
-    now = datetime.now(timezone.utc).isoformat()
-    with db() as conn:
-        for l in listings:
-            if not l.price or l.price < MIN_PRICE or l.price > MAX_PRICE:
-                continue
-            if not (l.year and l.make and l.model):
-                continue
-            if l.is_salvage:
-                continue
-
-            try:
-                comp = comps_for_listing(year=l.year, make=l.make, model=l.model,
-                                         odometer=l.odometer) if comps_for_listing else None
-            except Exception as e:
-                print(f"[comps] {l.composite_id()} failed: {e}", file=sys.stderr)
-                comp = None
-            if not comp or not comp.get("avg"):
-                continue
-
-            avg = float(comp["avg"])
-            discount = (avg - l.price) / avg
-            if discount <= 0:
-                continue  # listing is at or above comp avg — not a deal
-
-            weight = weights.get(l.source, 1.0)
-            fresh = _freshness_factor(l.posted_at)
-            score = discount * 100 * weight * fresh
-            est_profit = int(avg - l.price - FEES_RECON_AVG)
-
-            note = (
-                f"[{l.source}] {l.year} {l.make} {l.model}"
-                + (f" / {l.odometer:,} mi" if l.odometer else "")
-                + f" listed at ${l.price:,} vs sold-comp avg ${avg:,.0f}"
-                + f" (n={comp.get('n', 0)}, score={score:.1f}, est. profit ${est_profit:,})"
-            )
-
-            # Always upsert near-miss snapshot (any positive discount)
-            try:
-                conn.execute(
-                    """INSERT INTO near_misses(composite_id, discount_pct, score,
-                            comp_avg, note, refreshed_at)
-                       VALUES(?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(composite_id) DO UPDATE SET
-                         discount_pct=excluded.discount_pct, score=excluded.score,
-                         comp_avg=excluded.comp_avg, note=excluded.note,
-                         refreshed_at=excluded.refreshed_at""",
-                    (l.composite_id(), discount * 100, score, avg, note, now),
-                )
-            except sqlite3.Error:
-                pass
-
-            # Only promote to "alert" if threshold is hit
-            if discount < threshold:
-                continue
-
-            try:
-                conn.execute(
-                    """INSERT INTO alerts(composite_id, comp_avg, comp_median, comp_n,
-                                          discount_pct, score, note, created_at)
-                       VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (l.composite_id(), avg, comp.get("median"), comp.get("n"),
-                     discount * 100, score, note, now),
-                )
-                alerts.append({"listing": l.to_dict(), "comp": comp,
-                               "discount_pct": discount * 100, "score": score,
-                               "est_profit": est_profit, "note": note})
-            except sqlite3.IntegrityError:
-                pass
-    return alerts
 
 
 _TICK_COUNTER = 0
@@ -949,7 +772,8 @@ def cmd_recent(n: int) -> None:
 def cmd_stats() -> None:
     with db() as conn:
         rows = conn.execute(
-            "SELECT source, COUNT(*) c, SUM(is_auction) a, SUM(is_cash_only) cash "
+            "SELECT source, COUNT(*) c, SUM(CASE WHEN is_auction THEN 1 ELSE 0 END) a, "
+            "SUM(CASE WHEN is_cash_only THEN 1 ELSE 0 END) cash "
             "FROM listings GROUP BY source ORDER BY c DESC").fetchall()
         n_alerts = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
         last = conn.execute("SELECT MAX(first_seen_at) FROM listings").fetchone()[0]
@@ -971,11 +795,27 @@ def cmd_sources() -> None:
 
 
 def cmd_reset() -> None:
+    import db as _db
+    if _db.IS_PG:
+        print("reset only supports the local SQLite file; drop/recreate the "
+              "Postgres database and run `python -m migrations.runner`.")
+        return
     if input(f"Wipe {DB_PATH}? [y/N] ").strip().lower() != "y":
         print("aborted"); return
     DB_PATH.unlink(missing_ok=True)
-    db().close()
+    _ensure_migrated()
     print("DB reset.")
+
+
+def _ensure_migrated() -> None:
+    """CLI convenience: apply pending migrations explicitly (never at
+    connection time). Local SQLite only — production runs migrations as a
+    deploy step."""
+    import db as _db
+    from migrations import runner
+    if _db.IS_PG:
+        return
+    runner.run_pending(verbose=False)
 
 
 def main() -> None:
@@ -986,6 +826,7 @@ def main() -> None:
     r = sub.add_parser("recent"); r.add_argument("n", type=int, nargs="?", default=25)
     sub.add_parser("stats"); sub.add_parser("sources"); sub.add_parser("reset")
     args = p.parse_args()
+    _ensure_migrated()
     if args.cmd == "poll": poll_once()
     elif args.cmd == "daemon": daemon(args.interval)
     elif args.cmd == "recent": cmd_recent(args.n)

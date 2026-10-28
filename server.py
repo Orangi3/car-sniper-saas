@@ -326,6 +326,17 @@ def _rows(query: str, params=()) -> list[dict]:
         return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
+def _iso_minutes_ago(minutes: int) -> str:
+    """UTC ISO timestamp `minutes` ago (negative = in the future)."""
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
+def _uid_or_zero() -> int:
+    u = auth.current_user()
+    return u.id if u else 0
+
+
 # ---------- Pages -----------------------------------------------------
 
 @app.get("/")
@@ -386,9 +397,9 @@ def api_alerts():
     where = []
     args = []
     if cash_only:
-        where.append("l.is_cash_only=1")
+        where.append("l.is_cash_only = TRUE")
     if hide_auction:
-        where.append("l.is_auction=0")
+        where.append("l.is_auction = FALSE")
     if request.args.get("show_scams") != "1":
         where.append("(l.scam_score IS NULL OR l.scam_score < 50)")
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
@@ -402,9 +413,9 @@ def api_alerts():
                (CASE WHEN s.composite_id IS NULL THEN 0 ELSE 1 END) AS is_saved,
                s.status AS save_status
         FROM alerts a JOIN listings l ON l.composite_id = a.composite_id
-        LEFT JOIN saved s ON s.composite_id = a.composite_id
+        LEFT JOIN saved_v2 s ON s.composite_id = a.composite_id AND s.user_id = ?
         {where_sql}
-        ORDER BY a.score DESC LIMIT ?""", (*args, limit))
+        ORDER BY a.score DESC LIMIT ?""", (_uid_or_zero(), *args, limit))
     # Inject estimated profit
     fees = 1500
     for r in rows:
@@ -420,8 +431,8 @@ def api_fresh_listings():
     empty — and a row only shows 'pending' if it genuinely has no score yet."""
     limit = int(request.args.get("limit", 30))
     where = ["l.price IS NOT NULL", "l.year IS NOT NULL"]
-    if request.args.get("cash_only") == "1":    where.append("l.is_cash_only=1")
-    if request.args.get("hide_auction") == "1": where.append("l.is_auction=0")
+    if request.args.get("cash_only") == "1":    where.append("l.is_cash_only = TRUE")
+    if request.args.get("hide_auction") == "1": where.append("l.is_auction = FALSE")
     if request.args.get("show_scams") != "1":
         where.append("(l.scam_score IS NULL OR l.scam_score < 50)")
     rows = _rows(f"""
@@ -452,8 +463,8 @@ def api_near_misses():
     ranked board (instant estimates + verified comps), ordered by score."""
     limit = int(request.args.get("limit", 30))
     where = ["nm.discount_pct > 0"]
-    if request.args.get("cash_only") == "1":    where.append("l.is_cash_only=1")
-    if request.args.get("hide_auction") == "1": where.append("l.is_auction=0")
+    if request.args.get("cash_only") == "1":    where.append("l.is_cash_only = TRUE")
+    if request.args.get("hide_auction") == "1": where.append("l.is_auction = FALSE")
     if request.args.get("show_scams") != "1":
         where.append("(l.scam_score IS NULL OR l.scam_score < 50)")
     rows = _rows(f"""
@@ -466,9 +477,9 @@ def api_near_misses():
                (CASE WHEN s.composite_id IS NULL THEN 0 ELSE 1 END) AS is_saved,
                s.status AS save_status
         FROM near_misses nm JOIN listings l ON l.composite_id = nm.composite_id
-        LEFT JOIN saved s ON s.composite_id = nm.composite_id
+        LEFT JOIN saved_v2 s ON s.composite_id = nm.composite_id AND s.user_id = ?
         WHERE {' AND '.join(where)}
-        ORDER BY nm.score DESC LIMIT ?""", (limit,))
+        ORDER BY nm.score DESC LIMIT ?""", (_uid_or_zero(), limit))
     fees = 1500
     for r in rows:
         if r.get("comp_avg") and r.get("price"):
@@ -599,10 +610,10 @@ def _build_filters(args):
         if srcs:
             where.append(f"source IN ({','.join('?' for _ in srcs)})")
             params.extend(srcs)
-    if args.get("cash_only") == "1":   where.append("is_cash_only=1")
-    if args.get("hide_dealer") == "1": where.append("is_dealer=0")
-    if args.get("hide_auction") == "1":where.append("is_auction=0")
-    if args.get("hide_salvage") == "1":where.append("is_salvage=0")
+    if args.get("cash_only") == "1":   where.append("is_cash_only = TRUE")
+    if args.get("hide_dealer") == "1": where.append("is_dealer = FALSE")
+    if args.get("hide_auction") == "1":where.append("is_auction = FALSE")
+    if args.get("hide_salvage") == "1":where.append("is_salvage = FALSE")
     # Scam guard — default ON; user must explicitly request show_scams=1 to bypass
     if args.get("show_scams") != "1":
         where.append("(scam_score IS NULL OR scam_score < 50)")
@@ -623,8 +634,11 @@ def _build_filters(args):
     except (ValueError, TypeError):
         age = 0
     if age > 0:
-        where.append("first_seen_at > datetime('now', ?)")
-        params.append(f"-{age} minutes")
+        # ISO cutoff computed here: portable, and compares correctly with
+        # the ISO timestamps stored in first_seen_at (SQLite's datetime()
+        # emits "YYYY-MM-DD HH:MM:SS", which mis-sorts against "…T…").
+        where.append("first_seen_at > ?")
+        params.append(_iso_minutes_ago(age))
     for k, col in [("make","make"),("model","model"),("state","state")]:
         v = args.get(k)
         if v:
@@ -667,10 +681,11 @@ def api_closing_soon():
                odometer, location, state, first_seen_at,
                is_auction, auction_end_at, bid_count, buy_now_price
         FROM listings
-        WHERE is_auction=1 AND auction_end_at IS NOT NULL
-          AND auction_end_at > datetime('now')
-          AND auction_end_at < datetime('now', ?)
-        ORDER BY auction_end_at ASC LIMIT 200""", (f"+{hrs} hours",)))
+        WHERE is_auction = TRUE AND auction_end_at IS NOT NULL
+          AND auction_end_at > ?
+          AND auction_end_at < ?
+        ORDER BY auction_end_at ASC LIMIT 200""",
+        (_iso_minutes_ago(0), _iso_minutes_ago(-hrs * 60))))
 
 
 # ---------- Stats / Sources / Facets ---------------------------------
@@ -688,10 +703,10 @@ def api_stats():
         n_deals = conn.execute(
             "SELECT COUNT(*) FROM near_misses WHERE discount_pct > 0"
         ).fetchone()[0]
-        n_cash = conn.execute("SELECT COUNT(*) FROM listings WHERE is_cash_only=1").fetchone()[0]
-        n_auction = conn.execute("SELECT COUNT(*) FROM listings WHERE is_auction=1").fetchone()[0]
-        n_dealer = conn.execute("SELECT COUNT(*) FROM listings WHERE is_dealer=1").fetchone()[0]
-        n_salvage = conn.execute("SELECT COUNT(*) FROM listings WHERE is_salvage=1").fetchone()[0]
+        n_cash = conn.execute("SELECT COUNT(*) FROM listings WHERE is_cash_only = TRUE").fetchone()[0]
+        n_auction = conn.execute("SELECT COUNT(*) FROM listings WHERE is_auction = TRUE").fetchone()[0]
+        n_dealer = conn.execute("SELECT COUNT(*) FROM listings WHERE is_dealer = TRUE").fetchone()[0]
+        n_salvage = conn.execute("SELECT COUNT(*) FROM listings WHERE is_salvage = TRUE").fetchone()[0]
         last = conn.execute("SELECT MAX(first_seen_at) FROM listings").fetchone()[0]
         per_source = [{"source": r["source"], "n": r["n"]}
                       for r in conn.execute("SELECT source, COUNT(*) n FROM listings "
