@@ -2319,6 +2319,11 @@ def api_deal_detail(cid: str):
         scenarios=plans.limits(plan)["profit_scenarios"],
         distance_mi=d["distance_mi"], dealer_share=d["dealer_share"])
     d["plan"] = {"plan": plan, "name": plans.display_name(plan), **plans.limits(plan)}
+    if d.get("source") == "direct":
+        import seller_listings as sl
+        with sniper.db() as conn:
+            d["seller_contact"] = sl.contact_for(conn, d["composite_id"], plan)
+        d["provenance"] = "Listed on Car Sniper by the seller; details not independently verified."
     return jsonify(d)
 
 
@@ -2477,6 +2482,52 @@ def api_admin_eval_report():
     synthetic demo rows and labels the report accordingly."""
     import evaluation
     return jsonify(evaluation.report(include_fixtures=request.args.get("fixtures") == "1"))
+
+
+# ---- Seller-submitted listings (seller_listings.py; off by default) -------
+
+def _seller_err(e):
+    return jsonify({"error": e.errors[0], "errors": e.errors}), e.status
+
+
+@app.get("/api/seller/listings")
+@auth.login_required
+def api_seller_mine():
+    import seller_listings as sl
+    return jsonify({"enabled": sl.enabled(), "listings": sl.mine(auth.current_user()) if sl.enabled() else [],
+                    "limits": {"active": sl.MAX_ACTIVE_PER_USER,
+                               "per_day": sl.MAX_NEW_PER_USER_PER_DAY}})
+
+
+@app.post("/api/seller/listings")
+@auth.login_required
+def api_seller_create():
+    import seller_listings as sl
+    try:
+        return jsonify(sl.create(auth.current_user(), request.get_json(silent=True) or {})), 201
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.patch("/api/seller/listings/<int:sid>")
+@auth.login_required
+def api_seller_update(sid: int):
+    import seller_listings as sl
+    try:
+        return jsonify(sl.update_price(auth.current_user(), sid,
+                                       (request.get_json(silent=True) or {}).get("price")))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.delete("/api/seller/listings/<int:sid>")
+@auth.login_required
+def api_seller_remove(sid: int):
+    import seller_listings as sl
+    try:
+        return jsonify(sl.remove(auth.current_user(), sid))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
 
 
 @app.get("/api/admin/ops")
