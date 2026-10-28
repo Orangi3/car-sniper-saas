@@ -198,3 +198,31 @@ def test_sandbox_probe_is_labeled_not_real_market_data(eb, monkeypatch):
     monkeypatch.setenv("EBAY_ENVIRONMENT", "sandbox")
     r = vs.run(["ebay"])["results"][0]
     assert r["provider_environment"] == "sandbox" and r["real_market_data"] is False
+
+
+def _err(status, error_id, message):
+    return R(status, {"errors": [{"errorId": error_id, "domain": "ACCESS",
+                                  "category": "REQUEST", "message": message}]})
+
+
+def test_insufficient_permissions_is_an_access_problem_with_a_clear_reason(eb):
+    mod, st = eb
+    st["pages"] = [_err(403, 1100, "Insufficient permissions to fulfill the request.")]
+    _, rep, (status, reason) = _poll(mod)
+    assert status == "auth_config"                      # not "blocked"
+    assert "Partner Network" in rep.attempts[-1]["detail"]
+
+
+def test_provider_error_text_is_kept_for_diagnosis(eb):
+    mod, st = eb
+    st["pages"] = [_err(400, 12001, "The value of the 'pickupRadius' filter is invalid.")]
+    _, rep, (status, reason) = _poll(mod)
+    assert status == "degraded"
+    assert "pickupRadius" in rep.attempts[-1]["detail"]
+
+
+def test_a_real_block_stays_blocked(eb):
+    mod, st = eb
+    st["pages"] = [R(403, {"errors": [{"errorId": 1, "message": "Forbidden"}]})]
+    _, _, (status, _) = _poll(mod)
+    assert status == "blocked"

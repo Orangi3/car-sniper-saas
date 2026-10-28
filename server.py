@@ -758,6 +758,12 @@ def api_diagnostics():
             "next_poll_after": h.get("next_poll_after"),
             "ingest_latency_s": h.get("ingest_latency_s"),
         })
+    u = auth.current_user()
+    if not (u and u.is_admin):
+        # Reasons can quote provider error text (credentials, plan, quota):
+        # operator detail, not for customers. Status stays visible.
+        for row in out:
+            row["reason"] = row["error"] = None
     return jsonify(out)
 
 

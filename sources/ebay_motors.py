@@ -250,8 +250,18 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         r = rep.fetch(label, BROWSE_URL, params={**params, "offset": page * PAGE_LIMIT},
                       headers=headers, timeout=20)
         if r is None:
-            if rep.attempts and rep.attempts[-1]["status"] == 401:
+            last = rep.attempts[-1] if rep.attempts else {}
+            if last.get("status") == 401:
                 _drop_token()             # expired/revoked: fetch a new one next poll
+            elif last.get("status") == 403 and (
+                    "1100" in last.get("detail", "") or
+                    "Insufficient permissions" in last.get("detail", "")):
+                # eBay errorId 1100: the keyset has no Buy API (Browse) access.
+                # Production Buy APIs are limited release (eBay Partner Network
+                # application + growth check) — a permission problem, not a block.
+                rep.reclassify_last(health.AUTH, "eBay keyset lacks Browse API access "
+                                    "(errorId 1100): production Buy APIs need eBay "
+                                    "Partner Network approval; Sandbox keys work for tests")
             break
         try:
             data = r.json()
