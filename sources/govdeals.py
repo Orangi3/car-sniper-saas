@@ -13,7 +13,7 @@ import re
 import requests
 from urllib.parse import urlencode
 
-from .base import (NormalizedListing, extract_int, extract_make_model,
+from .base import (NormalizedListing, extract_int, extract_price, extract_make_model,
                     extract_miles, extract_year, PRICE_RE)
 
 SOURCE_ID = "govdeals"
@@ -87,7 +87,7 @@ def poll(cfg: dict) -> list[NormalizedListing]:
             mk, mdl = extract_make_model(title)
             out.append(NormalizedListing(
                 source=SOURCE_ID, source_id=f"{st}:{sid}", url=url, title=title,
-                price=extract_int(PRICE_RE, desc),  # current bid
+                price=extract_price(desc),  # current bid
                 year=extract_year(title), make=mk, model=mdl,
                 odometer=extract_miles(desc),
                 location=None, state=st, description=desc,

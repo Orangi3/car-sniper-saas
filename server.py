@@ -35,11 +35,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3  # noqa
 import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Optional
 
 from flask import (Flask, g, jsonify, make_response, redirect, request,
                    send_from_directory)
@@ -1934,6 +1936,149 @@ def api_saved_searches_delete(sid: int):
     return jsonify({"ok": True, "deleted": int(sid)})
 
 
+# ---- Per-user alert channels + alert tray --------------------------------
+
+_NTFY_TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
+
+
+def _safe_webhook(url: str) -> Optional[str]:
+    """Return an error string if `url` isn't an acceptable outbound webhook.
+    HTTPS only, and never a private/loopback/link-local address — users
+    supply this URL and the server POSTs to it (SSRF guard)."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+    u = urlparse(url)
+    if u.scheme != "https" or not u.hostname:
+        return "webhook must be an https:// URL"
+    try:
+        infos = socket.getaddrinfo(u.hostname, u.port or 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return "webhook host does not resolve"
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return "webhook host resolves to a private address"
+    return None
+
+
+@app.get("/api/me/alert_channels")
+@auth.login_required
+def api_me_alert_channels_get():
+    u = auth.current_user()
+    with _db.transaction() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT ntfy_topic, alert_webhook, notify_phone FROM users "
+                    f"WHERE id={_PH()}", (u.id,))
+        r = dict(cur.fetchone() or {})
+    phone = r.get("notify_phone") or ""
+    return jsonify({
+        "ntfy_topic": r.get("ntfy_topic") or "",
+        "ntfy_server": os.environ.get("NTFY_SERVER", "https://ntfy.sh"),
+        "alert_webhook": r.get("alert_webhook") or "",
+        "notify_phone": ("•••••" + phone[-4:]) if len(phone) >= 4 else phone,
+        "sms_available": all(os.environ.get(k) for k in
+                             ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM")),
+    })
+
+
+@app.post("/api/me/alert_channels")
+@auth.plan_required("starter")
+def api_me_alert_channels_post():
+    """Set where this user's saved-search matches are pushed. Send
+    {"ntfy_topic": "generate"} to get a fresh unguessable topic."""
+    import secrets
+    u = auth.current_user()
+    body = request.get_json(silent=True) or {}
+    sets, vals = [], []
+    if "ntfy_topic" in body:
+        t = str(body["ntfy_topic"] or "").strip()
+        if t == "generate":
+            t = "sniper-" + secrets.token_urlsafe(18).replace("-", "").replace("_", "")[:24]
+        if t and not _NTFY_TOPIC_RE.match(t):
+            return jsonify({"error": "ntfy topic must be 12-64 letters, digits, - or _ "
+                                     "(long + random, since ntfy topics are public)"}), 400
+        sets.append("ntfy_topic"); vals.append(t or None)
+    if "alert_webhook" in body:
+        w = str(body["alert_webhook"] or "").strip()
+        if w:
+            err = _safe_webhook(w)
+            if err:
+                return jsonify({"error": err}), 400
+        sets.append("alert_webhook"); vals.append(w or None)
+    if "notify_phone" in body:
+        raw = str(body["notify_phone"] or "").strip()
+        if "•" not in raw:
+            digits = re.sub(r"\D", "", raw)
+            if raw and len(digits) not in (10, 11):
+                return jsonify({"error": "phone must be a 10-digit US number"}), 400
+            sets.append("notify_phone"); vals.append(raw or None)
+    if sets:
+        with _db.transaction() as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET " + ", ".join(f"{c}={_PH()}" for c in sets)
+                        + f" WHERE id={_PH()}", (*vals, u.id))
+    return api_me_alert_channels_get()
+
+
+@app.post("/api/me/alert_channels/test")
+@auth.plan_required("starter")
+def api_me_alert_channels_test():
+    rl = _rl_or_fail("user_notify_test", 3)
+    if rl: return rl
+    from notifications import user_channels, _deliver
+    u = auth.current_user()
+    with _db.transaction() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT ntfy_topic, alert_webhook, notify_phone FROM users "
+                    f"WHERE id={_PH()}", (u.id,))
+        r = dict(cur.fetchone() or {})
+    if r.get("alert_webhook") and _safe_webhook(r["alert_webhook"]):
+        return jsonify({"ok": False, "error": "stored webhook is no longer allowed"}), 400
+    chans = user_channels(r.get("notify_phone"), r.get("ntfy_topic"), r.get("alert_webhook"))
+    if not chans:
+        return jsonify({"ok": False, "error": "no alert channel set"}), 400
+    sample = {"year": 2015, "make": "Toyota", "model": "Tacoma", "price": 17500,
+              "discount_pct": 31, "comp_avg": 25400, "comp_n": 12, "basis": "verified",
+              "est_profit": 6400, "source": "test", "composite_id": "test",
+              "url": "https://example.com/sniper-test"}
+    results = {}
+    for ch in chans:
+        try:
+            ok, detail = _deliver(ch, sample, r.get("notify_phone"),
+                                  r.get("ntfy_topic"), r.get("alert_webhook"))
+        except Exception as e:
+            ok, detail = False, type(e).__name__
+        results[ch] = {"ok": ok, "detail": detail}
+    ok = any(v["ok"] for v in results.values())
+    return jsonify({"ok": ok, "channels": results}), (200 if ok else 502)
+
+
+@app.get("/api/me/alerts")
+@auth.login_required
+def api_me_alerts():
+    """This user's saved-search alert tray, newest first."""
+    u = auth.current_user()
+    limit = max(1, min(200, int(request.args.get("limit", 50))))
+    with _db.transaction() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT ua.id, ua.seen, ua.created_at, ua.saved_search_id, "
+            "       s.name AS saved_search_name, a.discount_pct, a.score, "
+            "       a.comp_avg, a.comp_n, a.basis, l.composite_id, l.title, "
+            "       l.url, l.price, l.year, l.make, l.model, l.odometer, "
+            "       l.source, l.state, l.location "
+            "FROM user_alerts ua "
+            "JOIN alerts a ON a.id = ua.alert_id "
+            "JOIN listings l ON l.composite_id = a.composite_id "
+            "LEFT JOIN saved_searches s ON s.id = ua.saved_search_id "
+            f"WHERE ua.user_id={_PH()} ORDER BY ua.created_at DESC, ua.id DESC "
+            f"LIMIT {_PH()}", (u.id, limit))
+        rows = [dict(r) for r in cur.fetchall()]
+    return jsonify(rows)
+
+
 # ---- Admin: source health + manual poll trigger -------------------------
 
 @app.get("/api/admin/sources/health")
@@ -2158,13 +2303,18 @@ def _notify_post_v2():
 
 @auth.admin_required
 def _notify_test_v2():
-    from notifications import send_imessage
+    from notifications import send_test
     phone = CONFIG.get("notify_phone")
-    if not phone:
-        return jsonify({"ok": False, "error": "no phone configured"}), 400
-    ok, detail = send_imessage(phone,
-        "SNIPER test alert — your number is wired up.")
-    return jsonify({"ok": ok, "detail": detail, "phone": phone}), (200 if ok else 500)
+    results = send_test(phone=phone)
+    if not results:
+        return jsonify({"ok": False, "error": (
+            "no alert channel configured — set NTFY_TOPIC (free phone push), "
+            "Pushover, Twilio, Discord or a webhook, or a phone on macOS")}), 400
+    ok = any(r[0] for r in results.values())
+    detail = "; ".join(f"{ch}: {'ok' if r[0] else r[1]}" for ch, r in results.items())
+    return jsonify({"ok": ok, "detail": detail, "phone": phone,
+                    "channels": {ch: {"ok": r[0], "detail": r[1]}
+                                 for ch, r in results.items()}}), (200 if ok else 500)
 
 
 @auth.admin_required

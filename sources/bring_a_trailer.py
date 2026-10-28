@@ -10,7 +10,7 @@ import feedparser
 import re
 import requests
 
-from .base import (NormalizedListing, extract_int, extract_make_model,
+from .base import (NormalizedListing, extract_int, extract_price, extract_make_model,
                     extract_miles, extract_year, PRICE_RE)
 
 SOURCE_ID = "bat"
@@ -55,7 +55,7 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         title = (e.get("title") or "").strip()
         desc = (e.get("summary") or e.get("description") or "")
         mk, mdl = extract_make_model(title)
-        price = extract_int(PRICE_RE, desc)
+        price = extract_price(desc)
         # Pull bid count if BaT exposes it
         import re as _re
         bid_m = _re.search(r"(\d+)\s+bids?", desc, _re.IGNORECASE)

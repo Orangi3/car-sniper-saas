@@ -7,26 +7,26 @@ alerts you when something appears at least 10% below comp average.
 
 ## What's plugged in
 
-Out of the box, polling every 2 minutes:
+Out of the box (no keys needed):
 
-| Source | What it covers | Method |
+| Source | What it covers | Cadence |
 | --- | --- | --- |
-| **Craigslist** | Tuscaloosa + Birmingham + Montgomery, by owner | RSS |
-| **Bring a Trailer** | Collector / enthusiast cars, nationwide | RSS |
-| **Cars & Bids** | Modern enthusiast auctions | RSS |
-| **Hemmings** | Classics, vintage | RSS |
-| **GovDeals** | State/local government surplus (fleet trucks, cruisers, vans) — AL, MS, GA, TN, FL | RSS |
-| **GSA Auctions** | Federal government surplus vehicles | RSS |
-| **PublicSurplus** | More state/local surplus | RSS |
-| **Copart (live)** | Active salvage lots near AL — projects, parts, rebuildables | JSON endpoint |
-| **IAA (live)** | The other big salvage marketplace | JSON endpoint |
+| **Craigslist** (by owner) | 13 regions by default: every Alabama region + Meridian, Columbus GA, Chattanooga, Atlanta | every 30s |
+| **Marketplace / OfferUp / Nextdoor** | Pushed in by the bundled browser extension from your own logged-in session | every 30s |
+| **Email digests** | Saved-search emails from Marketplace, OfferUp, Nextdoor, eBay, Craigslist (needs IMAP creds) | every 30s |
+| **Bring a Trailer** | Collector / enthusiast auctions | every 2 min |
+| **Hemmings** | Classics | every 2 min |
+| **GovDeals** | Government surplus — AL, MS, GA, TN, FL | every 2 min |
 
-Optional, with a free/paid API key:
+With a key:
 
 | Source | What it adds | Setup |
 | --- | --- | --- |
-| **eBay Motors** | Nationwide active listings + auctions, dealers + private | Free dev account at developer.ebay.com → set `EBAY_CLIENT_ID` + `EBAY_CLIENT_SECRET` |
-| **MarketCheck** | **Cars.com, Autotrader, CarGurus, dealer.com inventory** — the legal way to cover the big aggregators | Sign up at marketcheck.com (~$50/mo) → set `MARKETCHECK_API_KEY` |
+| **eBay Motors** | Nationwide listings via the official Browse API | Free dev account → `EBAY_CLIENT_ID` + `EBAY_CLIENT_SECRET` |
+| **MarketCheck** | **Cars.com, Autotrader, CarGurus, dealer inventory** — the licensed way | ~$50/mo → `MARKETCHECK_API_KEY` |
+
+Not available (no public access): Cars & Bids, Copart, IAA, GSA Auctions,
+PublicSurplus. Their files in `sources/` are intentionally empty.
 
 ## What's deliberately NOT included (and why)
 
@@ -124,15 +124,50 @@ All knobs live in `config.py`:
 ## How alerts work
 
 Every new listing from every source goes through:
-1. Filter dealers (unless source is dealer-by-design like MarketCheck).
-2. Filter outside `min_price`/`max_price`.
-3. Skip if can't extract year/make/model.
-4. Skip if salvage (surfaced in the listings table, not as a "deal").
-5. Pull sold comps from eBay + BaT + Cars & Bids (cached 24h).
-6. If listing is ≥ `deal_threshold_pct` below comp avg → write an alert.
 
-Alerts surface in the dashboard's "Live deals" panel and via
-`python sniper.py recent`.
+1. **Normalize** — RSS dates → ISO (so the freshness bonus works), branded
+   titles (salvage / rebuilt / flood / no title / parts only) → `is_salvage`,
+   non-runners → `needs_work`. Negations like "clean title, not rebuilt" are
+   respected. Payment teasers ("$2,500 down", "$299/mo") are never read as
+   the price.
+2. **Instant estimate** — priced against local peer asking prices already in
+   the DB, so it shows a number immediately.
+3. **Sold comps** — eBay / BaT / Cars & Bids / PCarMarket / Hemmings sold
+   results (+ MarketCheck if keyed), mileage-adjusted, cached 24h.
+4. **Alert gate** — a listing alerts when ALL of these hold:
+   - inside your `min_price`/`max_price` band, not salvage, not needs-work,
+     not a dealer, scam score < 50;
+   - discount ≥ `deal_threshold_pct` against **verified sold comps**, OR — if
+     sold comps came back empty — ≥ `estimate_alert_threshold_pct` (30%)
+     against ≥ `estimate_alert_min_peers` (8) local peers;
+   - discount ≤ `max_believable_discount_pct` (65%) — deeper than that is
+     almost always a mis-parse or a scam.
+5. **Deliver** — to the owner's channels and to every user whose saved
+   search matches (see below).
+
+### Alert channels
+
+Set any of these in the environment; every alert goes to all that are set.
+Sends are queued and retried — nothing is dropped by rate limiting.
+
+| Channel | Env vars | Notes |
+| --- | --- | --- |
+| ntfy push | `NTFY_TOPIC` (`NTFY_SERVER`, `NTFY_TOKEN` optional) | Free, instant. Install the ntfy app and subscribe to the topic. Use a long random topic. |
+| Pushover | `PUSHOVER_TOKEN`, `PUSHOVER_USER` | |
+| Twilio SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` + `NOTIFY_PHONE` | Works on a Linux server |
+| Discord | `DISCORD_WEBHOOK_URL` | Good for a flipping crew |
+| Webhook | `ALERT_WEBHOOK_URL` | JSON POST — Zapier, n8n, your own bot |
+| iMessage | `NOTIFY_PHONE`, macOS only | The original channel |
+
+### Per-user saved-search alerts (SaaS)
+
+Starter+ users open **🔔 My Deal Alerts** on the dashboard, tap **New push
+topic** (or add a Discord/Slack webhook or, if Twilio is configured, an SMS
+number), set their filters, and click **Alert me on my current filters**.
+Matching deals land in their tray (`GET /api/me/alerts`) and are pushed to
+their own channels — one push per deal even if several searches match.
+Filters support everything the listings view does plus `min_discount_pct`
+and `min_profit`.
 
 ## File map
 
@@ -176,7 +211,12 @@ sniper/
 - Title parsing is regex-based and won't catch every car. Cars without a
   parseable year/make/model still appear in the listings table; they just
   don't get scored as deals.
-- Mileage adjustment is a flat `-$0.08/mi above 100k`. Replace in
-  `comps.py` if you want a model-specific curve.
+- Mileage adjustment is a flat `-$0.08/mi above 100k` (applied to scoring).
+  Replace in `comps.py` if you want a model-specific curve.
+- Sold-comp scrapers break when those sites change layout. Check with
+  `python comps.py "2015 Toyota Camry"`; if it returns nothing, alerts fall
+  back to the stricter estimate rule above instead of stopping.
+- Craigslist regions that return 403/429 are backed off for 5 minutes. If
+  you add many regions, keep an eye on the Sources diagnostics panel.
 - Personal, non-commercial use only. Be respectful with poll intervals;
   the defaults are conservative.

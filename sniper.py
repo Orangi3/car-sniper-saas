@@ -35,7 +35,8 @@ from typing import Iterable, Optional
 import config as _config_mod
 from config import CONFIG
 import sources
-from sources.base import NormalizedListing
+from sources.base import (NormalizedListing, looks_needs_work, looks_salvage,
+                          to_iso)
 
 # Async scorer state
 _SCORE_QUEUE: "Queue[str]" = Queue()         # composite_id values pending scoring
@@ -263,6 +264,7 @@ def store_new(listings: Iterable[NormalizedListing]) -> list[NormalizedListing]:
         for l in listings:
             if CONFIG.get("require_price", True) and not l.price:
                 continue
+            _normalize_listing(l)
             sc, reasons = scam_score_listing(l.title, l.description, l.price, None)
             try:
                 conn.execute(
@@ -328,6 +330,81 @@ def store_new(listings: Iterable[NormalizedListing]) -> list[NormalizedListing]:
     return new
 
 
+# ---------- Ingestion normalization + alert gating -------------------------
+
+def _normalize_listing(l: NormalizedListing) -> None:
+    """Apply the cross-source checks every listing needs, whatever source it
+    came from (feeds, APIs, browser extension, email digests):
+      * posted_at → ISO 8601 UTC (RSS gives RFC 822, which the freshness
+        bonus could never parse)
+      * branded-title / parts-car wording → is_salvage
+      * runs/drives problems → extras["needs_work"]"""
+    l.posted_at = to_iso(l.posted_at) or l.posted_at
+    if not l.is_salvage and looks_salvage(l.title, l.description):
+        l.is_salvage = True
+    if looks_needs_work(l.title, l.description):
+        l.extras = {**(l.extras or {}), "needs_work": True}
+
+
+def _alert_gate(l: dict, basis: str, comp_n: int, discount: float,
+                threshold: float, comp_avg: float) -> tuple[bool, str]:
+    """Decide whether a scored listing becomes an alert. Returns (ok, reason).
+
+    Verified sold comps alert at the user's threshold. Peer estimates alert
+    only with enough peers AND a deeper discount, so a broken sold-comp
+    scraper degrades to fewer alerts instead of zero alerts."""
+    if discount < threshold:
+        return False, "below threshold"
+    max_disc = int(CONFIG.get("max_believable_discount_pct", 65)) / 100.0
+    if discount > max_disc:
+        return False, f"discount {discount*100:.0f}% too good to be true"
+    try:
+        extras = json.loads(l.get("extras") or "{}") if isinstance(l.get("extras"), str) \
+            else (l.get("extras") or {})
+    except ValueError:
+        extras = {}
+    if extras.get("needs_work"):
+        return False, "needs work / not running"
+    if l.get("is_dealer") and l.get("source") not in ("marketcheck", "ebay"):
+        return False, "dealer listing"
+    from scam_detector import score_listing as scam_score_listing
+    scam, reasons = scam_score_listing(l.get("title"), l.get("description"),
+                                       l.get("price"), comp_avg)
+    if scam >= 50:
+        return False, f"scam score {scam}: {', '.join(reasons)}"
+    if basis == "verified":
+        return True, ""
+    if not CONFIG.get("estimate_alerts_enabled", True):
+        return False, "estimate alerts disabled"
+    if comp_n < int(CONFIG.get("estimate_alert_min_peers", 8)):
+        return False, f"only {comp_n} peers for estimate"
+    est_thr = max(threshold, int(CONFIG.get("estimate_alert_threshold_pct", 30)) / 100.0)
+    if discount < est_thr:
+        return False, f"estimate discount below {est_thr*100:.0f}%"
+    return True, ""
+
+
+def _dispatch_alert(deal: dict) -> None:
+    """Fan a new alert out to (1) the owner's notification channels and
+    (2) every saved search whose filter matches. Never raises."""
+    try:
+        import notifications
+        if (CONFIG.get("notify_text_enabled")
+                and deal["score"] >= int(CONFIG.get("notify_min_score", 30))):
+            if _in_quiet_hours():
+                print(f"[notify] {deal['composite_id']} skipped — quiet hours",
+                      file=sys.stderr)
+            else:
+                notifications.notify_deal(deal, phone=CONFIG.get("notify_phone"))
+    except Exception as e:
+        print(f"[notify] {deal.get('composite_id')} crashed: {e}", file=sys.stderr)
+    try:
+        import saved_search_alerts
+        saved_search_alerts.fan_out(deal)
+    except Exception as e:
+        print(f"[saved-search] {deal.get('composite_id')} crashed: {e}", file=sys.stderr)
+
+
 # ---------- Async background scorer --------------------------------------
 
 def _score_one_listing(composite_id: str) -> Optional[dict]:
@@ -365,6 +442,11 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
         return None
     if l.get("is_salvage"):
         return None
+    # Respect the user's price band — the async scorer used to skip this, so
+    # $500 parts cars came through as 90%-off "deals".
+    if not (int(CONFIG.get("min_price", 0)) <= l["price"]
+            <= int(CONFIG.get("max_price", 10**9))):
+        return None
 
     weight = weights.get(l["source"], 1.0)
     fresh = _freshness_factor(l.get("posted_at"))
@@ -380,7 +462,9 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
             comp = None
 
     if comp and comp.get("avg"):
-        avg, comp_n, basis = float(comp["avg"]), int(comp.get("n") or 0), "verified"
+        # High-mileage cars compare against the mileage-adjusted average
+        avg = float(comp.get("mileage_adjusted_avg") or comp["avg"])
+        comp_n, basis = int(comp.get("n") or 0), "verified"
         comp_median = comp.get("median")
     else:
         # --- Tier 2: instant peer ESTIMATE (network-free fallback) ---
@@ -404,21 +488,25 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
             + f" listed ${l['price']:,} vs {label} ${avg:,.0f}"
             + f" (n={comp_n}, score={score:.1f}, est. profit ${est_profit:,})")
 
+    alertable, why_not = _alert_gate(l, basis, comp_n, discount, threshold, avg)
+    if not alertable and discount >= threshold:
+        print(f"[score] {composite_id} not alerted: {why_not}", file=sys.stderr)
+
     new_alert = False
+    alert_id = None
     try:
         with db() as conn:
             _record_score(conn, composite_id, avg, comp_n, discount * 100,
                           score, basis, note, now)
-            # Alerts (and the text notification) fire ONLY on verified comps —
-            # we never text the user a "deal" based on a rough estimate.
-            if basis == "verified" and discount >= threshold:
+            if alertable:
                 try:
-                    conn.execute(
+                    cur = conn.execute(
                         """INSERT INTO alerts(composite_id, comp_avg, comp_median,
                                  comp_n, discount_pct, score, note, created_at, basis)
                            VALUES(?,?,?,?,?,?,?,?,?)""",
                         (composite_id, avg, comp_median, comp_n,
                          discount * 100, score, note, now, basis))
+                    alert_id = cur.lastrowid
                     new_alert = True
                 except sqlite3.IntegrityError:
                     pass
@@ -426,23 +514,11 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
         print(f"[score] {composite_id} write failed: {e}", file=sys.stderr)
         return None
 
-    if new_alert and CONFIG.get("notify_text_enabled") and CONFIG.get("notify_phone"):
-        try:
-            min_score = int(CONFIG.get("notify_min_score", 30))
-            if score < min_score:
-                pass  # below user's alert threshold — silent
-            elif _in_quiet_hours():
-                print(f"[notify] {composite_id} skipped — quiet hours active",
-                      file=sys.stderr)
-            else:
-                from notifications import send_alert_text
-                ok, detail = send_alert_text(
-                    CONFIG["notify_phone"], l["year"], l["make"], l["model"],
-                    l["price"], discount * 100, l["url"])
-                if not ok:
-                    print(f"[notify] {composite_id}: {detail}", file=sys.stderr)
-        except Exception as e:
-            print(f"[notify] {composite_id} crashed: {e}", file=sys.stderr)
+    if new_alert:
+        deal = {**l, "comp_avg": avg, "comp_n": comp_n, "basis": basis,
+                "discount_pct": discount * 100, "score": score,
+                "est_profit": est_profit, "alert_id": alert_id}
+        _dispatch_alert(deal)
 
     return {"composite_id": composite_id, "score": score,
             "discount": discount, "basis": basis}
@@ -550,10 +626,11 @@ def _in_quiet_hours() -> bool:
 
 def _freshness_factor(posted_at: Optional[str]) -> float:
     """Newer listings get a bonus. Returns 1.0 (new) → 0.6 (older)."""
-    if not posted_at:
+    iso = to_iso(posted_at)
+    if not iso:
         return 0.85
     try:
-        t = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+        t = datetime.fromisoformat(iso)
         age_h = (datetime.now(timezone.utc) - t).total_seconds() / 3600
         if age_h <= 0.5:   return 1.20
         if age_h <= 2:     return 1.10

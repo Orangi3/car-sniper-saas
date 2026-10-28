@@ -60,11 +60,14 @@ def reload() -> None:
                     if "marketcheck" in CONFIG["sources"]: CONFIG["sources"]["marketcheck"]["radius_mi"] = rv
             elif k in ("min_price", "max_price", "max_listing_age_min",
                        "deal_threshold_pct", "closing_soon_hours",
-                       "comp_match_threshold_pct", "notify_min_score"):
+                       "comp_match_threshold_pct", "notify_min_score",
+                       "estimate_alert_min_peers", "estimate_alert_threshold_pct",
+                       "max_believable_discount_pct"):
                 CONFIG[k] = int(v)
             elif k == "notify_phone":
-                CONFIG[k] = str(v)
-            elif k == "notify_text_enabled":
+                # Env var wins so a phone number never has to live in a file
+                CONFIG[k] = os.environ.get("NOTIFY_PHONE") or str(v)
+            elif k in ("notify_text_enabled", "estimate_alerts_enabled"):
                 CONFIG[k] = bool(v)
             elif k in ("share_username", "share_password"):
                 CONFIG[k] = str(v)
@@ -117,10 +120,24 @@ CONFIG: dict = {
     "max_listing_age_min": _OVERRIDES.get("max_listing_age_min", 1440),
 
     # ----- Polling tiers ------------------------------------------------
-    "poll_interval_sec": _OVERRIDES.get("poll_interval_sec", 60),
+    # 30s base tick: Craigslist + marketplace/email inbox every tick, auction
+    # and classic feeds every 2 min, salvage every 4 min.
+    "poll_interval_sec": _OVERRIDES.get("poll_interval_sec", 30),
     "craigslist_every_n_ticks": 1,
-    "auction_sites_every_n_ticks": 2,
-    "salvage_every_n_ticks": 4,
+    "auction_sites_every_n_ticks": 4,
+    "salvage_every_n_ticks": 8,
+
+    # ----- Estimate-based alerts ----------------------------------------
+    # Verified sold comps come from scraping sold-listing pages, which break
+    # whenever those sites change layout. When they come back empty, a car
+    # can still alert off local peer ASKING prices — but only with a deeper
+    # discount and enough peers that the estimate is trustworthy.
+    "estimate_alerts_enabled":      _OVERRIDES.get("estimate_alerts_enabled", True),
+    "estimate_alert_min_peers":     _OVERRIDES.get("estimate_alert_min_peers", 8),
+    "estimate_alert_threshold_pct": _OVERRIDES.get("estimate_alert_threshold_pct", 30),
+    # Anything further below comp than this is almost always a mis-parse,
+    # a payment-teaser price, or a scam — never alert on it.
+    "max_believable_discount_pct":  _OVERRIDES.get("max_believable_discount_pct", 65),
 
     # ----- Listing requirements -----------------------------------------
     "require_price": True,
@@ -154,7 +171,7 @@ CONFIG: dict = {
     "quiet_end_hour":   _OVERRIDES.get("quiet_end_hour"),
 
     # ----- Text-message alerts via macOS Messages.app -------------------
-    "notify_phone":         _OVERRIDES.get("notify_phone", "+17044881208"),
+    "notify_phone":         os.environ.get("NOTIFY_PHONE") or _OVERRIDES.get("notify_phone", ""),
     "notify_text_enabled":  _OVERRIDES.get("notify_text_enabled", True),
     # Only text on alerts whose score >= this. Higher = fewer texts.
     "notify_min_score":     _OVERRIDES.get("notify_min_score", 30),
@@ -181,7 +198,9 @@ CONFIG: dict = {
     "sources": {
         "craigslist":     {"enabled": True,
                            "regions": _OVERRIDES.get("craigslist_regions",
-                                       ["tuscaloosa", "bham", "montgomery"]),
+                                       ["tuscaloosa", "bham", "montgomery", "huntsville",
+                                        "auburn", "gadsden", "shoals", "dothan", "mobile",
+                                        "meridian", "columbusga", "chattanooga", "atlanta"]),
                            "by_owner": True},
         "ebay":           {"enabled": True,
                            "zip": _OVERRIDES.get("zip", "35401"),

@@ -8,7 +8,7 @@ from __future__ import annotations
 import feedparser
 import requests
 
-from .base import (NormalizedListing, extract_int, extract_make_model,
+from .base import (NormalizedListing, extract_int, extract_price, extract_make_model,
                     extract_miles, extract_year, PRICE_RE)
 
 SOURCE_ID = "hemmings"
@@ -54,7 +54,7 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         mk, mdl = extract_make_model(title)
         out.append(NormalizedListing(
             source=SOURCE_ID, source_id=slug, url=url, title=title,
-            price=extract_int(PRICE_RE, title) or extract_int(PRICE_RE, desc),
+            price=extract_price(title) or extract_price(desc),
             year=extract_year(title), make=mk, model=mdl,
             odometer=extract_miles(desc),
             description=desc, posted_at=e.get("published"),

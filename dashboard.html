@@ -856,14 +856,15 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
     </div>
 
     <div class="card" id="text-alerts-card">
-      <h2>📱 Text Alerts</h2>
+      <h2>📱 Owner Alerts</h2>
       <small class="muted" style="display:block;margin-bottom:8px;">
-        New top deals get texted to your phone via your Mac's Messages app.
-        Free — no Twilio needed. iMessage if you have it, SMS via paired iPhone otherwise.
+        Every new deal goes to every channel the server has configured:
+        ntfy push (free), Pushover, Twilio SMS, Discord, a webhook, and —
+        on a Mac — iMessage to the phone below. Alerts are queued, never dropped.
       </small>
       <div class="filter-group">
         <label>Phone</label>
-        <input id="notify-phone" placeholder="+1 704-488-1208" value="+1 704-488-1208">
+        <input id="notify-phone" placeholder="+1 555-123-4567" value="">
       </div>
       <div class="filter-group">
         <label>Min score to text</label>
@@ -884,13 +885,50 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
       </div>
       <div class="row" style="margin-top:10px;">
         <button id="notify-save" class="secondary" style="flex:1;">Save</button>
-        <button id="notify-test" style="flex:1;">Send Test Text</button>
+        <button id="notify-test" style="flex:1;">Send Test Alert</button>
       </div>
       <div id="notify-out" style="font-size:11px;margin-top:6px;"></div>
       <small class="muted" style="display:block;margin-top:8px;border-top:1px solid var(--border-2);padding-top:8px;">
-        ⚠ First time: macOS will prompt to allow Python to control Messages.
+        ⚠ iMessage only: macOS will prompt to allow Python to control Messages.
         Approve in <code>System Settings → Privacy → Automation</code>.
       </small>
+    </div>
+
+    <div class="card" id="my-alerts-card">
+      <h2>🔔 My Deal Alerts</h2>
+      <small class="muted" style="display:block;margin-bottom:8px;">
+        Saved searches with alerts on push matching deals here the moment
+        they're scored. Easiest: tap <strong>New push topic</strong>, install the
+        free <strong>ntfy</strong> app, and subscribe to the topic shown.
+      </small>
+      <div class="filter-group">
+        <label>ntfy push topic</label>
+        <div style="display:flex;gap:6px;">
+          <input id="ma-ntfy" placeholder="sniper-…" style="flex:1;">
+          <button id="ma-ntfy-gen" class="secondary" type="button">New push topic</button>
+        </div>
+        <small class="muted" id="ma-ntfy-hint"></small>
+      </div>
+      <div class="filter-group">
+        <label>Webhook <small class="muted">(Discord / Slack / Zapier — https only)</small></label>
+        <input id="ma-webhook" placeholder="https://discord.com/api/webhooks/…">
+      </div>
+      <div class="filter-group" id="ma-phone-group">
+        <label>SMS phone</label>
+        <input id="ma-phone" placeholder="+1 555-123-4567">
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button id="ma-save" class="secondary" style="flex:1;">Save</button>
+        <button id="ma-test" style="flex:1;">Send Test</button>
+      </div>
+      <div id="ma-out" style="font-size:11px;margin-top:6px;"></div>
+      <div class="row" style="margin-top:10px;gap:6px;">
+        <input id="ma-search-name" placeholder="Name, e.g. Tacomas under 16k" style="flex:1;">
+        <input id="ma-min-disc" type="number" min="0" max="80" placeholder="min % off" style="width:90px;">
+      </div>
+      <button id="ma-save-search" style="width:100%;margin-top:6px;">🔔 Alert me on my current filters</button>
+      <div id="ma-searches" style="margin-top:6px;"></div>
+      <div id="ma-tray" style="margin-top:10px;border-top:1px solid var(--border-2);padding-top:8px;"></div>
     </div>
   </aside>
 </main>
@@ -2436,6 +2474,92 @@ $("#share-copy").addEventListener("click", () => {
   setTimeout(() => $("#share-copy").textContent = "Copy", 1500);
 });
 
+// ============ My deal alerts (per-user saved-search pushes) ============
+function _maEsc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g,
+    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function _maFill(c) {
+  $("#ma-ntfy").value = c.ntfy_topic || "";
+  $("#ma-webhook").value = c.alert_webhook || "";
+  $("#ma-phone").value = c.notify_phone || "";
+  $("#ma-phone-group").style.display = c.sms_available ? "" : "none";
+  $("#ma-ntfy-hint").textContent = c.ntfy_topic
+    ? "Subscribe in the ntfy app: " + (c.ntfy_server || "https://ntfy.sh") + "/" + c.ntfy_topic
+    : "";
+}
+async function loadMyAlerts() {
+  const card = document.getElementById("my-alerts-card");
+  if (!card) return;
+  try {
+    _maFill(await jget("/api/me/alert_channels"));
+    loadMySearches();
+    const tray = await jget("/api/me/alerts?limit=15");
+    $("#ma-tray").innerHTML = tray.length
+      ? tray.map(t => '<div style="margin:4px 0;"><small>' +
+          '<span style="color:var(--neon);font-weight:800;">' +
+          Math.round(t.discount_pct || 0) + '% under</span> ' +
+          '<a href="' + (/^https?:\/\//i.test(t.url || "") ? _maEsc(t.url) : "#") + '" target="_blank" rel="noopener">' +
+          _maEsc((t.title || "").slice(0, 60)) + '</a> ' + fmt(t.price) +
+          ' <span class="muted">· ' + _maEsc(t.saved_search_name || "") + '</span>' +
+          '</small></div>').join("")
+      : '<small class="muted">No saved-search matches yet. Save a search with alerts on.</small>';
+  } catch (e) { card.style.display = "none"; }   // signed out / single-user mode
+}
+async function _maSave(extra) {
+  const out = $("#ma-out");
+  try {
+    const body = Object.assign({
+      ntfy_topic: $("#ma-ntfy").value.trim(),
+      alert_webhook: $("#ma-webhook").value.trim(),
+      notify_phone: $("#ma-phone").value.trim(),
+    }, extra || {});
+    _maFill(await jpost("/api/me/alert_channels", body));
+    out.innerHTML = '<span style="color:var(--neon)">Saved.</span>';
+  } catch (e) { out.innerHTML = '<span style="color:var(--magenta)">' + _maEsc(e.message) + '</span>'; }
+}
+async function loadMySearches() {
+  try {
+    const rows = await jget("/api/saved_searches");
+    $("#ma-searches").innerHTML = rows.map(r =>
+      '<div style="display:flex;justify-content:space-between;margin:3px 0;"><small>' +
+      (r.notify_enabled ? "🔔 " : "") + _maEsc(r.name) + '</small>' +
+      '<button class="secondary" data-del="' + Number(r.id) + '" style="padding:0 6px;">✕</button></div>'
+    ).join("");
+    document.querySelectorAll("#ma-searches [data-del]").forEach(btn =>
+      btn.addEventListener("click", async () => {
+        await _jfetch("/api/saved_searches/" + btn.dataset.del, {method: "DELETE"});
+        loadMySearches();
+      }));
+  } catch (e) { /* free plan / signed out */ }
+}
+$("#ma-save-search").addEventListener("click", async () => {
+  const out = $("#ma-out");
+  const name = $("#ma-search-name").value.trim();
+  if (!name) { out.innerHTML = '<span style="color:var(--magenta)">Give the search a name.</span>'; return; }
+  const f = readFilters();
+  ["sort", "max_age_min", "show_scams"].forEach(k => delete f[k]);
+  Object.keys(f).forEach(k => { if (!f[k]) delete f[k]; });
+  const md = parseInt($("#ma-min-disc").value);
+  if (md > 0) f.min_discount_pct = md;
+  try {
+    await jpost("/api/saved_searches", {name, notify_enabled: true, filter: f});
+    out.innerHTML = '<span style="color:var(--neon)">Alert saved — matches will push to your channels.</span>';
+    $("#ma-search-name").value = "";
+    loadMySearches();
+  } catch (e) { out.innerHTML = '<span style="color:var(--magenta)">' + _maEsc(e.message) + '</span>'; }
+});
+$("#ma-save").addEventListener("click", () => _maSave());
+$("#ma-ntfy-gen").addEventListener("click", () => _maSave({ntfy_topic: "generate"}));
+$("#ma-test").addEventListener("click", async () => {
+  const out = $("#ma-out");
+  try {
+    const r = await jpost("/api/me/alert_channels/test");
+    out.innerHTML = Object.entries(r.channels || {}).map(([ch, v]) =>
+      ch + ": " + (v.ok ? "✓" : "✗ " + _maEsc(v.detail))).join(" · ");
+  } catch (e) { out.innerHTML = '<span style="color:var(--magenta)">' + _maEsc(e.message) + '</span>'; }
+});
+
 // ============ Text alerts ============
 async function loadNotifySettings() {
   try {
@@ -2511,7 +2635,7 @@ async function boot() {
                      refreshSaved(), refreshHero(), loadSettings(),
                      refreshMpCount(), refreshDiagnostics(), refreshTicker(),
                      checkVinProviderState(), loadNotifySettings(),
-                     loadShareSettings()]);
+                     loadShareSettings(), loadMyAlerts()]);
 }
 boot();
 setInterval(() => { refreshStats(); refreshHero(); refreshTicker(); }, 5000);
