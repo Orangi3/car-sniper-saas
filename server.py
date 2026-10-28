@@ -345,8 +345,17 @@ def index():
     # We still ALLOW the dashboard HTML to load so its JS can call /api/me
     # and decide for itself, but unauthenticated requests are redirected to
     # /login as the visible entry point.
-    if not auth.current_user():
+    u = auth.current_user()
+    if not u:
         return redirect("/login", code=302)
+    if not u.is_admin:
+        # Customers use the mobile-first app (/m): its deal cards show the
+        # full profit model, evidence and confidence. The legacy desktop
+        # dashboard is the owner console — its "est. profit" is the gross
+        # gap to the comp average, before costs, which overstates profit.
+        rv = (request.args.get("billing_return") or "").strip().lower()
+        return redirect("/m" + (f"?billing_return={rv}" if rv in ("success", "cancel") else ""),
+                        code=302)
     # Cache-buster redirect: every fresh hit goes to /?v=<file mtime> so the
     # browser must fetch the latest dashboard.html and can NEVER keep running
     # an outdated cached JS bundle — even when Safari ignores Cache-Control.

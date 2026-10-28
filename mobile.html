@@ -68,7 +68,8 @@ input, select { width: 100%; padding: 9px 10px; border: 1px solid var(--line); b
 <header>
   <div class="top">
     <div class="brand">🎯 Car Sniper</div>
-    <div><span class="plan" id="plan">…</span> <a class="muted" href="/">Full dashboard</a></div>
+    <div><span class="plan" id="plan">…</span> <a class="muted" id="console" href="/" hidden>Owner console</a>
+      <a class="muted" href="#" id="signout">Sign out</a></div>
   </div>
   <nav id="tabs">
     <button data-feed="mine" class="on">My matches</button>
@@ -278,8 +279,41 @@ async function showSetup() {
   const list = searches.length ? `<h3>Your searches</h3>` + searches.map(s =>
     `<div class="card pad row"><div><b>${esc(s.name)}</b><div class="muted">${esc(Object.entries(s.filter || {}).map(([k, v]) => k + ": " + v).join(" · "))}</div></div>
      <button class="btn" style="flex:0 0 auto" data-show="${Number(s.id)}">Matches</button></div>`).join("") : "";
-  main.innerHTML = list + `<h3>${searches.length ? "Add a search" : "Let's find your first deal"}</h3><div id="wizard" class="card pad"></div>`;
+  main.innerHTML = `<div id="plan-card"></div>` + list +
+    `<h3>${searches.length ? "Add a search" : "Let's find your first deal"}</h3><div id="wizard" class="card pad"></div>`;
   STEP = 0; renderStep();
+  renderPlan();
+}
+
+async function renderPlan() {
+  const box = $("#plan-card");
+  let b;
+  try { b = await api("/api/billing/me"); } catch (e) { return; }
+  const plan = ((b.user || {}).plan) || "free";
+  const name = {free: "Free", starter: "Lite", pro: "Pro"}[plan] || plan;
+  let actions = "";
+  if (b.subscription) {
+    actions = `<button class="btn" id="bill-manage">Manage subscription</button>`;
+  } else if (b.billing_available) {
+    actions = (plan === "free" ? `<button class="btn primary" data-up="starter">Upgrade to Lite</button>` : "") +
+      (plan !== "pro" ? `<button class="btn primary" data-up="pro">Upgrade to Pro</button>` : "");
+  } else if (plan === "free") {
+    actions = `<p class="muted">Paid plans aren't open yet.</p>`;
+  }
+  box.innerHTML = `<h3>Your plan</h3><div class="card pad"><b>${esc(name)}</b>
+    <div class="muted">Free browses deals; Lite adds saved-search alerts; Pro adds profit scenarios, price-drop alerts and SMS.</div>
+    <div class="actions">${actions}</div><div class="err" id="bill-err"></div></div>`;
+  box.querySelectorAll("[data-up]").forEach(btn => btn.onclick = async () => {
+    box.querySelectorAll("button").forEach(x => x.disabled = true);
+    try { const r = await post("/api/billing/checkout", {plan: btn.dataset.up}); if (r.url) location.assign(r.url); }
+    catch (e) { $("#bill-err").textContent = "Couldn't start checkout — try again."; box.querySelectorAll("button").forEach(x => x.disabled = false); }
+  });
+  const m = $("#bill-manage");
+  if (m) m.onclick = async () => {
+    m.disabled = true;
+    try { const r = await post("/api/billing/portal", {}); if (r.url) location.assign(r.url); }
+    catch (e) { $("#bill-err").textContent = "Billing portal unavailable — try again later."; m.disabled = false; }
+  };
 }
 
 function renderStep() {
@@ -370,6 +404,17 @@ $("#sheet-back").onclick = () => { $("#sheet").classList.remove("open"); if (FEE
     ME = await api("/api/me");
     const plan = (ME.user || {}).plan || "free";
     $("#plan").textContent = {free: "Free", starter: "Lite", pro: "Pro"}[plan] || plan;
+    if ((ME.user || {}).role === "admin") $("#console").hidden = false;
+    $("#signout").onclick = async e => { e.preventDefault(); try { await post("/api/auth/logout", {}); } catch (x) {} location.replace("/login"); };
+    const ret = new URLSearchParams(location.search).get("billing_return");
+    if (ret === "success") {
+      $("#main").insertAdjacentHTML("beforebegin", `<p class="notice" id="bill-note" style="margin:10px 12px">Payment received — your plan updates as soon as Stripe confirms it (usually a few seconds).</p>`);
+      history.replaceState(null, "", "/m");
+      for (const wait of [3000, 8000]) setTimeout(async () => {
+        try { const me = await api("/api/me"); const p = (me.user || {}).plan || "free";
+              $("#plan").textContent = {free: "Free", starter: "Lite", pro: "Pro"}[p] || p; } catch (x) {}
+      }, wait);
+    }
     let n = 0;
     try { n = (await api("/api/saved_searches")).length; } catch (e) {}
     showFeed(n ? "mine" : "setup");
