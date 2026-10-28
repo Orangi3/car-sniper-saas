@@ -169,12 +169,14 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
     from scam_detector import score_listing as scam_score_listing
     now = datetime.now(timezone.utc).isoformat()
     batch: dict[str, NormalizedListing] = {}
+    dropped = 0
     for l in listings:
         if CONFIG.get("require_price", True) and not l.price:
+            dropped += 1                    # counted, never silently lost
             continue
         _normalize_listing(l)
         batch[l.composite_id()] = l
-    out = {"new": [], "price_changed": [], "seen": 0}
+    out = {"new": [], "price_changed": [], "seen": 0, "dropped_no_price": dropped}
     if not batch:
         return out
     with db() as conn:
@@ -725,7 +727,8 @@ def poll_once(verbose: bool = True, only_sources: list[str] | None = None,
     total_new = 0
     per_source: dict[str, dict] = {}
     for sid, listings in by_source.items():
-        new = store_new(listings)
+        res = ingest(listings)
+        new = res["new"]
         total_new += len(new)
         prev = rows.get(sid) or {}
         empty_streak = 0 if listings else int(prev.get("consecutive_empty") or 0) + 1
@@ -734,10 +737,13 @@ def poll_once(verbose: bool = True, only_sources: list[str] | None = None,
                                          error=errors.get(sid),
                                          consecutive_empty=empty_streak,
                                          ever_succeeded=ever)
+        if res["dropped_no_price"]:
+            reason += f"; {res['dropped_no_price']} listing(s) without a price skipped"
         attempted, ok = health.request_counts(reports.get(sid))
         statuses[sid] = {"status": status, "reason": reason, "polled": True,
                          "requests_attempted": attempted, "requests_ok": ok,
                          "listings_discovered": len(listings), "listings_new": len(new),
+                         "listings_dropped_no_price": res["dropped_no_price"],
                          "consecutive_empty": empty_streak,
                          "elapsed_s": elapsed.get(sid),
                          "ingest_latency_s": _ingest_latency(new, now),
