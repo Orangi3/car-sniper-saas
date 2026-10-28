@@ -19,9 +19,9 @@ def test_tax_and_title_not_assumed_until_user_sets_them():
     p = profit.compute(8000, 9500, 10000, 10500, "confirmed_sales", None)
     assert "sales_tax_pct" not in p["costs"] and "title_registration" not in p["costs"]
     assert any("sales tax" in x for x in p["not_included"])
-    # defaults: recon 750 + selling fees 100
-    assert p["total_costs"] == 850
-    assert p["scenarios"]["base"]["profit"] == 10000 - 8000 - 850
+    # defaults: mechanical 500 + cosmetic 250 + selling fees 100 + holding $5 × 21 days
+    assert p["total_costs"] == 955
+    assert p["scenarios"]["base"]["profit"] == 10000 - 8000 - 955
     p2 = profit.compute(8000, 9500, 10000, 10500, "confirmed_sales",
                         {"sales_tax_pct": 4, "title_registration": 50})
     assert p2["costs"]["sales_tax_pct"] == 320 and p2["not_included"] == []
@@ -35,6 +35,27 @@ def test_asking_haircut_only_for_non_sales_evidence_and_is_labelled():
     assert any(a["key"] == "asking_to_sale_pct" for a in ask["assumptions"])
     assert not any(a["key"] == "asking_to_sale_pct" for a in sold["assumptions"])
     assert ask["scenarios"]["conservative"]["profit"] < ask["scenarios"]["optimistic"]["profit"]
+
+
+def test_scenarios_vary_purchase_price_and_time_to_sell():
+    p = profit.compute(8000, 9500, 10000, 10500, "confirmed_sales", {"negotiation_pct": 5})
+    c, b, o = (p["scenarios"][k] for k in ("conservative", "base", "optimistic"))
+    assert (c["purchase"], b["purchase"], o["purchase"]) == (8000, 7600, 7200)
+    assert (c["days_to_sell"], b["days_to_sell"], o["days_to_sell"]) == (31.5, 21, 10.5)
+    assert c["holding"] > b["holding"] > o["holding"]
+    assert c["profit"] < b["profit"] < o["profit"]
+    assert abs(b["annualized_roi_pct"] - b["roi_pct"] * 365 / 21) < 0.5
+    assert any("Scenarios:" in x for x in p["explanation"])
+    lite = profit.compute(8000, 9500, 10000, 10500, "confirmed_sales", None, scenarios=False)
+    assert set(lite["scenarios"]) == {"base"}
+
+
+def test_legacy_recon_setting_is_the_whole_repair_allowance():
+    old = profit.merged({"recon": 2000})
+    assert old["recon"] == 2000 and old["mechanical"] == 0
+    new = profit.merged({"recon": 300, "mechanical": 900})
+    assert (new["recon"], new["mechanical"]) == (300, 900)
+    assert profit.merged(None)["mechanical"] == 500
 
 
 def test_user_assumptions_are_validated_and_clamped():

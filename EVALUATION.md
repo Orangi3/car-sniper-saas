@@ -36,6 +36,11 @@ Outcome labels: `genuine_opportunity`, `weak_opportunity`, `bad_comparison`,
   accepted. (Delivery to the handset is not observable.)
 - **Opportunities per active user** over 30 days.
 - **Estimated vs realized profit** for verified purchases.
+- **Valuation error**: estimated value vs independently confirmed sale
+  amount — median absolute % error, mean bias, and interval coverage (share
+  of sales inside the reported value range), overall and per evidence class.
+- **Coverage** by source and by territory (listing state): observations,
+  share valued, alerted, labeled.
 
 Every metric reports its sample size; below 20 it is flagged
 `enough_samples: false`.

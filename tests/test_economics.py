@@ -23,3 +23,16 @@ def test_generated_tables_are_current():
     p = Path(__file__).resolve().parent.parent / "economics" / "tables.md"
     assert p.read_text().strip() == model.render().strip(), \
         "run: python economics/model.py > economics/tables.md"
+
+
+def test_provider_matrix_applies_rights_gate():
+    import provider_matrix as pm
+    assert sum(pm.CRITERIA.values()) == 100
+    rows = pm.ranked()
+    usable = [n for n, _, ok in rows if ok]
+    blocked = [n for n, _, ok in rows if not ok]
+    assert "Craigslist (unlicensed)" in blocked
+    assert rows.index(next(r for r in rows if r[0] == blocked[0])) >= len(usable)
+    for n in pm.P:
+        assert set(pm.P[n]) == set(pm.CRITERIA)
+        assert all(tag in ("V", "E") and 0 <= sc <= 5 for sc, tag, _ in pm.P[n].values())

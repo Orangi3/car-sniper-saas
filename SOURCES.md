@@ -1,5 +1,10 @@
 # Data sources: coverage, verification and licensing
 
+> **Live verification:** `python -m verify_sources` (or the manual
+> `live-source-check` workflow) makes at most one search request per
+> licensed API source, stores nothing and reports aggregates only — status,
+> listing count, field coverage, schema problems. Exit 0 = verified.
+
 Last reviewed: 2026-10-28. **This is an engineering audit, not legal advice.**
 Before charging customers, have counsel confirm the licensing column and get
 written permission or a commercial license wherever it says so.

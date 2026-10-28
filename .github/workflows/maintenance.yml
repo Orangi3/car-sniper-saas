@@ -1,0 +1,113 @@
+name: maintenance
+
+# Nightly health check of the default branch, run by GitHub on a schedule
+# (no AI involved). Read-only except for one thing: on failure it opens —
+# or comments on the already-open — issue labeled `maintenance-failure`,
+# so a human or an agent picks it up through the normal issue/PR flow.
+# It never pushes, merges or deploys.
+
+on:
+  schedule:
+    - cron: "23 9 * * *"        # daily 09:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maintenance
+  cancel-in-progress: false
+
+jobs:
+  tests-sqlite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13", cache: pip }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - name: Benchmark drift guard
+        run: python benchmarks/check_drift.py
+
+  tests-postgres-and-migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      SNIPER_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13", cache: pip }
+      - run: pip install -r requirements.txt
+      - name: Migration structure
+        run: python scripts/check_migrations.py
+      - name: Migrations apply cleanly and re-run as no-ops (SQLite + Postgres)
+        run: |
+          set -e
+          for target in sqlite postgres; do
+            if [ "$target" = sqlite ]; then
+              export SNIPER_DB_PATH=/tmp/migcheck.db; unset DATABASE_URL
+            else
+              psql "$SNIPER_TEST_PG_URL" -c "CREATE DATABASE migcheck"
+              export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/migcheck
+            fi
+            python -m migrations.runner
+            python -m migrations.runner | tee /tmp/second.txt
+            grep -q "0 new migration(s) applied" /tmp/second.txt
+          done
+      - run: python -m pytest -q
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13", cache: pip }
+      - run: pip install pip-audit==2.7.3
+      - run: pip-audit -r requirements.txt --progress-spinner off
+
+  report-failure:
+    needs: [tests-sqlite, tests-postgres-and-migrations, dependency-audit]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the maintenance issue (deduplicated)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULTS: >-
+            tests-sqlite=${{ needs.tests-sqlite.result }},
+            tests-postgres-and-migrations=${{ needs.tests-postgres-and-migrations.result }},
+            dependency-audit=${{ needs.dependency-audit.result }}
+        run: |
+          gh label create maintenance-failure --repo "$REPO" --color B60205 \
+            --description "Nightly maintenance check failed" 2>/dev/null || true
+          gh label create agent-task --repo "$REPO" --color 0E8A16 \
+            --description "Scoped task an agent may pick up" 2>/dev/null || true
+          body="Nightly maintenance failed on \`${GITHUB_REF_NAME}\`: ${RESULTS}
+
+          Run: ${RUN_URL}
+
+          Triage per AGENTS.md: reproduce locally, fix on a branch, open a PR. Do not merge or deploy without owner approval."
+          num=$(gh issue list --repo "$REPO" --label maintenance-failure --state open \
+                  --json number --jq '.[0].number')
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --repo "$REPO" --body "$body"
+          else
+            gh issue create --repo "$REPO" --title "Nightly maintenance failure" \
+              --label maintenance-failure --label agent-task --body "$body"
+          fi

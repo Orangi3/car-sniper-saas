@@ -23,7 +23,7 @@ from typing import Optional
 
 import requests
 
-from . import health
+from . import health, schema
 from .base import (NormalizedListing, extract_make_model, extract_miles,
                     extract_year)
 
@@ -76,6 +76,69 @@ def _get_token() -> Optional[str]:
     return _TOKEN["value"]
 
 
+# Fields the adapter relies on (sources/schema.py). Documented Browse
+# item_summary fields; verified against fixtures only.
+ITEM_SPEC = {
+    "itemId": str, "title": str, "itemWebUrl": str, "price.value": schema.NUM,
+    "itemLocation.postalCode?": str, "itemLocation.stateOrProvince?": str,
+    "itemCreationDate?": str, "seller.sellerAccountType?": str,
+    "distanceFromPickupLocation.value?": schema.NUM,
+}
+LAST_RESULTS: dict = {}
+
+
+def normalize(it: dict, radius: float | None = None) -> Optional[NormalizedListing]:
+    """One Browse item summary -> NormalizedListing (None if unusable or
+    beyond `radius` by eBay's own distance)."""
+    title = it.get("title") or ""
+    url = it.get("itemWebUrl") or ""
+    if not it.get("itemId") or not url:
+        return None
+    loc = it.get("itemLocation", {}) or {}
+    dist = (it.get("distanceFromPickupLocation") or {}).get("value")
+    if dist is not None and radius is not None:
+        try:
+            if float(dist) > radius:
+                return None
+        except (TypeError, ValueError):
+            pass
+    try:
+        price = int(float((it.get("price") or {}).get("value"))) or None
+    except (TypeError, ValueError):
+        price = None
+    mk, mdl = extract_make_model(title)
+    year = extract_year(title)
+    miles = extract_miles(title)
+    buying_options = it.get("buyingOptions") or []
+    is_auction = "AUCTION" in buying_options
+    bin_price = None
+    if "FIXED_PRICE" in buying_options and is_auction:
+        try:
+            bin_price = int(float((it.get("buyItNowPrice") or {}).get("value"))) or None
+        except (TypeError, ValueError):
+            bin_price = None
+    seller = it.get("seller") or {}
+    acct = (seller.get("sellerAccountType") or "").upper()   # BUSINESS | INDIVIDUAL
+    postal = str(loc.get("postalCode") or "")[:5]
+    return NormalizedListing(
+        source=SOURCE_ID, source_id=str(it["itemId"]), url=url, title=title,
+        price=price, year=year, make=mk, model=mdl, odometer=miles,
+        location=loc.get("city"), state=loc.get("stateOrProvince"),
+        zip=postal if postal.isdigit() and len(postal) == 5 else None,
+        description=it.get("shortDescription") or "",
+        posted_at=it.get("itemCreationDate"),
+        # Only eBay's own account type decides; no guessing from feedback.
+        is_dealer=acct == "BUSINESS",
+        is_auction=is_auction,
+        auction_end_at=it.get("itemEndDate") if is_auction else None,
+        buy_now_price=bin_price,
+        is_cash_only=False, accepts_financing=False,
+        extras={"buying_option": buying_options, "condition": it.get("condition"),
+                "distance_mi": dist, "seller_type": acct.lower() or "unknown",
+                "seller_rating": seller.get("feedbackPercentage")},
+    )
+
+
 def poll(cfg: dict) -> list[NormalizedListing]:
     rep = health.report(SOURCE_ID)
     token = _get_token()
@@ -123,72 +186,13 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         return []
     rep.parsed("browse", len(items))
 
+    sc = schema.check_items(items, ITEM_SPEC)
+    LAST_RESULTS["schema"] = sc
+    if schema.drifted(sc):
+        rep.malformed("browse", schema.describe(sc))
     out: list[NormalizedListing] = []
-    for it in data.get("itemSummaries", []) or []:
-        title = it.get("title") or ""
-        # Distance filter (eBay returns distanceFromPickupLocation)
-        loc = it.get("itemLocation", {}) or {}
-        dist = (it.get("distanceFromPickupLocation") or {}).get("value")
-        if dist is not None:
-            try:
-                if float(dist) > radius:
-                    continue
-            except (TypeError, ValueError):
-                pass
-
-        try:
-            price = int(float(it.get("price", {}).get("value", 0)))
-        except (TypeError, ValueError):
-            price = None
-
-        mk, mdl = extract_make_model(title)
-        # Pull year/miles from item specifics if eBay provided them
-        year = None
-        miles = None
-        for asp in it.get("itemSpecifics", []) or []:
-            name = (asp.get("name") or "").lower()
-            vals = ", ".join(asp.get("values") or [])
-            if name == "year":
-                try: year = int(vals)
-                except (ValueError, TypeError): pass
-            elif name in ("mileage", "miles"):
-                try: miles = int(vals.replace(",", ""))
-                except (ValueError, TypeError): pass
-        year = year or extract_year(title)
-        miles = miles or extract_miles(title)
-
-        buying_options = it.get("buyingOptions") or []
-        is_auction = "AUCTION" in buying_options
-        # Buy-it-now price if both options exist
-        bin_price = None
-        if "FIXED_PRICE" in buying_options and is_auction:
-            try:
-                bin_price = int(float(it.get("buyItNowPrice", {}).get("value", 0))) or None
-            except (TypeError, ValueError):
-                bin_price = None
-        # Auction end if available
-        end_at = it.get("itemEndDate") or None
-        out.append(NormalizedListing(
-            source=SOURCE_ID, source_id=it.get("itemId", ""),
-            url=it.get("itemWebUrl", ""), title=title,
-            price=price, year=year, make=mk, model=mdl, odometer=miles,
-            location=loc.get("city"), state=loc.get("stateOrProvince"),
-            zip=(str(loc.get("postalCode"))[:5] if loc.get("postalCode")
-                 and str(loc.get("postalCode"))[:5].isdigit() else None),
-            description=it.get("shortDescription") or "",
-            posted_at=it.get("itemCreationDate"),
-            is_dealer=bool(it.get("seller", {}).get("feedbackScore", 0) and
-                           int(it.get("seller", {}).get("feedbackScore", 0)) > 500),
-            is_auction=is_auction,
-            auction_end_at=end_at if is_auction else None,
-            buy_now_price=bin_price,
-            is_cash_only=not is_auction,  # BIN ≈ cash via PayPal
-            accepts_financing=False,
-            extras={
-                "buying_option": buying_options,
-                "condition": it.get("condition"),
-                "distance_mi": dist,
-                "seller_rating": it.get("seller", {}).get("feedbackPercentage"),
-            },
-        ))
+    for it in items:
+        n = normalize(it, radius)
+        if n:
+            out.append(n)
     return out

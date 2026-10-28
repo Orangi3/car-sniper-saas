@@ -1,5 +1,28 @@
 # Release readiness — controlled paid beta
 
+## Update 3 (branch `feat/market-intelligence-v2`, 2026-10-28)
+
+**Verdict: GO FOR PRIVATE INTERNAL TESTING. NO-GO for free or paid beta.**
+Unchanged from update 2, because the deciding blocker is still external: no
+licensed source has returned a real listing. This round built the path to
+verify that in one manual workflow run once keys exist.
+
+`python -m preflight` (scratch DB, `SNIPER_COMMERCIAL_MODE=1`, after a real
+scheduler tick) → **READY FOR: PRIVATE INTERNAL TESTING**; free beta blocked
+by no HTTPS origin and no fresh licensed data; paid beta additionally by
+SQLite, backups, Stripe.
+
+| Criterion | Status |
+|---|---|
+| Tests | ✓ SQLite 311 passed / 2 skipped; Postgres 16: 313 passed (before docs commit; final numbers in the PR) |
+| Benchmark (synthetic) | TP=10 FP=1 TN=18 FN=0, unchanged by valuation v2; per-case baseline now enforced |
+| Live source verification | ✗ never run — needs eBay/MarketCheck keys (`OWNER_ACTIONS.md` B/C) |
+| Real-world performance | ✗ unmeasured |
+| Unit economics | Base break-even **~138** subscribers (mixed tiers) now that AI development ($100) and monitoring ($10) are included; ~96 at a $149 data fee |
+| Automation | Nightly maintenance ready; agent runs inactive; **branch protection off** |
+
+Launch stages A/B/C with measurable criteria: `CURRENT_STATE.md` §5.
+
 ## Update 2 (branch `feat/commercial-launch-readiness`, 2026-10-28)
 
 **Verdict: GO FOR PRIVATE INTERNAL TESTING.** Not yet a free or paid beta.

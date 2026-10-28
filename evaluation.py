@@ -13,7 +13,8 @@ tracks real listings and their real outcomes:
   * import_csv(path)        — manually collected, properly authorized samples
   * report()                — precision, recall/FPR (only with a complete
     reference set), latencies, opportunities per active user, estimated vs
-    realized profit — each with its sample size
+    realized profit, valuation error against confirmed sale amounts, and
+    coverage by source and territory — each with its sample size
 
 Fixture rows (is_fixture) are for demonstrating the workflow and are
 excluded from reports unless include_fixtures=True, in which case the
@@ -207,8 +208,10 @@ def _ratio(a: int, b: int) -> dict:
 def report(include_fixtures: bool = False, active_user_days: int = 30) -> dict:
     import db as _db
     with _db.session() as conn:
-        where = "" if include_fixtures else " WHERE is_fixture = FALSE"
-        rows = [dict(r) for r in conn.execute(f"SELECT * FROM eval_observations{where}")]
+        where = "" if include_fixtures else " WHERE e.is_fixture = FALSE"
+        rows = [dict(r) for r in conn.execute(
+            "SELECT e.*, l.state AS listing_state FROM eval_observations e "
+            f"LEFT JOIN listings l ON l.composite_id = e.composite_id{where}")]
         n_fixture = int(conn.execute("SELECT COUNT(*) FROM eval_observations "
                                      "WHERE is_fixture = TRUE").fetchone()[0])
         try:
@@ -264,8 +267,54 @@ def report(include_fixtures: bool = False, active_user_days: int = 30) -> dict:
              "mean_abs_error": round(statistics.mean(abs(e - r) for e, r in prof)),
              "mean_bias": round(statistics.mean(e - r for e, r in prof)),
              "enough_samples": len(prof) >= MIN_N} if prof else {"n": 0}),
+        "valuation_error": valuation_error(rows),
+        "coverage": coverage(rows),
         "min_samples_for_confidence": MIN_N,
     }
+    return out
+
+
+def valuation_error(rows: list[dict]) -> dict:
+    """Estimated market value vs the independently confirmed sale amount,
+    overall and per evidence class. interval_coverage = share of sales that
+    landed inside the reported value range (only rows that stored one)."""
+    def summarize(rs):
+        errs = [(r["est_value"] - r["sale_amount"]) / r["sale_amount"] for r in rs]
+        inside = [r["value_low"] <= r["sale_amount"] <= r["value_high"] for r in rs
+                  if r.get("value_low") is not None and r.get("value_high") is not None]
+        return {"n": len(rs),
+                "median_abs_pct_error": round(100 * statistics.median(abs(e) for e in errs), 1),
+                "mean_bias_pct": round(100 * statistics.mean(errs), 1),
+                "interval_coverage": (_ratio(sum(inside), len(inside)) if inside
+                                      else {"value": None, "why": "no stored ranges"}),
+                "enough_samples": len(rs) >= MIN_N}
+    sold = [r for r in rows if r["sold_confirmed"] and r.get("sale_amount")
+            and r.get("est_value")]
+    if not sold:
+        return {"n": 0, "why": "no confirmed sale amounts recorded"}
+    by_class: dict[str, list] = {}
+    for r in sold:
+        by_class.setdefault(r.get("evidence_class") or "unknown", []).append(r)
+    return {**summarize(sold), "basis": "estimated value vs confirmed sale amount",
+            "by_evidence_class": {k: summarize(v) for k, v in sorted(by_class.items())}}
+
+
+def coverage(rows: list[dict]) -> dict:
+    """How much of what we observe we can value, alert on and label, per
+    source and per territory (listing state; 'unknown' when not linked)."""
+    def agg(rs):
+        n = len(rs)
+        return {"observations": n,
+                "valued_pct": round(100 * sum(1 for r in rs if r.get("est_value")) / n, 1),
+                "alerted": sum(1 for r in rs if r["alerted"]),
+                "labeled": sum(1 for r in rs if r.get("outcome_label")),
+                "enough_samples": n >= MIN_N}
+    out: dict[str, dict] = {"by_source": {}, "by_territory": {}}
+    for key, field in (("by_source", "source"), ("by_territory", "listing_state")):
+        groups: dict[str, list] = {}
+        for r in rows:
+            groups.setdefault(r.get(field) or "unknown", []).append(r)
+        out[key] = {k: agg(v) for k, v in sorted(groups.items())}
     return out
 
 
