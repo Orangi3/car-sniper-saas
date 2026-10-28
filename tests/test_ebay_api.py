@@ -191,3 +191,10 @@ def test_api_base_selection(monkeypatch):
     monkeypatch.setenv("EBAY_API_BASE", "http://evil.example.com")
     with pytest.raises(ValueError):
         eb._api_base()               # credentials never go over plain http remotely
+
+
+def test_sandbox_probe_is_labeled_not_real_market_data(eb, monkeypatch):
+    import verify_sources as vs
+    monkeypatch.setenv("EBAY_ENVIRONMENT", "sandbox")
+    r = vs.run(["ebay"])["results"][0]
+    assert r["provider_environment"] == "sandbox" and r["real_market_data"] is False

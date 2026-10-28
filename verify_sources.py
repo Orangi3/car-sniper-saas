@@ -155,6 +155,11 @@ def probe_source(module, cfg: dict) -> dict:
                          "drifted": schema.drifted(sc)}
     out["verified"] = bool(status == health.HEALTHY and listings
                            and not (sc and schema.drifted(sc)))
+    if sid == "ebay":
+        env = (os.environ.get("EBAY_ENVIRONMENT") or "production").lower()
+        out["provider_environment"] = env
+        if env == "sandbox":   # eBay test data: proves credentials, not the market
+            out["real_market_data"] = False
     return out
 
 
@@ -234,7 +239,9 @@ def main(argv=None) -> int:
         print(f"territory {t['zip']} + {t['radius_mi']} mi  ({rep['checked_at']})")
         for r in rep["results"]:
             mark = "✓" if r.get("verified") else ("–" if r["status"] == "no_credentials" else "✗")
-            print(f"\n{mark} {r['source']}: {r['status']} — {r['detail']}")
+            print(f"\n{mark} {r['source']}: {r['status']} — {r['detail']}"
+                  + ("  [eBay SANDBOX test data — not real listings]"
+                     if r.get("provider_environment") == "sandbox" else ""))
             if r["status"] == "no_credentials":
                 continue
             print(f"  listings {r['listings']} (in ${BAND[0]:,}–${BAND[1]:,}: "
