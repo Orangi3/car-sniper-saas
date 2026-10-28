@@ -28,6 +28,8 @@ from tests.conftest import register, login, set_plan
     ("2016 Honda Odyssey minivan $9,000", 2016, "Honda", "Odyssey", 9000, None),
     ("99 Civic hatch $3,000", 1999, "Honda", "Civic", 3000, None),
     ("2009 Honda CR-V EX $6,500", 2009, "Honda", "CR-V", 6500, None),
+    ("2008 Saab 9-3 105k miles - $3,500", 2008, "Saab", "9-3", 3500, 105000),
+    ("2015 Lexus RX 350 - $15,000", 2015, "Lexus", "Rx 350", 15000, None),
 ])
 def test_title_parsing(title, year, make, model, price, miles):
     from sources.base import (extract_make_model, extract_miles, extract_price,

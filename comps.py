@@ -61,11 +61,21 @@ def _cache() -> sqlite3.Connection:
     return c
 
 
+EMPTY_CACHE_TTL_S = 3600   # an all-empty result is usually a scrape failure
+
+
+def _is_empty(val) -> bool:
+    return isinstance(val, dict) and not any(val.values())
+
+
 def cached_get(key: str, fn):
     with _cache() as c:
         row = c.execute("SELECT value, fetched_at FROM cache WHERE key=?", (key,)).fetchone()
-        if row and time.time() - row[1] < CACHE_TTL_S:
-            return json.loads(row[0]), row[1]
+        if row:
+            val = json.loads(row[0])
+            ttl = EMPTY_CACHE_TTL_S if _is_empty(val) else CACHE_TTL_S
+            if time.time() - row[1] < ttl:
+                return val, row[1]
     val = fn()
     with _cache() as c:
         c.execute("INSERT OR REPLACE INTO cache(key, value, fetched_at) VALUES(?,?,?)",
@@ -79,9 +89,19 @@ DATE_RE_SLASH = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b")
 DATE_RE_NAMED = re.compile(r"\b([A-Z][a-z]{2,8})\s+(\d{1,2}),?\s+(\d{4})\b")
 
 
+DATE_RE_ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})")
+
+
 def _parse_sale_date(s: str | None) -> Optional[datetime]:
     if not s:
         return None
+    m = DATE_RE_ISO.search(str(s))      # MarketCheck / Copart style
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                            tzinfo=timezone.utc)
+        except ValueError:
+            pass
     m = DATE_RE_SLASH.search(s)
     if m:
         try:
@@ -361,7 +381,9 @@ def _filter_by_match_quality(items: list[dict], year: int, make: str, model: str
 
 
 def _filter_to_recent(items: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Split items into (recent_2025plus, older). Returns recent + older for context."""
+    """Split items into (dated sales from MIN_YEAR on, everything else).
+    Records WITHOUT a sale date are not recent sales — they go in the second
+    list (previously they were averaged in at half weight)."""
     recent, older = [], []
     for it in items:
         sale_dt = _parse_sale_date(it.get("end_date"))
@@ -369,8 +391,6 @@ def _filter_to_recent(items: list[dict]) -> tuple[list[dict], list[dict]]:
         it["_year_weight"] = _date_weight(sale_dt)
         if sale_dt and sale_dt.year >= MIN_YEAR:
             recent.append(it)
-        elif not sale_dt:
-            recent.append(it)  # unknown dates kept but at half weight
         else:
             older.append(it)
     return recent, older
@@ -396,46 +416,60 @@ def _weighted_average(items: list[dict]) -> tuple[Optional[float], Optional[floa
     return round(avg, 2), round(median, 2), len(prices)
 
 
+# Sources whose "sold" records are real completed sales with a sold price.
+# MarketCheck /sales and Hemmings "sold" report the LAST ASKING price of a
+# listing that disappeared — useful context, not confirmed sales.
+CONFIRMED_SALE_SOURCES = ("ebay", "bat", "carsandbids", "pcarmarket")
+INCOMPLETE_SALE_SOURCES = ("hemmings", "marketcheck")
+
+
+def raw_sold(year: int, make: str, model: str) -> tuple[dict, int]:
+    """Raw per-source sold records (cached 24h) and their fetch time —
+    consumed by valuation.classify_sold_items()."""
+    q = f"{year} {make} {model}".strip()
+    return cached_get(f"comps:{q}", lambda: _fetch_all(q, year, make, model))
+
+
+def _fetch_all(q: str, year: int, make: str, model: str) -> dict:
+    # PARALLEL fetch — all 7 comp sources concurrently. wait() is used
+    # instead of as_completed(timeout=N) so slow sources don't raise
+    # TimeoutError — they just return [] and we move on.
+    from concurrent.futures import ThreadPoolExecutor, wait
+    sources = {
+        "ebay":        lambda: ebay_sold(q),
+        "bat":         lambda: bat_sold(q),
+        "carsandbids": lambda: carsbids_sold(q),
+        "pcarmarket":  lambda: pcarmarket_sold(q),
+        "hemmings":    lambda: hemmings_sold(q),
+        "copart":      lambda: copart_sold(q),
+        "marketcheck": lambda: marketcheck_sold(q, year, make, model),
+    }
+    results = {k: [] for k in sources}
+    ex = ThreadPoolExecutor(max_workers=len(sources))
+    try:
+        futures = {ex.submit(fn): name for name, fn in sources.items()}
+        done, not_done = wait(list(futures.keys()), timeout=10)
+        for f in done:
+            try:
+                results[futures[f]] = f.result(timeout=0.5)
+            except Exception:
+                pass
+        for f in not_done:
+            f.cancel()
+            # results[name] stays as the empty default
+    finally:
+        ex.shutdown(wait=False)
+    return results
+
+
 def comps_for_listing(year: int, make: str, model: str,
                        odometer: int | None = None) -> dict:
     q = f"{year} {make} {model}".strip()
+    raw, fetched_at_ts = raw_sold(year, make, model)
 
-    def _fetch():
-        # PARALLEL fetch — all 7 comp sources concurrently. wait() is used
-        # instead of as_completed(timeout=N) so slow sources don't raise
-        # TimeoutError — they just return [] and we move on.
-        from concurrent.futures import ThreadPoolExecutor, wait
-        sources = {
-            "ebay":        lambda: ebay_sold(q),
-            "bat":         lambda: bat_sold(q),
-            "carsandbids": lambda: carsbids_sold(q),
-            "pcarmarket":  lambda: pcarmarket_sold(q),
-            "hemmings":    lambda: hemmings_sold(q),
-            "copart":      lambda: copart_sold(q),
-            "marketcheck": lambda: marketcheck_sold(q, year, make, model),
-        }
-        results = {k: [] for k in sources}
-        ex = ThreadPoolExecutor(max_workers=len(sources))
-        try:
-            futures = {ex.submit(fn): name for name, fn in sources.items()}
-            done, not_done = wait(list(futures.keys()), timeout=10)
-            for f in done:
-                try:
-                    results[futures[f]] = f.result(timeout=0.5)
-                except Exception:
-                    pass
-            for f in not_done:
-                f.cancel()
-                # results[name] stays as the empty default
-        finally:
-            ex.shutdown(wait=False)
-        return results
-
-    raw, fetched_at_ts = cached_get(f"comps:{q}", _fetch)
-
-    # Headline pool: everything except salvage
+    # Headline pool: confirmed completed sales only
     main = []
-    for s in ("ebay", "bat", "carsandbids", "pcarmarket", "hemmings", "marketcheck"):
+    for s in CONFIRMED_SALE_SOURCES:
         main.extend(raw.get(s, []))
 
     # Quality threshold — each comp scored 0-100. Default 100 = perfect match only.
@@ -480,8 +514,12 @@ def comps_for_listing(year: int, make: str, model: str,
         "avg": avg, "median": median,
         "min": min((it["price"] for it in recent_main if it.get("price")), default=None),
         "max": max((it["price"] for it in recent_main if it.get("price")), default=None),
-        "sources": [s for s in ("ebay","bat","carsandbids","pcarmarket","hemmings","marketcheck")
-                    if raw.get(s)],
+        "sources": [s for s in CONFIRMED_SALE_SOURCES if raw.get(s)],
+        "evidence_class": "confirmed_sales" if n >= 3 else "insufficient",
+        "incomplete_records": sum(len(raw.get(s, []) or [])
+                                  for s in INCOMPLETE_SALE_SOURCES) + len(older_main),
+        "note": ("avg/median use only dated completed sales; undated, older and "
+                 "last-asking records are counted in incomplete_records"),
         "salvage_avg": round(statistics.mean(salvage_prices), 2) if salvage_prices else None,
         "salvage_n":   len(salvage_prices),
         "examples":    sorted(recent_main, key=lambda x: -(x.get("_year_weight") or 0))[:12],

@@ -225,6 +225,12 @@ def extract_year(text: str) -> Optional[int]:
     return None
 
 
+# Mileage / price / plain numbers that must never be glued onto a model
+# ("9-3 105k" is a Saab 9-3 with 105k miles, not a "9-3 105K").
+_NOT_MODEL_TOKEN = re.compile(r"^(\$.*|\d+k|\d{1,3}(,\d{3})+|\d{4,}|\d+mi(les)?)$",
+                              re.IGNORECASE)
+
+
 def _model_key(tok: str) -> str:
     return re.sub(r"[^a-z0-9]", "", tok.lower())
 
@@ -236,7 +242,8 @@ def _canon_model(tokens: list[str]) -> Optional[str]:
     key = _model_key(first)
     if key in MODEL_CANON:
         return MODEL_CANON[key]
-    if len(tokens) > 1 and (len(key) <= 2 or key in _JOIN_NEXT):
+    if (len(tokens) > 1 and (len(key) <= 2 or key in _JOIN_NEXT)
+            and not _NOT_MODEL_TOKEN.match(tokens[1])):
         return f"{first} {tokens[1]}".title()
     return first.title()
 

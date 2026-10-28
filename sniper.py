@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
@@ -31,14 +32,14 @@ from typing import Iterable, Optional
 
 import config as _config_mod
 import jobqueue
+import profit as profit_mod
+import valuation
 from config import CONFIG
 import sources
 from sources import health
-from sources.base import (NormalizedListing, looks_needs_work, looks_salvage,
+from sources.base import (NormalizedListing, looks_like_dealer, looks_needs_work,
+                          looks_salvage,
                           to_iso)
-
-# Estimated fees + reconditioning for the flipper profit calculator
-FEES_RECON_AVG = 1500
 
 # Per-source diagnostics — captured each poll, exposed via /api/diagnostics
 SOURCE_DIAG: dict[str, dict] = {}
@@ -75,165 +76,189 @@ def db():
     return _db_mod.session()
 
 
-def _record_score(conn, cid: str, comp_avg: float, comp_n: int,
-                  discount_pct: float, score: float, basis: str,
-                  note: str, now: str) -> None:
-    """Upsert one near_misses row — the single write path every scorer uses.
-    discount_pct may be <= 0 (priced at/above comp); those rows simply won't
-    surface in the deals pane but the listing still shows a real comp."""
-    conn.execute(
-        """INSERT INTO near_misses(composite_id, discount_pct, score, comp_avg,
-                comp_n, basis, note, refreshed_at)
-           VALUES(?,?,?,?,?,?,?,?)
-           ON CONFLICT(composite_id) DO UPDATE SET
-             discount_pct=excluded.discount_pct, score=excluded.score,
-             comp_avg=excluded.comp_avg, comp_n=excluded.comp_n,
-             basis=excluded.basis, note=excluded.note,
-             refreshed_at=excluded.refreshed_at""",
-        (cid, discount_pct, score, comp_avg, comp_n, basis, note, now))
+# ---------- Ingestion: upsert, price history, identity --------------------
+
+VIN_RE = re.compile(r"\b([A-HJ-NPR-Z0-9]{17})\b")
+MATERIAL_DROP_PCT = 3.0
+MATERIAL_DROP_USD = 250
 
 
-def instant_estimate(year, make, model, price, odometer=None, conn=None):
-    """Network-free market-value estimate from peer ASKING prices already in
-    the DB. Tier A = same make/model within 3 model-years; Tier B = same
-    make/model any year, each peer aged ~8%/yr toward the target year so
-    older/newer model years still inform the estimate. Instant, never raises.
-    Returns {'avg','n','basis'} or None when there are no usable peers."""
-    try:
-        if not (year and make and model and price):
-            return None
-        own = conn is None
-        c = conn or db()
-        try:
-            rows = c.execute(
-                """SELECT price, year FROM listings
-                   WHERE LOWER(make)=LOWER(?) AND LOWER(model)=LOWER(?)
-                     AND price IS NOT NULL AND price BETWEEN 1000 AND 250000
-                     AND year IS NOT NULL AND is_salvage = FALSE""",
-                (str(make).strip(), str(model).strip())).fetchall()
-        finally:
-            if own:
-                c.close()
-        if len(rows) < 2:
-            return None
-        tight = [r["price"] for r in rows if abs(r["year"] - year) <= 3]
-        if len(tight) >= 2:
-            sample, n = tight, len(tight)
-        else:
-            # age peers within 8 model-years toward the target year (~8%/yr).
-            # The window + clamp keep a sparse feed from producing wild
-            # estimates (e.g. a 2002 truck priced off a 2022 one).
-            nearish = [r for r in rows if abs(r["year"] - year) <= 8]
-            if len(nearish) < 2:
-                return None
-            sample = [r["price"] * (1.08 ** max(-8, min(8, year - r["year"])))
-                      for r in nearish]
-            n = len(sample)
-        prices = sorted(sample)
-        # trim 10% off each tail to drop outliers, then take the median
-        k = int(len(prices) * 0.10)
-        core = prices[k:len(prices) - k] or prices
-        med = core[len(core) // 2]
-        # asking prices run a few % above realistic resale — small haircut
-        est = med * 0.93
-        # light mileage adjustment past a 120k-mile baseline
-        if odometer and odometer > 120_000:
-            est -= (odometer - 120_000) * 0.06
-        return {"avg": round(max(est, 500.0), 2), "n": n, "basis": "estimate"}
-    except Exception as e:
-        print(f"[instant_estimate] {make} {model}: {e}", file=sys.stderr)
+def find_vin(*texts: str) -> Optional[str]:
+    """A VIN printed in the listing, accepted only if its check digit
+    verifies (North American VINs) — a random 17-char token is not a VIN."""
+    import vin as vin_mod
+    for t in texts:
+        for m in VIN_RE.finditer((t or "").upper()):
+            cand = m.group(1)
+            if not (re.search(r"[A-Z]", cand) and re.search(r"\d", cand)):
+                continue
+            v = vin_mod.validate_vin(cand)
+            if v.get("ok") and v.get("check_digit_ok") is True:
+                return v["normalized"]
+    return None
+
+
+def _norm_title(t: str) -> str:
+    """Title without its price tag ("… - $9,000", "$9k"): a relist at a new
+    price must still compare equal."""
+    t = re.sub(r"\$\s?[\d,.]+\s?k?\b", " ", (t or "").lower())
+    return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def _find_relist(conn, l: NormalizedListing, vehicle_key: Optional[str],
+                 cid: str) -> Optional[dict]:
+    """An earlier listing of the SAME vehicle, matched cautiously:
+      1. same verified VIN (any source), or
+      2. same source + region, identical normalized title, identical
+         non-null odometer, and (if both have photos) the same first photo.
+    Never on year/make/model/price alone."""
+    if vehicle_key:
+        r = conn.execute(
+            "SELECT composite_id, source, price, last_seen_at FROM listings "
+            "WHERE vehicle_key = ? AND composite_id <> ? "
+            "ORDER BY last_seen_at DESC LIMIT 1", (vehicle_key, cid)).fetchone()
+        return dict(r) if r else None
+    if not l.odometer or not l.title:
         return None
+    region = str(l.source_id).split(":", 1)[0] if ":" in str(l.source_id) else None
+    rows = conn.execute(
+        "SELECT composite_id, source_id, title, price, last_seen_at, image_urls "
+        "FROM listings WHERE source = ? AND odometer = ? AND year = ? "
+        "  AND composite_id <> ? ORDER BY last_seen_at DESC LIMIT 20",
+        (l.source, l.odometer, l.year, cid)).fetchall()
+    nt = _norm_title(l.title)
+    first_img = (l.image_urls or [None])[0]
+    for r in rows:
+        if _norm_title(r["title"]) != nt:
+            continue
+        if region and not str(r["source_id"]).startswith(region + ":"):
+            continue
+        try:
+            imgs = json.loads(r["image_urls"] or "[]")
+        except ValueError:
+            imgs = []
+        if first_img and imgs and imgs[0] != first_img:
+            continue
+        return dict(r)
+    return None
 
 
 def store_new(listings: Iterable[NormalizedListing]) -> list[NormalizedListing]:
-    """Insert new listings + queue them for async scoring. Returns the new ones.
+    """Upsert listings; returns the ones that were new. See ingest()."""
+    return ingest(listings)["new"]
 
-    DECOUPLING: this function is FAST — it only inserts rows and enqueues
-    durable `score` jobs in the same transaction. Scoring (which calls
-    expensive comp APIs) runs in jobs/worker.py.
-    """
+
+def ingest(listings: Iterable[NormalizedListing]) -> dict:
+    """Upsert a batch of listings in one transaction.
+
+    New listing   → insert, price-history row, relist detection, score job.
+    Seen before   → last_seen_at bumped; a changed asking price is stored
+                    (previous_price, price_changed_at, history row) and the
+                    listing is re-scored — so a $9,000 → $6,500 drop becomes
+                    a price-change opportunity instead of being discarded
+                    as a duplicate.
+    Score jobs are keyed by (listing, price): unchanged re-polls never
+    re-score or re-alert."""
     from scam_detector import score_listing as scam_score_listing
     now = datetime.now(timezone.utc).isoformat()
-    new: list[NormalizedListing] = []
+    batch: dict[str, NormalizedListing] = {}
+    for l in listings:
+        if CONFIG.get("require_price", True) and not l.price:
+            continue
+        _normalize_listing(l)
+        batch[l.composite_id()] = l
+    out = {"new": [], "price_changed": [], "seen": 0}
+    if not batch:
+        return out
     with db() as conn:
-        # Backpressure: past the queue cap, listings are still stored but
-        # not queued; backfill_unscored() picks them up once the queue drains.
         room = jobqueue.has_capacity(conn, "score")
-        for l in listings:
-            if CONFIG.get("require_price", True) and not l.price:
+        ids = list(batch)
+        existing: dict[str, dict] = {}
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            for r in conn.execute(
+                    f"SELECT composite_id, price, odometer FROM listings "
+                    f"WHERE composite_id IN ({','.join('?' for _ in chunk)})", chunk):
+                existing[r["composite_id"]] = dict(r)
+        touched = []
+        for cid, l in batch.items():
+            prev = existing.get(cid)
+            if prev is None:
+                _insert_listing(conn, l, now, scam_score_listing)
+                out["new"].append(l)
+                if l.year and l.make and l.model and room:
+                    enqueue_score(conn, cid, l.price)
                 continue
-            _normalize_listing(l)
-            sc, reasons = scam_score_listing(l.title, l.description, l.price, None)
-            row = conn.execute(
-                """INSERT INTO listings(composite_id, source, source_id, url, title,
-                        price, year, make, model, odometer, location, state,
-                        description, posted_at, first_seen_at, is_dealer,
-                        is_salvage, is_auction, auction_end_at, bid_count,
-                        buy_now_price, is_cash_only, accepts_financing,
-                        scam_score, scam_reasons, image_urls, extras)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(composite_id) DO NOTHING
-                   RETURNING composite_id""",
-                (l.composite_id(), l.source, l.source_id, l.url, l.title,
-                 l.price, l.year, l.make, l.model, l.odometer, l.location, l.state,
-                 l.description, l.posted_at, now,
-                 bool(l.is_dealer), bool(l.is_salvage),
-                 bool(l.is_auction), to_iso(l.auction_end_at), l.bid_count,
-                 l.buy_now_price,
-                 bool(l.is_cash_only), bool(l.accepts_financing),
-                 sc, json.dumps(reasons),
-                 json.dumps(getattr(l, 'image_urls', []) or []),
-                 json.dumps(l.extras)),
-            ).fetchone()
-            if row is None:
-                continue  # already known
-            new.append(l)
-            # Durable scoring job, committed atomically with the listing row
-            if l.year and l.make and l.model and not l.is_salvage and room:
-                enqueue_score(conn, l.composite_id(), l.price)
-
-    # INSTANT SCORING PASS — give every brand-new listing a peer-estimate
-    # score right now (network-free) so the dashboard shows a number the
-    # moment it appears. The background scorer refines this into a verified
-    # sold-comp score shortly after. Wrapped so it can never break ingestion.
-    if new:
-        try:
-            now2 = datetime.now(timezone.utc).isoformat()
-            weights = CONFIG.get("source_weights", {})
-            with db() as conn:
-                for l in new:
-                    try:
-                        if l.is_salvage or not (l.year and l.make and l.model and l.price):
-                            continue
-                        est = instant_estimate(l.year, l.make, l.model,
-                                               l.price, l.odometer, conn=conn)
-                        if not est:
-                            continue
-                        avg = float(est["avg"])
-                        discount = (avg - l.price) / avg if avg else 0.0
-                        weight = weights.get(l.source, 1.0)
-                        fresh = _freshness_factor(l.posted_at)
-                        score = max(0.0, discount) * 100 * weight * fresh
-                        note = (f"[{l.source}] {l.year} {l.make} {l.model}"
-                                + f" listed ${l.price:,} vs est. value ${avg:,.0f}"
-                                + f" (peers={est['n']}, score={score:.1f})")
-                        _record_score(conn, l.composite_id(), avg, est["n"],
-                                      discount * 100, score, "estimate", note, now2)
-                    except Exception as e:
-                        print(f"[instant] {getattr(l,'source','?')}: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"[instant pass] {e}", file=sys.stderr)
-
-    return new
+            out["seen"] += 1
+            if l.price and prev.get("price") and int(l.price) != int(prev["price"]):
+                conn.execute(
+                    "UPDATE listings SET price = ?, previous_price = ?, "
+                    "  price_changed_at = ?, last_seen_at = ?, title = ?, "
+                    "  description = ?, odometer = COALESCE(?, odometer) "
+                    "WHERE composite_id = ?",
+                    (l.price, prev["price"], now, now, l.title, l.description,
+                     l.odometer, cid))
+                conn.execute(
+                    "INSERT INTO listing_prices(composite_id, price, event, observed_at) "
+                    "VALUES (?,?,?,?)", (cid, l.price, "price_change", now))
+                out["price_changed"].append(l)
+                if l.year and l.make and l.model:
+                    enqueue_score(conn, cid, l.price)
+            else:
+                touched.append((now, cid))
+        if touched:
+            conn.executemany("UPDATE listings SET last_seen_at = ? WHERE composite_id = ?",
+                             touched)
+    return out
 
 
-# ---------- Ingestion normalization + alert gating -------------------------
+def _insert_listing(conn, l: NormalizedListing, now: str, scam_fn) -> None:
+    cid = l.composite_id()
+    sc, reasons = scam_fn(l.title, l.description, l.price, None)
+    vin = find_vin(l.title, l.description)
+    vehicle_key = f"vin:{vin}" if vin else None
+    trim = valuation.parse_trim(l.title, l.model)
+    relist = _find_relist(conn, l, vehicle_key, cid)
+    previous_price = None
+    extras = dict(l.extras or {})
+    if relist:
+        extras["relist_of"] = relist["composite_id"]
+        if relist.get("price") and l.price and l.price < relist["price"]:
+            previous_price = relist["price"]   # relisted cheaper = price drop
+    conn.execute(
+        """INSERT INTO listings(composite_id, source, source_id, url, title,
+                price, year, make, model, odometer, location, state,
+                description, posted_at, first_seen_at, last_seen_at, is_dealer,
+                is_salvage, is_auction, auction_end_at, bid_count,
+                buy_now_price, is_cash_only, accepts_financing,
+                scam_score, scam_reasons, image_urls, extras, vin, vehicle_key,
+                relist_of, trim, needs_work, previous_price, price_changed_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(composite_id) DO NOTHING""",
+        (cid, l.source, l.source_id, l.url, l.title,
+         l.price, l.year, l.make, l.model, l.odometer, l.location, l.state,
+         l.description, l.posted_at, now, now,
+         bool(l.is_dealer), bool(l.is_salvage),
+         bool(l.is_auction), to_iso(l.auction_end_at), l.bid_count,
+         l.buy_now_price,
+         bool(l.is_cash_only), bool(l.accepts_financing),
+         sc, json.dumps(reasons),
+         json.dumps(getattr(l, "image_urls", []) or []),
+         json.dumps(extras), vin, vehicle_key,
+         relist["composite_id"] if relist else None, trim,
+         bool(extras.get("needs_work")), previous_price,
+         now if previous_price else None))
+    conn.execute(
+        "INSERT INTO listing_prices(composite_id, price, event, observed_at) "
+        "VALUES (?,?,?,?)", (cid, l.price, "relist" if relist else "first_seen", now))
+
+
+# ---------- Ingestion normalization ---------------------------------------
 
 def _normalize_listing(l: NormalizedListing) -> None:
     """Apply the cross-source checks every listing needs, whatever source it
     came from (feeds, APIs, browser extension, email digests):
-      * posted_at → ISO 8601 UTC (RSS gives RFC 822, which the freshness
-        bonus could never parse)
+      * posted_at → ISO 8601 UTC or None (RSS gives RFC 822)
       * branded-title / parts-car wording → is_salvage
       * runs/drives problems → extras["needs_work"]"""
     raw_posted = l.posted_at
@@ -242,59 +267,69 @@ def _normalize_listing(l: NormalizedListing) -> None:
         l.extras = {**(l.extras or {}), "posted_raw": str(raw_posted)[:64]}
     if not l.is_salvage and looks_salvage(l.title, l.description):
         l.is_salvage = True
+    if not l.is_dealer and looks_like_dealer(l.title, l.description):
+        l.is_dealer = True
+        l.is_cash_only = False
     if looks_needs_work(l.title, l.description):
         l.extras = {**(l.extras or {}), "needs_work": True}
 
 
-def _alert_gate(l: dict, basis: str, comp_n: int, discount: float,
-                threshold: float, comp_avg: float) -> tuple[bool, str]:
-    """Decide whether a scored listing becomes an alert. Returns (ok, reason).
+# ---------- Opportunity assessment ----------------------------------------
 
-    Verified sold comps alert at the user's threshold. Peer estimates alert
-    only with enough peers AND a deeper discount, so a broken sold-comp
-    scraper degrades to fewer alerts instead of zero alerts."""
-    if discount < threshold:
-        return False, "below threshold"
-    max_disc = int(CONFIG.get("max_believable_discount_pct", 65)) / 100.0
-    if discount > max_disc:
-        return False, f"discount {discount*100:.0f}% too good to be true"
-    try:
-        extras = json.loads(l.get("extras") or "{}") if isinstance(l.get("extras"), str) \
-            else (l.get("extras") or {})
-    except ValueError:
-        extras = {}
-    if extras.get("needs_work"):
-        return False, "needs work / not running"
-    if l.get("is_dealer") and l.get("source") not in ("marketcheck", "ebay"):
-        return False, "dealer listing"
+BLOCKING_FLAGS = {"scam_signals", "too_good_to_be_true", "branded_title", "needs_work"}
+
+
+def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str, list[str]]:
+    """(trust, flags). 'trusted' = no blocking flag AND medium+ confidence.
+    Risky listings stay visible, labeled; they're just kept out of the
+    default trusted feed and conservative alerts."""
     from scam_detector import score_listing as scam_score_listing
-    scam, reasons = scam_score_listing(l.get("title"), l.get("description"),
-                                       l.get("price"), comp_avg)
-    if scam >= 50:
-        return False, f"scam score {scam}: {', '.join(reasons)}"
-    if basis == "verified":
-        return True, ""
-    if not CONFIG.get("estimate_alerts_enabled", True):
-        return False, "estimate alerts disabled"
-    if comp_n < int(CONFIG.get("estimate_alert_min_peers", 8)):
-        return False, f"only {comp_n} peers for estimate"
-    est_thr = max(threshold, int(CONFIG.get("estimate_alert_threshold_pct", 30)) / 100.0)
-    if discount < est_thr:
-        return False, f"estimate discount below {est_thr*100:.0f}%"
-    return True, ""
+    flags = []
+    scam, _ = scam_score_listing(l.get("title"), l.get("description"),
+                                 l.get("price"), v.value_mid)
+    if max(scam, l.get("scam_score") or 0) >= 50:
+        flags.append("scam_signals")
+    if discount > int(CONFIG.get("max_believable_discount_pct", 65)) / 100.0:
+        flags.append("too_good_to_be_true")
+    if l.get("is_salvage"):
+        flags.append("branded_title")
+    if l.get("needs_work"):
+        flags.append("needs_work")
+    if l.get("is_dealer"):
+        flags.append("dealer")
+    if not l.get("odometer"):
+        flags.append("mileage_unknown")
+    if l.get("relist_of"):
+        flags.append("relisted")
+    if v.confidence in ("low", "insufficient"):
+        flags.append("low_confidence")
+    trusted = not (set(flags) & BLOCKING_FLAGS) and v.confidence in ("medium", "high")
+    return ("trusted" if trusted else "risk"), flags
 
 
-def _enqueue_alert_deliveries(conn, deal: dict, event_key: str) -> None:
-    """Queue owner notifications + saved-search fan-out for a new alert,
-    inside the transaction that wrote the alert (atomic: either the alert
-    and all its delivery jobs exist, or none do)."""
-    import notifications
-    import saved_search_alerts
-    if (CONFIG.get("notify_text_enabled")
-            and deal["score"] >= int(CONFIG.get("notify_min_score", 30))):
-        notifications.enqueue_owner(conn, deal, event_key,
-                                    phone=CONFIG.get("notify_phone"))
-    saved_search_alerts.fan_out(conn, deal, event_key)
+def _event_for(l: dict) -> str:
+    pp, p = l.get("previous_price"), l.get("price")
+    if pp and p and p < pp:
+        drop = pp - p
+        if drop >= MATERIAL_DROP_USD and 100.0 * drop / pp >= MATERIAL_DROP_PCT:
+            return "price_drop"
+    return "new"
+
+
+def _owner_alert_ok(l: dict, v, discount: float, trust: str) -> bool:
+    if trust != "trusted":
+        return False
+    if not (int(CONFIG.get("min_price", 0)) <= l["price"]
+            <= int(CONFIG.get("max_price", 10**9))):
+        return False
+    thr = CONFIG.get("deal_threshold_pct", 25) / 100.0
+    if v.evidence_class != valuation.CONFIRMED_SALES:
+        if not CONFIG.get("estimate_alerts_enabled", True):
+            return False
+        if v.n < int(CONFIG.get("estimate_alert_min_peers", 8)):
+            return False
+        thr = max(thr, int(CONFIG.get("estimate_alert_threshold_pct", 30)) / 100.0)
+    return discount >= thr
 
 
 def enqueue_score(conn, composite_id: str, price) -> Optional[int]:
@@ -311,118 +346,134 @@ def score_job(job: dict) -> dict:
     return r or {"skipped": True}
 
 
-# ---------- Async background scorer --------------------------------------
+def _sold_evidence(l: dict) -> tuple[Optional[dict], Optional[str]]:
+    """Classified completed-sale evidence, or (None, reason)."""
+    try:
+        import comps
+        raw, _ = comps.raw_sold(l["year"], l["make"], l["model"])
+        return valuation.classify_sold_items(raw, l["year"], l["make"], l["model"]), None
+    except Exception as e:
+        return None, f"sold-comp lookup failed ({type(e).__name__})"
+
 
 def _score_one_listing(composite_id: str) -> Optional[dict]:
-    """Refine one listing's score. Tries live VERIFIED sold comps first; if
-    those are unavailable it guarantees an instant peer ESTIMATE is recorded
-    so the listing is never left blank. Called from a background worker —
-    wrapped so it can never raise."""
-    try:
-        from comps import comps_for_listing
-    except Exception:
-        comps_for_listing = None
+    """Value one listing, assess risk, and — in ONE transaction — record the
+    valuation, the owner's alert (if it qualifies) and every subscriber
+    match with their notification jobs. Raises on DB errors so the durable
+    job retries."""
     try:
         _config_mod.reload()
     except Exception:
         pass
-    threshold = CONFIG.get("deal_threshold_pct", 20) / 100.0
-    weights = CONFIG.get("source_weights", {})
-    now = datetime.now(timezone.utc).isoformat()
-
-    try:
-        with db() as conn:
-            row = conn.execute(
-                "SELECT * FROM listings WHERE composite_id=?", (composite_id,)
-            ).fetchone()
-            prior = conn.execute(
-                "SELECT basis FROM near_misses WHERE composite_id=?", (composite_id,)
-            ).fetchone()
-    except Exception as e:
-        print(f"[score] {composite_id} db read failed: {e}", file=sys.stderr)
-        return None
+    with db() as conn:
+        row = conn.execute("SELECT * FROM listings WHERE composite_id = ?",
+                           (composite_id,)).fetchone()
     if not row:
         return None
     l = dict(row)
     if not l.get("price") or not (l.get("year") and l.get("make") and l.get("model")):
         return None
-    if l.get("is_salvage"):
-        return None
-    # Respect the user's price band — the async scorer used to skip this, so
-    # $500 parts cars came through as 90%-off "deals".
-    if not (int(CONFIG.get("min_price", 0)) <= l["price"]
-            <= int(CONFIG.get("max_price", 10**9))):
-        return None
 
-    weight = weights.get(l["source"], 1.0)
-    fresh = _freshness_factor(l.get("posted_at"))
-
-    # --- Tier 1: live VERIFIED sold comps (2025+) ---
-    comp = None
-    if comps_for_listing:
-        try:
-            comp = comps_for_listing(year=l["year"], make=l["make"],
-                                     model=l["model"], odometer=l.get("odometer"))
-        except Exception as e:
-            print(f"[score] {composite_id} comp lookup failed: {e}", file=sys.stderr)
-            comp = None
-
-    if comp and comp.get("avg"):
-        # High-mileage cars compare against the mileage-adjusted average
-        avg = float(comp.get("mileage_adjusted_avg") or comp["avg"])
-        comp_n, basis = int(comp.get("n") or 0), "verified"
-        comp_median = comp.get("median")
-    else:
-        # --- Tier 2: instant peer ESTIMATE (network-free fallback) ---
-        est = instant_estimate(l["year"], l["make"], l["model"],
-                               l["price"], l.get("odometer"))
-        if not est:
-            return None  # not enough data anywhere — leave any prior row intact
-        avg, comp_n, basis = float(est["avg"]), int(est["n"]), "estimate"
-        comp_median = None
-
-    # Never downgrade an already-verified score back to an estimate.
-    if prior and prior["basis"] == "verified" and basis == "estimate":
-        return None
-
-    discount = (avg - l["price"]) / avg if avg else 0.0
-    score = max(0.0, discount) * 100 * weight * fresh
-    est_profit = int(avg - l["price"] - FEES_RECON_AVG)
-    label = "sold-comp" if basis == "verified" else "est. value"
-    note = (f"[{l['source']}] {l['year']} {l['make']} {l['model']}"
-            + (f" / {l['odometer']:,} mi" if l.get('odometer') else "")
-            + f" listed ${l['price']:,} vs {label} ${avg:,.0f}"
-            + f" (n={comp_n}, score={score:.1f}, est. profit ${est_profit:,})")
-
-    alertable, why_not = _alert_gate(l, basis, comp_n, discount, threshold, avg)
-    if not alertable and discount >= threshold:
-        print(f"[score] {composite_id} not alerted: {why_not}", file=sys.stderr)
-
-    new_alert = False
-    alert_id = None
+    sold, sold_err = _sold_evidence(l)          # network; outside the txn
+    now = datetime.now(timezone.utc).isoformat()
     with db() as conn:
-            _record_score(conn, composite_id, avg, comp_n, discount * 100,
-                          score, basis, note, now)
-            if alertable:
-                row = conn.execute(
-                    """INSERT INTO alerts(composite_id, comp_avg, comp_median,
-                             comp_n, discount_pct, score, note, created_at, basis)
-                       VALUES(?,?,?,?,?,?,?,?,?)
-                       ON CONFLICT(composite_id) DO NOTHING
-                       RETURNING id""",
-                    (composite_id, avg, comp_median, comp_n,
-                     discount * 100, score, note, now, basis)).fetchone()
-                if row is not None:
-                    alert_id = row[0]
-                    new_alert = True
-                    deal = {**l, "comp_avg": avg, "comp_n": comp_n, "basis": basis,
-                            "discount_pct": discount * 100, "score": score,
-                            "est_profit": est_profit, "alert_id": alert_id,
-                            "event": "new"}
-                    _enqueue_alert_deliveries(conn, deal, f"alert{alert_id}")
+        peers = valuation.load_peers(conn, l)
+        v = valuation.value_listing(l, peers, sold)
+        if sold_err:
+            v.reasons.append(sold_err)
+        if v.evidence_class == valuation.INSUFFICIENT or not v.value_mid:
+            _record_valuation(conn, l, v, None, 0.0, "risk", ["insufficient_data"],
+                              f"[{l['source']}] {l['year']} {l['make']} {l['model']}: "
+                              f"insufficient comparables", now)
+            return {"composite_id": composite_id, "evidence_class": v.evidence_class}
 
-    return {"composite_id": composite_id, "score": score,
-            "discount": discount, "basis": basis}
+        discount = (v.value_mid - l["price"]) / v.value_mid
+        trust, flags = assess_risk(l, v, discount)
+        weight = CONFIG.get("source_weights", {}).get(l["source"], 1.0)
+        score = max(0.0, discount) * 100 * weight * _freshness_factor(l.get("posted_at"))
+        pr = profit_mod.compute(l["price"], v.value_low, v.value_mid, v.value_high,
+                                v.evidence_class, None, scenarios=False)
+        est_profit = pr["scenarios"]["base"]["profit"] if pr else None
+        label = {"confirmed_sales": "sold comps"}.get(v.evidence_class, "asking comps")
+        note = (f"[{l['source']}] {l['year']} {l['make']} {l['model']}"
+                + (f" / {l['odometer']:,} mi" if l.get('odometer') else "")
+                + f" listed ${l['price']:,} vs {label} ${v.value_mid:,.0f}"
+                + f" (n={v.n}, {v.confidence} confidence, score={score:.1f}"
+                + (f", est. profit ${est_profit:,}" if est_profit is not None else "") + ")")
+        _record_valuation(conn, l, v, discount, score, trust, flags, note, now)
+
+        event = _event_for(l)
+        opp = {**l, "discount_pct": round(discount * 100, 2), "value_low": v.value_low,
+               "value_mid": v.value_mid, "value_high": v.value_high,
+               "comp_avg": v.value_mid, "comp_n": v.n, "basis": v.basis,
+               "evidence_class": v.evidence_class, "confidence": v.confidence,
+               "trust": trust, "risk_flags": flags, "score": score,
+               "est_profit": est_profit, "event": event}
+
+        alert_id = None
+        if _owner_alert_ok(l, v, discount, trust):
+            if event == "price_drop":
+                r = conn.execute(
+                    """INSERT INTO alerts(composite_id, comp_avg, comp_median, comp_n,
+                             discount_pct, score, note, created_at, basis)
+                       VALUES(?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(composite_id) DO UPDATE SET
+                         comp_avg=excluded.comp_avg, comp_median=excluded.comp_median,
+                         comp_n=excluded.comp_n, discount_pct=excluded.discount_pct,
+                         score=excluded.score, note=excluded.note, basis=excluded.basis
+                       RETURNING id""",
+                    (composite_id, v.value_mid, v.value_mid, v.n, discount * 100,
+                     score, note, now, v.basis)).fetchone()
+                alert_id = r[0]
+                owner_key = f"{composite_id}:drop:{l['price']}"
+            else:
+                r = conn.execute(
+                    """INSERT INTO alerts(composite_id, comp_avg, comp_median, comp_n,
+                             discount_pct, score, note, created_at, basis)
+                       VALUES(?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(composite_id) DO NOTHING RETURNING id""",
+                    (composite_id, v.value_mid, v.value_mid, v.n, discount * 100,
+                     score, note, now, v.basis)).fetchone()
+                alert_id = r[0] if r else None
+                owner_key = f"alert{alert_id}"
+            if alert_id and CONFIG.get("notify_text_enabled") \
+                    and score >= int(CONFIG.get("notify_min_score", 30)):
+                import notifications
+                notifications.enqueue_owner(conn, {**opp, "alert_id": alert_id},
+                                            owner_key, phone=CONFIG.get("notify_phone"))
+
+        import saved_search_alerts
+        matched = saved_search_alerts.evaluate(conn, opp)
+
+    return {"composite_id": composite_id, "score": score, "discount": discount,
+            "basis": v.basis, "evidence_class": v.evidence_class,
+            "confidence": v.confidence, "trust": trust, "event": event,
+            "alert_id": alert_id, "user_matches": len(matched)}
+
+
+def _record_valuation(conn, l: dict, v, discount: Optional[float], score: float,
+                      trust: str, flags: list[str], note: str, now: str) -> None:
+    """Upsert the per-listing valuation record (table near_misses)."""
+    conn.execute(
+        """INSERT INTO near_misses(composite_id, discount_pct, score, comp_avg,
+                comp_n, basis, note, refreshed_at, evidence_class, value_low,
+                value_high, confidence, confidence_reasons, evidence, trust,
+                risk_flags, price_at_score)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(composite_id) DO UPDATE SET
+             discount_pct=excluded.discount_pct, score=excluded.score,
+             comp_avg=excluded.comp_avg, comp_n=excluded.comp_n,
+             basis=excluded.basis, note=excluded.note,
+             refreshed_at=excluded.refreshed_at,
+             evidence_class=excluded.evidence_class, value_low=excluded.value_low,
+             value_high=excluded.value_high, confidence=excluded.confidence,
+             confidence_reasons=excluded.confidence_reasons,
+             evidence=excluded.evidence, trust=excluded.trust,
+             risk_flags=excluded.risk_flags, price_at_score=excluded.price_at_score""",
+        (l["composite_id"], None if discount is None else round(discount * 100, 2),
+         score, v.value_mid, v.n, v.basis, note, now, v.evidence_class,
+         v.value_low, v.value_high, v.confidence, json.dumps(v.reasons),
+         valuation.evidence_json(v), trust, json.dumps(flags), l["price"]))
 
 
 def ensure_scorer_started() -> None:
@@ -431,47 +482,18 @@ def ensure_scorer_started() -> None:
     return None
 
 
-def backfill_unscored() -> int:
-    """Queue listings that still need a VERIFIED score, AND immediately give
-    any that have no score row at all an instant peer estimate — so the whole
-    dashboard is populated the moment the server starts, then refined to
-    verified sold-comp numbers by the background scorer."""
+def backfill_unscored(limit: int = 2000) -> int:
+    """Queue scoring for listings with no valuation at their current price
+    (e.g. refused earlier by queue backpressure). Returns jobs queued."""
     with db() as conn:
         rows = conn.execute("""
-            SELECT l.composite_id, l.source, l.year, l.make, l.model,
-                   l.price, l.odometer, l.posted_at,
-                   nm.composite_id AS has_nm
-            FROM listings l
+            SELECT l.composite_id, l.price FROM listings l
             LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id
-            WHERE (nm.composite_id IS NULL OR nm.basis IS NULL OR nm.basis='estimate')
+            WHERE (nm.composite_id IS NULL OR nm.price_at_score IS NULL
+                   OR nm.price_at_score <> l.price)
               AND l.year IS NOT NULL AND l.make IS NOT NULL AND l.model IS NOT NULL
-              AND l.is_salvage = FALSE AND l.price IS NOT NULL
-            ORDER BY l.first_seen_at DESC LIMIT 500
-        """).fetchall()
-        # INSTANT pass — estimate everything that has no score row at all,
-        # so nothing shows blank while the slow verified scorer catches up.
-        now = datetime.now(timezone.utc).isoformat()
-        weights = CONFIG.get("source_weights", {})
-        for r in rows:
-            try:
-                if r["has_nm"]:
-                    continue  # already carries at least an estimate
-                est = instant_estimate(r["year"], r["make"], r["model"],
-                                       r["price"], r["odometer"], conn=conn)
-                if not est:
-                    continue
-                avg = float(est["avg"])
-                discount = (avg - r["price"]) / avg if avg else 0.0
-                weight = weights.get(r["source"], 1.0)
-                fresh = _freshness_factor(r["posted_at"])
-                score = max(0.0, discount) * 100 * weight * fresh
-                note = (f"[{r['source']}] {r['year']} {r['make']} {r['model']}"
-                        + f" listed ${r['price']:,} vs est. value ${avg:,.0f}"
-                        + f" (peers={est['n']}, score={score:.1f})")
-                _record_score(conn, r["composite_id"], avg, est["n"],
-                              discount * 100, score, "estimate", note, now)
-            except Exception as e:
-                print(f"[backfill instant] {e}", file=sys.stderr)
+              AND l.price IS NOT NULL
+            ORDER BY l.first_seen_at DESC LIMIT ?""", (limit,)).fetchall()
         queued = 0
         for r in rows:
             if enqueue_score(conn, r["composite_id"], r["price"]):

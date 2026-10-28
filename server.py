@@ -1945,6 +1945,20 @@ def api_saved_searches_create():
     if not isinstance(filter_obj, dict):
         return jsonify({"error": "filter must be an object"}), 400
     notify = 1 if body.get("notify_enabled") else 0
+    import plans
+    lim = plans.limits(u.plan)
+    with sniper.db() as conn:
+        have = int(conn.execute("SELECT COUNT(*) FROM saved_searches WHERE user_id = ?",
+                                (u.id,)).fetchone()[0])
+    if have >= lim["saved_searches"]:
+        return jsonify({"error": f"{plans.display_name(u.plan)} plan allows "
+                                 f"{lim['saved_searches']} saved searches",
+                        "limit": lim["saved_searches"], "current_plan": u.plan,
+                        "upgrade_to": "pro" if u.plan != "pro" else None}), 402
+    if str(filter_obj.get("risk_mode", "")).lower() == "aggressive" \
+            and not lim["aggressive_mode"]:
+        return jsonify({"error": "aggressive mode is a Pro feature",
+                        "required_plan": "pro"}), 402
     with _db.transaction() as conn:
         cur = conn.cursor()
         if _db.IS_PG:
@@ -2069,24 +2083,22 @@ def api_me_alert_channels_test():
 @app.get("/api/me/alerts")
 @auth.login_required
 def api_me_alerts():
-    """This user's saved-search alert tray, newest first."""
+    """This user's personalized matches (new listings and price drops that
+    met one of their saved searches), newest first."""
     u = auth.current_user()
     limit = max(1, min(200, int(request.args.get("limit", 50))))
-    with _db.transaction() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT ua.id, ua.seen, ua.created_at, ua.saved_search_id, "
-            "       s.name AS saved_search_name, a.discount_pct, a.score, "
-            "       a.comp_avg, a.comp_n, a.basis, l.composite_id, l.title, "
-            "       l.url, l.price, l.year, l.make, l.model, l.odometer, "
-            "       l.source, l.state, l.location "
-            "FROM user_alerts ua "
-            "JOIN alerts a ON a.id = ua.alert_id "
-            "JOIN listings l ON l.composite_id = a.composite_id "
-            "LEFT JOIN saved_searches s ON s.id = ua.saved_search_id "
-            f"WHERE ua.user_id={_PH()} ORDER BY ua.created_at DESC, ua.id DESC "
-            f"LIMIT {_PH()}", (u.id, limit))
-        rows = [dict(r) for r in cur.fetchall()]
+    with sniper.db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT m.id, m.seen, m.dismissed, m.notified, m.created_at, m.event, "
+            "  m.saved_search_id, s.name AS saved_search_name, m.discount_pct, "
+            "  m.price, m.previous_price, m.value_mid, m.profit_base, m.confidence, "
+            "  m.trust, l.composite_id, l.title, l.url, l.year, l.make, l.model, "
+            "  l.odometer, l.source, l.state, l.location, l.image_urls "
+            "FROM user_matches m "
+            "JOIN listings l ON l.composite_id = m.composite_id "
+            "LEFT JOIN saved_searches s ON s.id = m.saved_search_id "
+            "WHERE m.user_id = ? AND m.dismissed = FALSE "
+            "ORDER BY m.created_at DESC, m.id DESC LIMIT ?", (u.id, limit)).fetchall()]
     return jsonify(rows)
 
 
