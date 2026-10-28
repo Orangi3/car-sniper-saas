@@ -2121,13 +2121,23 @@ _DEAL_COLS = (
     "l.is_salvage, l.needs_work, l.is_auction, l.relist_of, l.scam_score, "
     "nm.discount_pct, nm.comp_avg AS value_mid, nm.value_low, nm.value_high, "
     "nm.comp_n, nm.evidence_class, nm.confidence, nm.trust, nm.risk_flags, "
-    "nm.refreshed_at AS valued_at")
+    "nm.refreshed_at AS valued_at, nm.evidence AS evidence_json, "
+    "l.zip, l.latitude, l.longitude, l.location_source")
 
 
-def _deal_row(r: dict, psettings: dict, plan: Optional[str]) -> dict:
+def _deal_row(r: dict, psettings: dict, plan: Optional[str],
+              home_zip: Optional[str] = None) -> dict:
+    import geo
+    import opportunity
     import plans
     import profit as profit_mod
     d = dict(r)
+    try:
+        ev = json.loads(d.pop("evidence_json", None) or "{}")
+    except ValueError:
+        ev = {}
+    d["dealer_share"] = ev.get("dealer_share") or 0.0
+    d["distance_mi"] = geo.distance_mi(home_zip, d.get("latitude"), d.get("longitude"))
     try:
         imgs = json.loads(d.pop("image_urls") or "[]")
     except ValueError:
@@ -2139,14 +2149,33 @@ def _deal_row(r: dict, psettings: dict, plan: Optional[str]) -> dict:
         d["risk_flags"] = []
     pr = profit_mod.compute(d.get("price"), d.get("value_low"), d.get("value_mid"),
                             d.get("value_high"), d.get("evidence_class"), psettings,
-                            scenarios=plans.limits(plan)["profit_scenarios"])
+                            scenarios=plans.limits(plan)["profit_scenarios"],
+                            distance_mi=d["distance_mi"], dealer_share=d["dealer_share"])
     d["profit"] = ({k: v["profit"] for k, v in pr["scenarios"].items()} if pr else None)
+    # ranking always uses the conservative case, whatever the plan shows
+    cons = profit_mod.compute(d.get("price"), d.get("value_low"), d.get("value_mid"),
+                              d.get("value_high"), d.get("evidence_class"), psettings,
+                              distance_mi=d["distance_mi"], dealer_share=d["dealer_share"])
+    d["opportunity"] = opportunity.score(
+        d, cons["scenarios"]["conservative"]["profit"] if cons else None, d["distance_mi"])
     return d
+
+
+def _rank(rows: list[dict]) -> list[dict]:
+    """Highest risk-adjusted profit first; unvalued last."""
+    return sorted(rows, key=lambda d: -(d["opportunity"]["risk_adjusted_profit"]
+                                        if d["opportunity"]["risk_adjusted_profit"] is not None
+                                        else -10**9))
 
 
 def _user_ctx(conn, u):
     import profit as profit_mod
     return profit_mod.load_user_settings(conn, u.id), u.plan
+
+
+def _territory(conn, uid) -> tuple[Optional[str], Optional[int]]:
+    r = conn.execute("SELECT home_zip, radius_mi FROM users WHERE id = ?", (uid,)).fetchone()
+    return (r[0], r[1]) if r else (None, None)
 
 
 @app.get("/api/deals")
@@ -2157,6 +2186,7 @@ def api_deals():
     limit = max(1, min(100, int(request.args.get("limit", 30))))
     with sniper.db() as conn:
         psettings, plan = _user_ctx(conn, u)
+        home_zip, home_radius = _territory(conn, u.id)
         if feed == "mine":
             rows = conn.execute(
                 f"SELECT {_DEAL_COLS}, m.id AS match_id, m.event, m.created_at AS matched_at, "
@@ -2195,16 +2225,23 @@ def api_deals():
             lim = plans.limits(plan)
             rows = []
             for r in cands:
-                d = _deal_row(dict(r), psettings, plan)
+                d = _deal_row(dict(r), psettings, plan, home_zip)
                 opp = {**d, "est_profit": (d.get("profit") or {}).get("base"),
-                       "event": "new"}
+                       "event": "new", "_home_zip": home_zip, "_home_radius": home_radius}
                 if ssa.criteria_match(f, opp, lim)[0]:
                     rows.append(r)
                 if len(rows) >= limit:
                     break
         else:
             return jsonify({"error": "feed must be mine|trusted|risk|search"}), 400
-    return jsonify([_deal_row(dict(r), psettings, plan) for r in rows])
+    out = [_deal_row(dict(r), psettings, plan, home_zip) for r in rows]
+    if feed in ("trusted", "risk") and home_zip and home_radius:
+        # shared feeds respect the user's territory too
+        out = [d for d in out if d["distance_mi"] is not None
+               and d["distance_mi"] <= home_radius]
+    if feed != "mine":                    # "mine" stays newest-first
+        out = _rank(out)
+    return jsonify(out)
 
 
 @app.get("/api/deals/<path:cid>")
@@ -2226,7 +2263,8 @@ def api_deal_detail(cid: str):
             "SELECT price, event, observed_at FROM listing_prices "
             "WHERE composite_id = ? ORDER BY observed_at, id", (cid,)).fetchall()]
         psettings, plan = _user_ctx(conn, u)
-    d = _deal_row(dict(r), psettings, plan)
+        home_zip, _ = _territory(conn, u.id)
+    d = _deal_row(dict(r), psettings, plan, home_zip)
     for k in ("confidence_reasons", "evidence"):
         try:
             d[k] = json.loads(d.get(k) or ("[]" if k == "confidence_reasons" else "{}"))
@@ -2237,7 +2275,8 @@ def api_deal_detail(cid: str):
     d["profit_detail"] = profit_mod.compute(
         d.get("price"), d.get("value_low"), d.get("value_mid"), d.get("value_high"),
         d.get("evidence_class"), psettings,
-        scenarios=plans.limits(plan)["profit_scenarios"])
+        scenarios=plans.limits(plan)["profit_scenarios"],
+        distance_mi=d["distance_mi"], dealer_share=d["dealer_share"])
     d["plan"] = {"plan": plan, "name": plans.display_name(plan), **plans.limits(plan)}
     return jsonify(d)
 
@@ -2276,6 +2315,37 @@ def api_deal_action(cid: str):
         conn.execute("UPDATE user_matches SET seen = TRUE WHERE user_id = ? "
                      "AND composite_id = ?", (u.id, cid))
     return jsonify({"ok": True, "status": status})
+
+
+@app.get("/api/me/territory")
+@auth.login_required
+def api_territory_get():
+    u = auth.current_user()
+    with sniper.db() as conn:
+        z, r = _territory(conn, u.id)
+    return jsonify({"home_zip": z, "radius_mi": r})
+
+
+@app.post("/api/me/territory")
+@auth.login_required
+def api_territory_post():
+    """Set the buying territory: a US ZIP and a radius (10-500 miles)."""
+    import geo
+    u = auth.current_user()
+    body = request.get_json(silent=True) or {}
+    z = str(body.get("home_zip") or "").strip()[:5]
+    try:
+        radius = int(body.get("radius_mi") or 0)
+    except (TypeError, ValueError):
+        radius = 0
+    if z and not geo.valid_zip(z):
+        return jsonify({"error": "unknown US ZIP code"}), 400
+    if z and not 10 <= radius <= 500:
+        return jsonify({"error": "radius must be 10-500 miles"}), 400
+    with sniper.db() as conn:
+        conn.execute("UPDATE users SET home_zip = ?, radius_mi = ? WHERE id = ?",
+                     (z or None, radius if z else None, u.id))
+    return api_territory_get()
 
 
 @app.get("/api/me/profit_settings")
@@ -2357,6 +2427,15 @@ def api_admin_usage():
             "ORDER BY est_cost_cents DESC", (month,))]
         jq = __import__("jobqueue").stats()
     return jsonify({"since": month, "rows": rows, "jobs": jq})
+
+
+@app.get("/api/admin/eval/report")
+@auth.admin_required
+def api_admin_eval_report():
+    """Real-world evaluation metrics (evaluation.py). ?fixtures=1 includes
+    synthetic demo rows and labels the report accordingly."""
+    import evaluation
+    return jsonify(evaluation.report(include_fixtures=request.args.get("fixtures") == "1"))
 
 
 @app.get("/m")

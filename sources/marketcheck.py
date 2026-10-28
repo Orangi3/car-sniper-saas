@@ -1,19 +1,13 @@
 """
-sources/marketcheck.py — MarketCheck API (covers Cars.com / Autotrader / CarGurus).
+sources/marketcheck.py — MarketCheck dealer inventory (Inventory Search API).
 
-This is the LEGAL way to get listings from sites that prohibit scraping.
-MarketCheck licenses dealer inventory feeds from Cars.com, Autotrader,
-CarGurus, and thousands of independent dealer sites — and exposes them via
-a single REST API.
+DEALER listings at dealer RETAIL asking prices. Not a private-party deal
+source; useful mainly as clearly-labeled retail comparables. For private
+sellers see marketcheck_fsbo.py and DATA_PROVIDER_DECISION.md.
 
-To enable:
-  1. Sign up at https://www.marketcheck.com/automotive/cars-api
-     (free trial ~250 calls; paid plans from ~$50/mo for personal use)
-  2. Set environment variable:
-       export MARKETCHECK_API_KEY=...
-  3. (Optional) Add marketcheck block to config with zip + radius_mi.
-
-If the env var isn't set, this source disables itself silently.
+Needs MARKETCHECK_API_KEY. Pricing and terms: see DATA_PROVIDER_DECISION.md
+(do not rely on prices quoted in older code comments). Commercial use is
+fail-closed until a signed agreement reference is set (same Terms as FSBO).
 """
 from __future__ import annotations
 
@@ -26,8 +20,10 @@ from .base import (NormalizedListing, extract_make_model, extract_miles)
 
 SOURCE_ID = "marketcheck"
 SOURCE_NAME = "MarketCheck (Cars.com/Autotrader/CarGurus)"
-# Data-licensing class (see SOURCES.md): Paid licensed API; caching/redistribution governed by your MarketCheck contract.
-LICENSING = "licensed_api"
+# Data-licensing class (see SOURCES.md): licensed API whose public Terms restrict
+# persistent storage; needs a signed agreement covering our use before paid use.
+LICENSING = "requires_agreement"
+AGREEMENT_ENV = "MARKETCHECK_COMMERCIAL_AGREEMENT"
 
 ACTIVE_URL = "https://api.marketcheck.com/v2/search/car/active"
 
@@ -60,8 +56,14 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         "include_relevant_links": "true",
         "price_range": f"{cfg.get('min_price', 1500)}-{cfg.get('max_price', 60000)}",
     }
+    import provider_budget
     rep = health.report(SOURCE_ID)
+    if provider_budget.remaining(SOURCE_ID) <= 0:
+        rep.retry_after_s = provider_budget.seconds_to_next_month()
+        rep.record("active", health.RATE_LIMITED, detail="monthly call budget exhausted")
+        return []
     r = rep.fetch("active", ACTIVE_URL, params=params, timeout=30)
+    provider_budget.record(SOURCE_ID)
     if r is None:
         return []
     try:
@@ -94,7 +96,8 @@ def poll(cfg: dict) -> list[NormalizedListing]:
                 "drivetrain": build.get("drivetrain"),
                 "exterior_color": it.get("exterior_color"),
                 "dealer_name": dealer.get("name"),
-                "source_site": it.get("source"),  # cars.com / autotrader / etc
+                "source_site": it.get("source"),
+                "price_kind": "dealer_retail_asking",
                 "carfax_1_owner": it.get("carfax_1_owner"),
                 "carfax_clean_title": it.get("carfax_clean_title"),
             },

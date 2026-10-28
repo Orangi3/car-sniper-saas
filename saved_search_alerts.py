@@ -26,7 +26,13 @@ Filter keys (all optional):
   hide_dealer · hide_auction · hide_salvage · min_discount_pct (default 15)
   · min_profit · min_confidence (low|medium|high; default medium) ·
   risk_mode (conservative|aggressive) · allow_needs_work · allow_salvage ·
-  price_drops (default true)
+  price_drops (default true) · zip + radius_mi (override the user's buying
+  territory) · include_unknown_location
+
+Territory: when the search or the user has a ZIP + radius, a listing matches
+only if its coordinates (provider lat/lon or the centroid of a provider ZIP)
+are within the radius. Listings with unknown location are excluded unless
+the search sets include_unknown_location. Same-state is not enough.
 """
 from __future__ import annotations
 
@@ -124,6 +130,15 @@ def criteria_match(f: dict, opp: dict, lim: dict) -> tuple[bool, str]:
     want = CONF_RANK.get(str(f.get("min_confidence") or default_conf).lower(), 2)
     if CONF_RANK.get(opp.get("confidence") or "insufficient", 0) < want:
         return False, "confidence below search minimum"
+    terr_zip = f.get("zip") or opp.get("_home_zip")
+    terr_radius = _num(f.get("radius_mi")) or opp.get("_home_radius")
+    if terr_zip and terr_radius:
+        import geo
+        d = geo.distance_mi(terr_zip, opp.get("latitude"), opp.get("longitude"))
+        if d is None and not _flag(f, "include_unknown_location"):
+            return False, "location unknown"
+        if d is not None and d > float(terr_radius):
+            return False, "outside buying territory"
     eff = dict(f)
     if _num(eff.get("min_discount_pct")) is None:
         eff["min_discount_pct"] = DEFAULT_MIN_DISCOUNT
@@ -156,7 +171,7 @@ def evaluate(conn, opp: dict) -> list[dict]:
 
     rows = [dict(r) for r in conn.execute(
         "SELECT s.id, s.user_id, s.filter_json, u.plan, u.ntfy_topic, "
-        "  u.alert_webhook, u.notify_phone, u.profit_settings "
+        "  u.alert_webhook, u.notify_phone, u.profit_settings, u.home_zip, u.radius_mi "
         "FROM saved_searches s JOIN users u ON u.id = s.user_id "
         "WHERE s.notify_enabled = TRUE ORDER BY s.user_id, s.created_at, s.id"
     ).fetchall()]
@@ -185,10 +200,15 @@ def evaluate(conn, opp: dict) -> list[dict]:
             psettings = json.loads(searches[0].get("profit_settings") or "{}")
         except ValueError:
             psettings = {}
+        import geo
+        home_zip, home_radius = searches[0].get("home_zip"), searches[0].get("radius_mi")
+        dist = geo.distance_mi(home_zip, opp.get("latitude"), opp.get("longitude"))
         pr = profit_mod.compute(opp.get("price"), opp.get("value_low"),
                                 opp.get("value_mid"), opp.get("value_high"),
-                                opp.get("evidence_class"), psettings, scenarios=False)
-        opp_u = {**opp, "event": u_event,
+                                opp.get("evidence_class"), psettings, scenarios=False,
+                                distance_mi=dist, dealer_share=opp.get("dealer_share") or 0)
+        opp_u = {**opp, "event": u_event, "distance_mi": dist,
+                 "_home_zip": home_zip, "_home_radius": home_radius,
                  "est_profit": pr["scenarios"]["base"]["profit"] if pr else None}
 
         hit = None

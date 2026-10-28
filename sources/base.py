@@ -31,6 +31,10 @@ class NormalizedListing:
     odometer: Optional[int] = None
     location: Optional[str] = None              # human-readable
     state: Optional[str] = None                 # 2-letter
+    # Structured location from the provider only (never parsed from text)
+    zip: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     description: str = ""
     posted_at: Optional[str] = None             # ISO 8601
     is_dealer: bool = False

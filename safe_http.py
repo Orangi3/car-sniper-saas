@@ -10,9 +10,12 @@ to an internal address. So every delivery:
      public unicast address (loopback, RFC1918, link-local / cloud
      metadata 169.254.0.0/16, CGNAT 100.64/10, ULA, multicast, reserved,
      IPv4-mapped forms of those…);
-  3. connects to the exact IP it just validated (TLS SNI + certificate
+  3. connects only to the exact IPs it just validated (TLS SNI + certificate
      verification still use the hostname), so a second DNS answer can't
-     swap the destination;
+     swap the destination. Validated addresses are tried in resolver order
+     and the next one is used only if a connection could not be
+     established (dual-stack hosts whose first address is unreachable);
+     once connected, the request is never re-sent elsewhere;
   4. never follows redirects (a 3xx is a failed delivery);
   5. bounds request size, response read size and time.
 
@@ -88,30 +91,40 @@ def check_url(url: str, *, allow_http: bool = False) -> tuple[str, str, int, str
     return scheme, host, port, path
 
 
-def resolve_checked(host: str, port: int,
-                    policy: Callable[[ipaddress._BaseAddress], bool] = is_public_ip) -> str:
-    """Resolve `host` now; every returned address must pass `policy`.
-    Returns the first address to connect to."""
+def resolve_all_checked(host: str, port: int,
+                        policy: Callable[[ipaddress._BaseAddress], bool] = is_public_ip
+                        ) -> list[str]:
+    """Resolve `host` now; EVERY returned address must pass `policy` (one
+    bad answer rejects the name). Returns the distinct validated addresses
+    in resolver order."""
     try:
         ip_literal = ipaddress.ip_address(host)
+    except ValueError:
+        ip_literal = None
+    if ip_literal is not None:
         if not policy(ip_literal):
             raise UnsafeDestination("destination address is not public")
-        return str(ip_literal)
-    except ValueError:
-        pass
+        return [str(ip_literal)]
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror:
         raise UnsafeDestination("host does not resolve") from None
-    addrs = []
+    addrs: list[str] = []
     for info in infos:
         ip = ipaddress.ip_address(info[4][0].split("%")[0])
         if not policy(ip):
             raise UnsafeDestination("host resolves to a non-public address")
-        addrs.append(str(ip))
+        if str(ip) not in addrs:
+            addrs.append(str(ip))
     if not addrs:
         raise UnsafeDestination("host does not resolve")
-    return addrs[0]
+    return addrs
+
+
+def resolve_checked(host: str, port: int,
+                    policy: Callable[[ipaddress._BaseAddress], bool] = is_public_ip) -> str:
+    """First validated address (see resolve_all_checked)."""
+    return resolve_all_checked(host, port, policy)[0]
 
 
 def validate_destination(url: str) -> Optional[str]:
@@ -134,32 +147,49 @@ def post_json(url: str, payload: dict, *, timeout: float = TIMEOUT_S,
     body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
     if len(body) > MAX_REQUEST_BYTES:
         raise UnsafeDestination(f"payload {len(body)} bytes exceeds {MAX_REQUEST_BYTES}")
-    ip = resolve_checked(host, port, policy)
+    ips = resolve_all_checked(host, port, policy)
 
     t = urllib3.Timeout(connect=timeout, read=timeout)
     host_header = host if port in (80, 443) else f"{host}:{port}"
-    if scheme == "https":
-        ctx = ssl.create_default_context()
-        pool = urllib3.HTTPSConnectionPool(
-            ip, port=port, timeout=t, retries=False, maxsize=1,
-            server_hostname=host, assert_hostname=host, ssl_context=ctx)
-    else:
-        pool = urllib3.HTTPConnectionPool(ip, port=port, timeout=t,
-                                          retries=False, maxsize=1)
-    try:
-        resp = pool.urlopen(
-            "POST", path, body=body, redirect=False, retries=False,
-            preload_content=False,
-            headers={"Host": host_header, "Content-Type": "application/json",
-                     "User-Agent": "CarSniper-Webhook/1"})
+    resp = None
+    connect_errors = []
+    for ip in ips:
+        if scheme == "https":
+            ctx = ssl.create_default_context()
+            pool = urllib3.HTTPSConnectionPool(
+                ip, port=port, timeout=t, retries=False, maxsize=1,
+                server_hostname=host, assert_hostname=host, ssl_context=ctx)
+        else:
+            pool = urllib3.HTTPConnectionPool(ip, port=port, timeout=t,
+                                              retries=False, maxsize=1)
         try:
-            resp.read(MAX_RESPONSE_BYTES)   # bounded; content ignored
+            resp = pool.urlopen(
+                "POST", path, body=body, redirect=False, retries=False,
+                preload_content=False,
+                headers={"Host": host_header, "Content-Type": "application/json",
+                         "User-Agent": "CarSniper-Webhook/1"})
+            try:
+                resp.read(MAX_RESPONSE_BYTES)   # bounded; content ignored
+            finally:
+                resp.release_conn()
+            break
+        except (urllib3.exceptions.NewConnectionError,
+                urllib3.exceptions.ConnectTimeoutError,
+                urllib3.exceptions.NameResolutionError) as e:
+            # No connection was established: the payload never left, so the
+            # next validated address may be tried.
+            connect_errors.append(f"{ip}: {type(e).__name__}")
+            continue
+        except urllib3.exceptions.HTTPError as e:
+            # Connected (the request may have been received): never re-send
+            # to another address.
+            raise DeliveryError(f"network error: {type(e).__name__}",
+                                retryable=True) from None
         finally:
-            resp.release_conn()
-    except urllib3.exceptions.HTTPError as e:
-        raise DeliveryError(f"network error: {type(e).__name__}", retryable=True) from None
-    finally:
-        pool.close()
+            pool.close()
+    if resp is None:
+        raise DeliveryError("network error: could not connect ("
+                            + "; ".join(connect_errors) + ")", retryable=True)
 
     status = resp.status
     if 200 <= status < 300:

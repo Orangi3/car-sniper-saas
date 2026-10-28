@@ -18,7 +18,8 @@ def _fresh_runner():
 def test_all_migrations_apply_and_rerun_is_noop(temp_db_path):
     runner = _fresh_runner()
     first = runner.run_pending(verbose=False)
-    assert first[0] == "0000_legacy_schema" and first[-1].startswith("0010_")
+    assert first == [m[0] for m in runner._list_migrations()]
+    assert first[0] == "0000_legacy_schema" and len(first) >= 12
     assert runner.run_pending(verbose=False) == []
 
 

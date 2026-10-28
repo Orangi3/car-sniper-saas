@@ -89,6 +89,8 @@ def poll(cfg: dict) -> list[NormalizedListing]:
     min_price = int(cfg.get("min_price", 1500))
     max_price = int(cfg.get("max_price", 60000))
 
+    # Browse API geography = the pickup filters (the old `buyerPostalCode`
+    # was a parameter of the decommissioned Finding API and was ignored).
     params = {
         "category_ids": EBAY_MOTORS_CATEGORY,
         "limit": 200,
@@ -97,13 +99,16 @@ def poll(cfg: dict) -> list[NormalizedListing]:
             f"price:[{min_price}..{max_price}],"
             "priceCurrency:USD,"
             "itemLocationCountry:US,"
-            "buyingOptions:{FIXED_PRICE|AUCTION}"
+            "buyingOptions:{FIXED_PRICE|AUCTION},"
+            "deliveryOptions:{SELLER_ARRANGED_LOCAL_PICKUP},"
+            f"pickupCountry:US,pickupPostalCode:{zip_code},"
+            f"pickupRadius:{radius},pickupRadiusUnit:mi"
         ),
-        # Local-pickup-style geo filter (eBay uses 'distance' for sellers)
-        "buyerPostalCode": zip_code,
     }
     headers = {
         "Authorization": f"Bearer {token}",
+        # Documented value; a Motors-specific marketplace id was not confirmed.
+        "X-EBAY-C-MARKETPLACE-ID": os.environ.get("EBAY_MARKETPLACE_ID", "EBAY_US"),
         "X-EBAY-C-ENDUSERCTX": f"contextualLocation=country=US,zip={zip_code}",
         "Accept": "application/json",
     }
@@ -130,10 +135,6 @@ def poll(cfg: dict) -> list[NormalizedListing]:
                     continue
             except (TypeError, ValueError):
                 pass
-        elif loc.get("stateOrProvince") and loc["stateOrProvince"] not in {
-            "AL", "MS", "GA", "TN", "FL"
-        }:
-            continue  # outside the SE region — skip if no distance returned
 
         try:
             price = int(float(it.get("price", {}).get("value", 0)))
@@ -172,6 +173,8 @@ def poll(cfg: dict) -> list[NormalizedListing]:
             url=it.get("itemWebUrl", ""), title=title,
             price=price, year=year, make=mk, model=mdl, odometer=miles,
             location=loc.get("city"), state=loc.get("stateOrProvince"),
+            zip=(str(loc.get("postalCode"))[:5] if loc.get("postalCode")
+                 and str(loc.get("postalCode"))[:5].isdigit() else None),
             description=it.get("shortDescription") or "",
             posted_at=it.get("itemCreationDate"),
             is_dealer=bool(it.get("seller", {}).get("feedbackScore", 0) and

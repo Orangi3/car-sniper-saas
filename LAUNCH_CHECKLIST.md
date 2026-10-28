@@ -5,7 +5,11 @@ Companion to `DEPLOY.md` (host build), `RUNBOOK.md` (operations) and
 
 ## 1. Data licensing (blocking)
 
-- [ ] Counsel has reviewed `SOURCES.md`.
+- [ ] Counsel has reviewed `SOURCES.md` and `DATA_PROVIDER_DECISION.md`.
+- [ ] MarketCheck: only after a **signed** agreement covering central polling,
+      stored listings/price history and pushed alerts, set
+      `MARKETCHECK_COMMERCIAL_AGREEMENT=<agreement reference>`; set
+      `MARKETCHECK_FSBO_MONTHLY_CALL_BUDGET` (default 4,000) to stay inside the plan.
 - [ ] `SNIPER_COMMERCIAL_MODE=1` in `/etc/sniper/env`.
 - [ ] At least one licensed listing feed is contracted and configured
       (`EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` and/or `MARKETCHECK_API_KEY`),
@@ -17,7 +21,7 @@ Companion to `DEPLOY.md` (host build), `RUNBOOK.md` (operations) and
 ## 2. Database + migrations
 
 - [ ] `DATABASE_URL` points at PostgreSQL; `python -m migrations.runner`
-      applied 0000–0010 (`SELECT id FROM schema_migrations ORDER BY id`).
+      applied 0000–0012 (`SELECT id FROM schema_migrations ORDER BY id`).
 - [ ] Full test suite passes against Postgres on the release commit:
       `SNIPER_TEST_PG_URL=postgresql://…/postgres python -m pytest -q`.
 - [ ] Nightly encrypted backup job (`sniper-backup.timer`) has run, and a
@@ -75,7 +79,23 @@ Never set in production: `SNIPER_TEST_PG_URL`.
       lease (default 120 s); unfinished alerts are delivered, rarely twice.
 - [ ] Logs: `journalctl -u sniper-worker -u sniper-scheduler -u sniper-web`.
 
-## 7. Product checks on the production host
+## 7. Preflight gate
+
+- [ ] `python -m preflight --target free` exits 0 before inviting any beta user.
+- [ ] `python -m preflight --target paid` exits 0 before enabling live billing.
+      It checks configuration, migrations, scheduler heartbeat, worker
+      backlog, dead letters, backups, each source's verified health,
+      licensing blockers, licensed data freshness and live Stripe config.
+
+## 8. Territory and budget controls
+
+- [ ] Launch territory set (`zip`/`radius_mi` in config or overrides) and
+      beta signups limited to users inside it (data cost is per territory,
+      see `UNIT_ECONOMICS.md`).
+- [ ] `/api/admin/usage` shows provider calls (`provider:marketcheck_fsbo`)
+      within budget after the first week.
+
+## 9. Product checks on the production host
 
 - [ ] Browser smoke test passes against staging (`tests/browser/`).
 - [ ] Create a Lite and a Pro test account; run onboarding at `/m`; confirm

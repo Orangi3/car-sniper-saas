@@ -24,7 +24,9 @@ const SHOTS = process.env.SHOTS || ".";
   // new user → onboarding
   await page.waitForSelector("#wizard");
   await page.fill("#f-make", "Toyota"); await page.fill("#f-model", "Camry");
-  await page.click("#next"); await page.click("#next");
+  await page.click("#next");
+  await page.fill("#f-zip", "35401"); await page.fill("#f-radius_mi", "75");
+  await page.click("#next");
   await page.fill("#f-min_discount_pct", "12"); await page.click("#next");
   await page.click("#gen-topic"); await page.waitForTimeout(400);
   if (!/ntfy/.test(await page.textContent("#topic-out"))) fail("topic not generated");
@@ -38,11 +40,13 @@ const SHOTS = process.env.SHOTS || ".";
   const titles = await page.$$eval("article .title", els => els.map(e => e.textContent));
   if (!titles.some(t => /8,100|7,600/.test(t))) fail("trusted feed missing demo deal: " + titles);
   if (titles.some(t => /rebuilt|5,200/.test(t))) fail("risky car in trusted feed");
+  if (titles.some(t => /6,500/.test(t))) fail("car outside the 75 mi territory shown");
+  if (!(await page.textContent("#main")).includes("mi away")) fail("distance not shown");
   await page.screenshot({ path: SHOTS + "/m-trusted.png", fullPage: true });
   await page.click("article [data-open]");
   await page.waitForSelector("#sheet.open h3");
   const sheet = await page.textContent("#sheet-body");
-  for (const want of ["Market value", "Comparables used", "Profit estimate", "Price history",
+  for (const want of ["Market value", "Why it ranks here", "Comparables used", "Profit estimate", "Price history",
                       "price change", "not completed sales"])
     if (!sheet.includes(want)) fail("detail sheet missing: " + want);
   await page.screenshot({ path: SHOTS + "/m-detail.png", fullPage: true });

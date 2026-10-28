@@ -83,6 +83,9 @@ class Valuation:
     comps: list[dict] = field(default_factory=list)
     mileage_adjusted: bool = False
     slope_per_mile: Optional[float] = None
+    # share of the comparables that are DEALER retail asking prices; the
+    # profit model discounts resale accordingly (dealer asks ≠ private sales)
+    dealer_share: float = 0.0
 
     @property
     def basis(self) -> str:
@@ -94,7 +97,8 @@ class Valuation:
                 "value_mid": self.value_mid, "value_high": self.value_high,
                 "n": self.n, "confidence": self.confidence, "reasons": self.reasons,
                 "comps": self.comps, "mileage_adjusted": self.mileage_adjusted,
-                "slope_per_mile": self.slope_per_mile, "basis": self.basis}
+                "slope_per_mile": self.slope_per_mile, "basis": self.basis,
+                "dealer_share": self.dealer_share}
 
 
 # ---------- small helpers --------------------------------------------------
@@ -417,6 +421,8 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
         if outliers:
             reasons.append(f"{outliers} outlier peer(s) excluded")
     v.mileage_adjusted, v.slope_per_mile = adjusted, slope
+    if v.evidence_class == ASKING and pairs:
+        v.dealer_share = round(sum(1 for _, _, c in pairs if c.get("is_dealer")) / len(pairs), 2)
     return _finish(v, points, reasons)
 
 
@@ -446,4 +452,5 @@ def load_peers(conn, target: dict) -> list[dict]:
 
 def evidence_json(v: Valuation) -> str:
     return json.dumps({"comps": v.comps, "mileage_adjusted": v.mileage_adjusted,
-                       "slope_per_mile": v.slope_per_mile}, default=str)
+                       "slope_per_mile": v.slope_per_mile,
+                       "dealer_share": v.dealer_share}, default=str)

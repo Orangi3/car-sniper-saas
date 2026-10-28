@@ -15,7 +15,11 @@ from tests.conftest import register, login, set_plan
 
 
 def _fake_dns(monkeypatch, mapping):
+    real = socket.getaddrinfo
+
     def gai(host, port, *a, **k):
+        if host not in mapping:        # IP literals urllib3 resolves itself
+            return real(host, port, *a, **k)
         ips = mapping[host]
         ips = ips if isinstance(ips, list) else [ips]
         fam = lambda ip: socket.AF_INET6 if ":" in ip else socket.AF_INET
@@ -124,7 +128,9 @@ def test_redirect_to_metadata_service_is_not_followed():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     _Redirector.hits.clear()
     try:
-        url = f"http://localhost:{srv.server_address[1]}/hook"
+        # IPv4 literal matching the bind address: deterministic everywhere
+        # ("localhost" resolves to ::1 first on GitHub's Ubuntu runners).
+        url = f"http://127.0.0.1:{srv.server_address[1]}/hook"
         # test-only policy lets us reach the local server; the redirect target
         # must still never be requested.
         with pytest.raises(safe_http.DeliveryError) as ei:
@@ -194,3 +200,38 @@ def test_removed_channel_skips_delivery(client, monkeypatch):
                         lambda url, payload, **k: sent.append(url) or 200)
     done = jobqueue.drain({"notify": notifications.deliver_job})
     assert done[0]["status"] == "done" and sent == []
+
+
+def test_dual_stack_falls_back_to_next_validated_address(monkeypatch):
+    """Reproduces the CI failure: a name whose FIRST address has no listener
+    (like ::1 for "localhost" on GitHub runners). The client must move on to
+    the next validated address and still refuse the redirect."""
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Redirector)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    _Redirector.hits.clear()
+    port = srv.server_address[1]
+    # 127.0.0.2 routes to loopback on Linux but nothing listens there
+    _fake_dns(monkeypatch, {"dual.example.com": ["127.0.0.2", "127.0.0.1"]})
+    try:
+        with pytest.raises(safe_http.DeliveryError) as ei:
+            safe_http.post_json(f"http://dual.example.com:{port}/hook", {"a": 1},
+                                allow_http=True, policy=lambda ip: True)
+        assert ei.value.status == 302 and ei.value.retryable is False
+        assert _Redirector.hits == ["/hook"]
+    finally:
+        srv.shutdown()
+
+
+def test_unreachable_everywhere_is_a_retryable_network_error_not_a_redirect(monkeypatch):
+    _fake_dns(monkeypatch, {"down.example.com": ["127.0.0.2", "127.0.0.3"]})
+    with pytest.raises(safe_http.DeliveryError) as ei:
+        safe_http.post_json("http://down.example.com:9/hook", {"a": 1},
+                            allow_http=True, policy=lambda ip: True, timeout=2)
+    assert ei.value.retryable is True and ei.value.status is None
+    assert "could not connect" in str(ei.value)
+
+
+def test_fallback_never_reaches_an_unvalidated_address(monkeypatch):
+    _fake_dns(monkeypatch, {"mix.example.com": ["93.184.216.34", "10.0.0.9"]})
+    with pytest.raises(safe_http.UnsafeDestination):
+        safe_http.resolve_all_checked("mix.example.com", 443)

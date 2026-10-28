@@ -34,7 +34,8 @@ def L(sid, price, odo, title="2015 Toyota Camry SE", desc="clean title"):
         source="craigslist", source_id=f"demo:{sid}",
         url=f"https://example.com/demo/{sid}", title=f"{title} - ${price:,}",
         price=price, year=2015, make="Toyota", model="Camry", odometer=odo,
-        description=desc, state="AL", location="Tuscaloosa", is_cash_only=True)
+        description=desc, state="AL", location="Tuscaloosa", zip="35401",
+        is_cash_only=True)
 
 
 peers = [L(f"p{i}", p, 100000 + i * 7000) for i, p in
@@ -43,5 +44,8 @@ sniper.ingest(peers)
 sniper.ingest([L("deal", 8100, 128000), L("risky", 5200, 131000, desc="rebuilt title")])
 jobqueue.drain({"score": sniper.score_job})
 sniper.ingest([L("deal", 7600, 128000)])          # price drop
+far = L("far", 6500, 126000)
+far.zip, far.location = "36602", "Mobile"          # ~176 mi from 35401
+sniper.ingest([far])
 jobqueue.drain({"score": sniper.score_job})
 print("seeded")

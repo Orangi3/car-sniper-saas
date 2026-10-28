@@ -219,6 +219,26 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
     return out
 
 
+def _location(l: NormalizedListing) -> tuple:
+    """(zip, lat, lon, location_source) from STRUCTURED provider fields only.
+    A provider ZIP without coordinates gets its ZIP-centroid (geo.py)."""
+    z = (str(l.zip)[:5] if getattr(l, "zip", None) else None)
+    if z and not z.isdigit():
+        z = None
+    lat, lon = getattr(l, "latitude", None), getattr(l, "longitude", None)
+    if lat is not None and lon is not None:
+        return z, float(lat), float(lon), "provider"
+    if z:
+        try:
+            import geo
+            c = geo.zip_centroid(z)
+        except Exception:
+            c = None
+        if c:
+            return z, c[0], c[1], "zip_centroid"
+    return z, None, None, None
+
+
 def _insert_listing(conn, l: NormalizedListing, now: str, scam_fn) -> None:
     cid = l.composite_id()
     sc, reasons = scam_fn(l.title, l.description, l.price, None)
@@ -239,8 +259,9 @@ def _insert_listing(conn, l: NormalizedListing, now: str, scam_fn) -> None:
                 is_salvage, is_auction, auction_end_at, bid_count,
                 buy_now_price, is_cash_only, accepts_financing,
                 scam_score, scam_reasons, image_urls, extras, vin, vehicle_key,
-                relist_of, trim, needs_work, previous_price, price_changed_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                relist_of, trim, needs_work, previous_price, price_changed_at,
+                zip, latitude, longitude, location_source)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(composite_id) DO NOTHING""",
         (cid, l.source, l.source_id, l.url, l.title,
          l.price, l.year, l.make, l.model, l.odometer, l.location, l.state,
@@ -254,7 +275,7 @@ def _insert_listing(conn, l: NormalizedListing, now: str, scam_fn) -> None:
          json.dumps(extras), vin, vehicle_key,
          relist["composite_id"] if relist else None, trim,
          bool(extras.get("needs_work")), previous_price,
-         now if previous_price else None))
+         now if previous_price else None, *_location(l)))
     conn.execute(
         "INSERT INTO listing_prices(composite_id, price, event, observed_at) "
         "VALUES (?,?,?,?)", (cid, l.price, "relist" if relist else "first_seen", now))
@@ -399,7 +420,8 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
         weight = CONFIG.get("source_weights", {}).get(l["source"], 1.0)
         score = max(0.0, discount) * 100 * weight * _freshness_factor(l.get("posted_at"))
         pr = profit_mod.compute(l["price"], v.value_low, v.value_mid, v.value_high,
-                                v.evidence_class, None, scenarios=False)
+                                v.evidence_class, None, scenarios=False,
+                                dealer_share=v.dealer_share)
         est_profit = pr["scenarios"]["base"]["profit"] if pr else None
         label = {"confirmed_sales": "sold comps"}.get(v.evidence_class, "asking comps")
         note = (f"[{l['source']}] {l['year']} {l['make']} {l['model']}"
@@ -415,7 +437,8 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
                "comp_avg": v.value_mid, "comp_n": v.n, "basis": v.basis,
                "evidence_class": v.evidence_class, "confidence": v.confidence,
                "trust": trust, "risk_flags": flags, "score": score,
-               "est_profit": est_profit, "event": event}
+               "est_profit": est_profit, "event": event,
+               "dealer_share": v.dealer_share}
 
         alert_id = None
         if _owner_alert_ok(l, v, discount, trust):
@@ -554,6 +577,8 @@ def _freshness_factor(posted_at: Optional[str]) -> float:
 DEFAULT_MIN_INTERVAL_S = {
     "craigslist": 60, "marketplace": 30, "email_imap": 120, "ebay": 300,
     "bat": 300, "hemmings": 600, "govdeals": 600, "marketcheck": 900,
+    # paid per call: 30 min ≈ 1,440 calls/month for one territory
+    "marketcheck_fsbo": 1800,
 }
 BACKOFF_BASE_S, BACKOFF_CAP_S, AUTH_RETRY_S = 60, 3600, 1800
 
