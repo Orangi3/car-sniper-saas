@@ -80,19 +80,16 @@ def _listing(sid, price, title=None, year=2015, make="Toyota", model="Tacoma",
 @pytest.fixture()
 def pipeline(app, monkeypatch):
     """sniper wired to the test DB, verified comps forced unavailable, and
-    every outbound notification captured instead of sent."""
+    an owner ntfy channel configured. Notifications become durable `notify`
+    jobs — read them back with _notify_jobs()."""
     import sniper
     import comps
-    import notifications
     monkeypatch.setattr(comps, "comps_for_listing", lambda **kw: None)
-    # Score synchronously in the test; no background scorer threads (they'd
-    # race these calls and leak into other tests' thread checks).
-    monkeypatch.setattr(sniper, "ensure_scorer_started", lambda: None)
-    sent = []
-    monkeypatch.setattr(notifications, "notify_deal",
-                        lambda deal, **kw: sent.append(("owner", deal)) or ["test"])
-    monkeypatch.setattr(notifications, "notify_user_deal",
-                        lambda deal, **kw: sent.append(("user", deal, kw)) or ["test"])
+    monkeypatch.setenv("NTFY_TOPIC", "sniper-owner-topic-123")
+    for k in ("PUSHOVER_TOKEN", "TWILIO_ACCOUNT_SID", "DISCORD_WEBHOOK_URL",
+              "ALERT_WEBHOOK_URL"):
+        monkeypatch.delenv(k, raising=False)
+    sent = None
     monkeypatch.setitem(sniper.CONFIG, "notify_text_enabled", True)
     monkeypatch.setitem(sniper.CONFIG, "notify_min_score", 0)
     monkeypatch.setitem(sniper.CONFIG, "quiet_start_hour", None)
@@ -102,6 +99,17 @@ def pipeline(app, monkeypatch):
     peers = [_listing(f"peer{i}", 24000 + i * 200) for i in range(10)]
     sniper.store_new(peers)
     return sniper, sent
+
+
+def _notify_jobs():
+    import sniper
+    with sniper.db() as c:
+        out = []
+        for r in c.execute("SELECT * FROM jobs WHERE kind = 'notify' ORDER BY id"):
+            d = dict(r)
+            d["payload"] = json.loads(d["payload"])
+            out.append(d)
+        return out
 
 
 def _alerts():
@@ -118,7 +126,10 @@ def test_estimate_alert_fires_when_sold_comps_unavailable(pipeline):
     a = _alerts()
     assert "craigslist:steal" in a
     assert a["craigslist:steal"]["basis"] == "estimate"
-    assert any(s[0] == "owner" and s[1]["composite_id"] == "craigslist:steal" for s in sent)
+    jobs = _notify_jobs()
+    assert [(j["payload"]["audience"], j["payload"]["channel"]) for j in jobs] == \
+        [("owner", "ntfy")]
+    assert jobs[0]["payload"]["deal"]["composite_id"] == "craigslist:steal"
 
 
 def test_small_estimate_discount_does_not_alert(pipeline):
@@ -179,9 +190,11 @@ def test_saved_search_match_lands_in_user_tray_and_pushes(client, pipeline):
     tray = client.get("/api/me/alerts").get_json()
     assert [t["composite_id"] for t in tray] == ["craigslist:taco"]
     assert tray[0]["saved_search_name"] == "cheap tacos"
-    user_pushes = [s for s in sent if s[0] == "user"]
-    assert len(user_pushes) == 1
-    assert user_pushes[0][2]["ntfy_topic"].startswith("sniper-")
+    user_jobs = [j for j in _notify_jobs() if j["payload"]["audience"] == "user"]
+    assert len(user_jobs) == 1
+    assert user_jobs[0]["payload"]["channel"] == "ntfy"
+    # the job references the user, never their destination
+    assert "ntfy_topic" not in json.dumps(user_jobs[0]["payload"])
 
 
 def test_saved_search_filter_matching():
@@ -213,14 +226,16 @@ def test_free_plan_cannot_set_alert_channels(client, app):
     assert r.status_code == 402
 
 
-# ---------- Notification outbox -------------------------------------------
+# ---------- Durable notification delivery --------------------------------
 
-def test_outbox_delivers_every_alert_without_dropping(monkeypatch):
+def test_notify_jobs_all_delivered_none_dropped(app, monkeypatch):
+    import db
+    import jobqueue
     import notifications
     calls = []
 
     class _R:
-        ok, status_code = True, 200
+        status_code = 200
 
     monkeypatch.setenv("NTFY_TOPIC", "sniper-test-topic-123")
     for k in ("PUSHOVER_TOKEN", "TWILIO_ACCOUNT_SID", "DISCORD_WEBHOOK_URL",
@@ -228,16 +243,16 @@ def test_outbox_delivers_every_alert_without_dropping(monkeypatch):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(notifications.requests, "post",
                         lambda url, **kw: calls.append(kw.get("json")) or _R())
-    for i in range(5):
-        chans = notifications.notify_deal(
-            {"composite_id": f"x:{i}", "year": 2015, "make": "Toyota",
-             "model": "Tacoma", "price": 14000, "discount_pct": 35,
-             "comp_avg": 21500, "comp_n": 9, "basis": "estimate",
-             "url": f"https://example.com/{i}"})
-        assert chans == ["ntfy"]
-    deadline = time.time() + 5
-    while len(calls) < 5 and time.time() < deadline:
-        time.sleep(0.05)
+    with db.session() as conn:
+        for i in range(5):
+            chans = notifications.enqueue_owner(conn, {
+                "composite_id": f"x:{i}", "year": 2015, "make": "Toyota",
+                "model": "Tacoma", "price": 14000, "discount_pct": 35,
+                "comp_avg": 21500, "comp_n": 9, "url": f"https://example.com/{i}"},
+                event_key=f"alert{i}")
+            assert chans == ["ntfy"]
+    done = jobqueue.drain({"notify": notifications.deliver_job})
+    assert [d["status"] for d in done] == ["done"] * 5
     assert len(calls) == 5
     assert calls[0]["topic"] == "sniper-test-topic-123"
     assert calls[0]["click"] == "https://example.com/0"

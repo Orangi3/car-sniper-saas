@@ -83,7 +83,8 @@ def app(temp_db_path):
     # `jobs.scheduler` is popped so the test runner's --once invocations
     # re-bind the module-level imports against the fresh test DB.
     for mod in ("server", "db", "auth", "sniper", "billing", "joblock",
-                "jobs.scheduler", "jobs",
+                "jobqueue", "notifications", "saved_search_alerts",
+                "jobs.scheduler", "jobs.worker", "jobs",
                 "migrations.runner", "migrations"):
         sys.modules.pop(mod, None)
     import db                       # noqa: F401  (re-import w/ new SNIPER_DB_PATH)

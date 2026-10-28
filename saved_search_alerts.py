@@ -14,7 +14,6 @@ A user with several matching searches gets ONE notification per deal.
 from __future__ import annotations
 
 import json
-import sys
 from typing import Optional
 
 
@@ -75,31 +74,26 @@ def matches(f: dict, deal: dict) -> bool:
     return True
 
 
-def fan_out(deal: dict) -> int:
+def fan_out(conn, deal: dict, event_key: str) -> int:
     """Match `deal` (an alert just written; must carry alert_id) against
-    every notifying saved search. Returns the number of users notified."""
-    import db as _db  # lazy: picks up the active DB (tests swap it per case)
+    every notifying saved search, using the caller's open transaction so
+    the tray rows and delivery jobs commit atomically with the alert.
+    Returns the number of users matched."""
+    import notifications
+    import plans
     alert_id = deal.get("alert_id")
     if not alert_id:
         return 0
-    ph = _db.placeholder()
-    true_val = "TRUE" if _db.IS_PG else "1"
-    try:
-        with _db.transaction() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT s.id, s.user_id, s.filter_json, u.ntfy_topic, "
-                "       u.alert_webhook, u.notify_phone "
-                "FROM saved_searches s JOIN users u ON u.id = s.user_id "
-                f"WHERE s.notify_enabled = {true_val}")
-            rows = [dict(r) for r in cur.fetchall()]
-    except Exception as e:
-        # Pre-0007 schema or a DB without users (single-user local mode)
-        print(f"[saved-search] lookup skipped: {e}", file=sys.stderr)
-        return 0
+    rows = [dict(r) for r in conn.execute(
+        "SELECT s.id, s.user_id, s.filter_json, u.plan, u.ntfy_topic, "
+        "       u.alert_webhook, u.notify_phone "
+        "FROM saved_searches s JOIN users u ON u.id = s.user_id "
+        "WHERE s.notify_enabled = TRUE").fetchall()]
 
     per_user: dict[int, dict] = {}
     for r in rows:
+        if not plans.can_receive_alerts(r.get("plan")):
+            continue   # expired / free accounts keep searches but get no alerts
         try:
             f = json.loads(r.get("filter_json") or "{}")
         except ValueError:
@@ -108,20 +102,13 @@ def fan_out(deal: dict) -> int:
             continue
         per_user.setdefault(r["user_id"], r)   # first matching search wins
 
-    if not per_user:
-        return 0
-
-    with _db.transaction() as conn:
-        cur = conn.cursor()
-        for uid, r in per_user.items():
-            sql = ("INSERT INTO user_alerts(user_id, alert_id, saved_search_id) "
-                   f"VALUES ({ph},{ph},{ph}) ON CONFLICT(user_id, alert_id) DO NOTHING")
-            cur.execute(sql, (uid, alert_id, r["id"]))
-
-    import notifications
     for uid, r in per_user.items():
-        if r.get("ntfy_topic") or r.get("alert_webhook") or r.get("notify_phone"):
-            notifications.notify_user_deal(
-                deal, phone=r.get("notify_phone"), ntfy_topic=r.get("ntfy_topic"),
-                webhook=r.get("alert_webhook"))
+        conn.execute(
+            "INSERT INTO user_alerts(user_id, alert_id, saved_search_id) "
+            "VALUES (?,?,?) ON CONFLICT(user_id, alert_id) DO NOTHING",
+            (uid, alert_id, r["id"]))
+        chans = [c for c in notifications.user_channels(
+                     r.get("notify_phone"), r.get("ntfy_topic"), r.get("alert_webhook"))
+                 if plans.channel_allowed(r.get("plan"), c)]
+        notifications.enqueue_user(conn, deal, event_key, uid, chans)
     return len(per_user)

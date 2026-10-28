@@ -1957,25 +1957,10 @@ _NTFY_TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
 
 
 def _safe_webhook(url: str) -> Optional[str]:
-    """Return an error string if `url` isn't an acceptable outbound webhook.
-    HTTPS only, and never a private/loopback/link-local address — users
-    supply this URL and the server POSTs to it (SSRF guard)."""
-    import ipaddress
-    import socket
-    from urllib.parse import urlparse
-    u = urlparse(url)
-    if u.scheme != "https" or not u.hostname:
-        return "webhook must be an https:// URL"
-    try:
-        infos = socket.getaddrinfo(u.hostname, u.port or 443, proto=socket.IPPROTO_TCP)
-    except socket.gaierror:
-        return "webhook host does not resolve"
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            return "webhook host resolves to a private address"
-    return None
+    """Save-time destination check (delivery re-checks at connect time —
+    see safe_http.py). Returns an error string or None."""
+    import safe_http
+    return safe_http.validate_destination(url)
 
 
 @app.get("/api/me/alert_channels")
@@ -2042,32 +2027,20 @@ def api_me_alert_channels_post():
 def api_me_alert_channels_test():
     rl = _rl_or_fail("user_notify_test", 3)
     if rl: return rl
-    from notifications import user_channels, _deliver
     u = auth.current_user()
     with _db.transaction() as conn:
         cur = conn.cursor()
         cur.execute(f"SELECT ntfy_topic, alert_webhook, notify_phone FROM users "
                     f"WHERE id={_PH()}", (u.id,))
         r = dict(cur.fetchone() or {})
-    if r.get("alert_webhook") and _safe_webhook(r["alert_webhook"]):
-        return jsonify({"ok": False, "error": "stored webhook is no longer allowed"}), 400
-    chans = user_channels(r.get("notify_phone"), r.get("ntfy_topic"), r.get("alert_webhook"))
-    if not chans:
+    from notifications import send_user_test
+    results = send_user_test(phone=r.get("notify_phone"), ntfy_topic=r.get("ntfy_topic"),
+                             webhook=r.get("alert_webhook"))
+    if not results:
         return jsonify({"ok": False, "error": "no alert channel set"}), 400
-    sample = {"year": 2015, "make": "Toyota", "model": "Tacoma", "price": 17500,
-              "discount_pct": 31, "comp_avg": 25400, "comp_n": 12, "basis": "verified",
-              "est_profit": 6400, "source": "test", "composite_id": "test",
-              "url": "https://example.com/sniper-test"}
-    results = {}
-    for ch in chans:
-        try:
-            ok, detail = _deliver(ch, sample, r.get("notify_phone"),
-                                  r.get("ntfy_topic"), r.get("alert_webhook"))
-        except Exception as e:
-            ok, detail = False, type(e).__name__
-        results[ch] = {"ok": ok, "detail": detail}
-    ok = any(v["ok"] for v in results.values())
-    return jsonify({"ok": ok, "channels": results}), (200 if ok else 502)
+    ok = any(v[0] for v in results.values())
+    return jsonify({"ok": ok, "channels": {ch: {"ok": v[0], "detail": v[1]}
+                                           for ch, v in results.items()}}), (200 if ok else 502)
 
 
 @app.get("/api/me/alerts")

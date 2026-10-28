@@ -23,26 +23,18 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from queue import Queue, Empty
 from typing import Iterable, Optional
 
 import config as _config_mod
+import jobqueue
 from config import CONFIG
 import sources
 from sources.base import (NormalizedListing, looks_needs_work, looks_salvage,
                           to_iso)
-
-# Async scorer state
-_SCORE_QUEUE: "Queue[str]" = Queue()         # composite_id values pending scoring
-_SCORE_STATS = {"pending": 0, "scored": 0, "failed": 0,
-                "last_scored_at": None}
-_SCORER_STARTED = False
-_SCORER_LOCK = threading.Lock()
 
 # Estimated fees + reconditioning for the flipper profit calculator
 FEES_RECON_AVG = 1500
@@ -155,15 +147,17 @@ def instant_estimate(year, make, model, price, odometer=None, conn=None):
 def store_new(listings: Iterable[NormalizedListing]) -> list[NormalizedListing]:
     """Insert new listings + queue them for async scoring. Returns the new ones.
 
-    DECOUPLING: this function is FAST — it only inserts rows and enqueues IDs.
-    The scoring (which calls expensive comp APIs) happens in a background
-    worker thread via ensure_scorer_started(). Callers (Poll Now button,
-    daemon ticks) get an immediate response.
+    DECOUPLING: this function is FAST — it only inserts rows and enqueues
+    durable `score` jobs in the same transaction. Scoring (which calls
+    expensive comp APIs) runs in jobs/worker.py.
     """
     from scam_detector import score_listing as scam_score_listing
     now = datetime.now(timezone.utc).isoformat()
     new: list[NormalizedListing] = []
     with db() as conn:
+        # Backpressure: past the queue cap, listings are still stored but
+        # not queued; backfill_unscored() picks them up once the queue drains.
+        room = jobqueue.has_capacity(conn, "score")
         for l in listings:
             if CONFIG.get("require_price", True) and not l.price:
                 continue
@@ -193,11 +187,9 @@ def store_new(listings: Iterable[NormalizedListing]) -> list[NormalizedListing]:
             if row is None:
                 continue  # already known
             new.append(l)
-            # Enqueue for async scoring (only if it has the data we need)
-            if l.year and l.make and l.model and not l.is_salvage:
-                _SCORE_QUEUE.put(l.composite_id())
-                _SCORE_STATS["pending"] = _SCORE_QUEUE.qsize()
-    ensure_scorer_started()
+            # Durable scoring job, committed atomically with the listing row
+            if l.year and l.make and l.model and not l.is_salvage and room:
+                enqueue_score(conn, l.composite_id(), l.price)
 
     # INSTANT SCORING PASS — give every brand-new listing a peer-estimate
     # score right now (network-free) so the dashboard shows a number the
@@ -291,25 +283,31 @@ def _alert_gate(l: dict, basis: str, comp_n: int, discount: float,
     return True, ""
 
 
-def _dispatch_alert(deal: dict) -> None:
-    """Fan a new alert out to (1) the owner's notification channels and
-    (2) every saved search whose filter matches. Never raises."""
-    try:
-        import notifications
-        if (CONFIG.get("notify_text_enabled")
-                and deal["score"] >= int(CONFIG.get("notify_min_score", 30))):
-            if _in_quiet_hours():
-                print(f"[notify] {deal['composite_id']} skipped — quiet hours",
-                      file=sys.stderr)
-            else:
-                notifications.notify_deal(deal, phone=CONFIG.get("notify_phone"))
-    except Exception as e:
-        print(f"[notify] {deal.get('composite_id')} crashed: {e}", file=sys.stderr)
-    try:
-        import saved_search_alerts
-        saved_search_alerts.fan_out(deal)
-    except Exception as e:
-        print(f"[saved-search] {deal.get('composite_id')} crashed: {e}", file=sys.stderr)
+def _enqueue_alert_deliveries(conn, deal: dict, event_key: str) -> None:
+    """Queue owner notifications + saved-search fan-out for a new alert,
+    inside the transaction that wrote the alert (atomic: either the alert
+    and all its delivery jobs exist, or none do)."""
+    import notifications
+    import saved_search_alerts
+    if (CONFIG.get("notify_text_enabled")
+            and deal["score"] >= int(CONFIG.get("notify_min_score", 30))):
+        notifications.enqueue_owner(conn, deal, event_key,
+                                    phone=CONFIG.get("notify_phone"))
+    saved_search_alerts.fan_out(conn, deal, event_key)
+
+
+def enqueue_score(conn, composite_id: str, price) -> Optional[int]:
+    """One scoring job per (listing, price): a re-poll of an unchanged
+    listing is a no-op, a price change gets re-scored."""
+    return jobqueue.enqueue(conn, "score", f"score:{composite_id}:{price}",
+                            {"composite_id": composite_id}, priority=50,
+                            max_attempts=4)
+
+
+def score_job(job: dict) -> dict:
+    """jobs/worker.py handler for kind='score'."""
+    r = _score_one_listing(job["payload"]["composite_id"])
+    return r or {"skipped": True}
 
 
 # ---------- Async background scorer --------------------------------------
@@ -401,8 +399,7 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
 
     new_alert = False
     alert_id = None
-    try:
-        with db() as conn:
+    with db() as conn:
             _record_score(conn, composite_id, avg, comp_n, discount * 100,
                           score, basis, note, now)
             if alertable:
@@ -417,52 +414,20 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
                 if row is not None:
                     alert_id = row[0]
                     new_alert = True
-    except Exception as e:
-        print(f"[score] {composite_id} write failed: {e}", file=sys.stderr)
-        return None
-
-    if new_alert:
-        deal = {**l, "comp_avg": avg, "comp_n": comp_n, "basis": basis,
-                "discount_pct": discount * 100, "score": score,
-                "est_profit": est_profit, "alert_id": alert_id}
-        _dispatch_alert(deal)
+                    deal = {**l, "comp_avg": avg, "comp_n": comp_n, "basis": basis,
+                            "discount_pct": discount * 100, "score": score,
+                            "est_profit": est_profit, "alert_id": alert_id,
+                            "event": "new"}
+                    _enqueue_alert_deliveries(conn, deal, f"alert{alert_id}")
 
     return {"composite_id": composite_id, "score": score,
             "discount": discount, "basis": basis}
 
 
-def _scorer_loop():
-    """Background worker — drains the score queue continuously."""
-    while True:
-        try:
-            cid = _SCORE_QUEUE.get(timeout=5)
-        except Empty:
-            _SCORE_STATS["pending"] = 0
-            continue
-        try:
-            _score_one_listing(cid)
-            _SCORE_STATS["scored"] += 1
-            _SCORE_STATS["last_scored_at"] = datetime.now(timezone.utc).isoformat()
-        except Exception as e:
-            _SCORE_STATS["failed"] += 1
-            print(f"[scorer] {cid} failed: {e}", file=sys.stderr)
-        finally:
-            _SCORE_STATS["pending"] = _SCORE_QUEUE.qsize()
-            _SCORE_QUEUE.task_done()
-
-
 def ensure_scorer_started() -> None:
-    """Idempotent — start the background scorer thread on first call."""
-    global _SCORER_STARTED
-    with _SCORER_LOCK:
-        if _SCORER_STARTED:
-            return
-        # Start 6 worker threads — they share the queue. The bottleneck is
-        # network comp fetches, so more workers drains the queue faster.
-        for _ in range(6):
-            t = threading.Thread(target=_scorer_loop, daemon=True, name="scorer")
-            t.start()
-        _SCORER_STARTED = True
+    """Deprecated no-op. Scoring now runs from durable jobs processed by
+    jobs/worker.py; kept so older callers don't break."""
+    return None
 
 
 def backfill_unscored() -> int:
@@ -506,15 +471,20 @@ def backfill_unscored() -> int:
                               discount * 100, score, "estimate", note, now)
             except Exception as e:
                 print(f"[backfill instant] {e}", file=sys.stderr)
-    for r in rows:
-        _SCORE_QUEUE.put(r["composite_id"])
-    _SCORE_STATS["pending"] = _SCORE_QUEUE.qsize()
-    ensure_scorer_started()
-    return len(rows)
+        queued = 0
+        for r in rows:
+            if enqueue_score(conn, r["composite_id"], r["price"]):
+                queued += 1
+    return queued
 
 
 def get_scorer_stats() -> dict:
-    return {**_SCORE_STATS, "pending": _SCORE_QUEUE.qsize()}
+    """Durable queue metrics for the `score` kind (plus totals)."""
+    st = jobqueue.stats()
+    k = st["by_kind"].get("score", {})
+    return {"pending": k.get("pending", 0) + k.get("running", 0),
+            "scored": k.get("done", 0), "failed": k.get("dead", 0),
+            "retried": st["retried"], "queue": st}
 
 
 def _in_quiet_hours() -> bool:
@@ -662,9 +632,9 @@ def poll_once(verbose: bool = True, only_sources: list[str] | None = None,
 
     if verbose:
         print(f"  TOTAL: fetched={total_fetched} new={total_new} in {poll_secs}s "
-              f"(scoring queued: {_SCORE_QUEUE.qsize()})")
+              f"(scoring pending: {get_scorer_stats()['pending']})")
     return {"fetched": total_fetched, "new": total_new,
-            "scoring_pending": _SCORE_QUEUE.qsize(),
+            "scoring_pending": get_scorer_stats()["pending"],
             "poll_secs": poll_secs, "per_source": per_source}
 
 
