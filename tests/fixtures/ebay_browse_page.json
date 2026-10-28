@@ -1,0 +1,23 @@
+{
+  "_fixture_note": "SYNTHETIC. Shaped after eBay's documented Browse API item_summary/search response. Not a captured live response.",
+  "total": 4,
+  "itemSummaries": [
+    {"itemId": "v1|1001|0", "title": "2014 Toyota Camry SE 128k miles", "itemWebUrl": "https://www.ebay.test/itm/1001",
+     "price": {"value": "7900.00", "currency": "USD"}, "buyingOptions": ["FIXED_PRICE"],
+     "itemLocation": {"city": "Tuscaloosa", "stateOrProvince": "AL", "postalCode": "35401", "country": "US"},
+     "itemCreationDate": "2026-10-28T13:05:00.000Z", "seller": {"username": "x", "sellerAccountType": "INDIVIDUAL", "feedbackScore": 900},
+     "distanceFromPickupLocation": {"value": "3", "unitOfMeasure": "MILE"}},
+    {"itemId": "v1|1002|0", "title": "2012 Honda Civic LX", "itemWebUrl": "https://www.ebay.test/itm/1002",
+     "price": {"value": "6400.00", "currency": "USD"}, "buyingOptions": ["FIXED_PRICE"],
+     "itemLocation": {"stateOrProvince": "AL", "postalCode": "354**", "country": "US"},
+     "seller": {"sellerAccountType": "BUSINESS"},
+     "distanceFromPickupLocation": {"value": "41", "unitOfMeasure": "MILE"}},
+    {"itemId": "v1|1003|0", "title": "2010 Ford F-150 XLT", "itemWebUrl": "https://www.ebay.test/itm/1003",
+     "price": {"value": "9900.00", "currency": "USD"}, "buyingOptions": ["AUCTION", "FIXED_PRICE"],
+     "buyItNowPrice": {"value": "11500.00"}, "itemEndDate": "2026-11-01T00:00:00.000Z",
+     "itemLocation": {"stateOrProvince": "MS", "postalCode": "39701"},
+     "distanceFromPickupLocation": {"value": "180", "unitOfMeasure": "MILE"}},
+    {"itemId": "v1|1004|0", "title": "2008 Mazda 3", "itemWebUrl": "https://www.ebay.test/itm/1004",
+     "price": {"value": "3100.00", "currency": "USD"}, "buyingOptions": ["FIXED_PRICE"]}
+  ]
+}

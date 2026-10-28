@@ -1,0 +1,77 @@
+name: live-source-check
+
+# Manual only. Makes at most one search request per configured source (plus
+# eBay's OAuth token request) using repository secrets, and uploads
+# AGGREGATE results only (counts, field coverage, price distribution) — no
+# listing content. Sources without secrets report "no_credentials".
+# See verify_sources.py. Each run consumes provider quota (MarketCheck
+# bills per call), so it is never scheduled.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "space-separated: ebay marketcheck_fsbo (blank = all)"
+        required: false
+        default: ""
+      zip:
+        description: "territory ZIP"
+        required: false
+        default: "35401"
+      radius:
+        description: "radius in miles"
+        required: false
+        default: "75"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-source-check
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+      MARKETCHECK_API_KEY: ${{ secrets.MARKETCHECK_API_KEY }}
+      # inputs go through env, never interpolated into the script
+      IN_SOURCES: ${{ inputs.sources }}
+      IN_ZIP: ${{ inputs.zip }}
+      IN_RADIUS: ${{ inputs.radius }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13", cache: pip }
+      - run: pip install -r requirements.txt
+      - name: Probe
+        run: |
+          [[ "$IN_ZIP" =~ ^[0-9]{5}$ ]] || { echo "bad zip"; exit 1; }
+          [[ "$IN_RADIUS" =~ ^[0-9]{1,3}$ ]] || { echo "bad radius"; exit 1; }
+          args=(--zip "$IN_ZIP" --radius "$IN_RADIUS")
+          if [ -n "$IN_SOURCES" ]; then
+            read -ra s <<< "$IN_SOURCES"; args+=(--sources "${s[@]}")
+          fi
+          set +e
+          python -m verify_sources "${args[@]}" --json > probe.json
+          code=$?
+          set -e
+          python - <<'PY'
+          import json
+          r = json.load(open("probe.json"))
+          for x in r["results"]:
+              print(f"{x['source']}: {x['status']} - {x['detail']} "
+                    f"(listings={x.get('listings', 0)}, verified={x.get('verified', False)})")
+          PY
+          echo "exit code $code (0 verified, 2 no credentials, 1 failure)"
+          exit $code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-source-probe
+          path: probe.json
+          retention-days: 14
+          if-no-files-found: ignore

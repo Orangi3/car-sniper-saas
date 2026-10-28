@@ -34,7 +34,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from . import health
+from . import health, schema
 from .base import NormalizedListing, extract_make_model, extract_miles, extract_year
 
 SOURCE_ID = "marketcheck_fsbo"
@@ -53,6 +53,14 @@ SORT_BY = os.environ.get("MARKETCHECK_FSBO_SORT_BY", "dom")
 SORT_ORDER = os.environ.get("MARKETCHECK_FSBO_SORT_ORDER", "asc")
 
 LAST_RESULTS: dict = {}
+
+# Fields the adapter depends on ('?' = optional, coverage only). Location may
+# arrive under dealer/seller/location; dealer.* is the documented one.
+ITEM_SPEC = {"id": (str, int), "vdp_url": str, "price": schema.NUM,
+             "build.year": schema.NUM, "build.make": str, "build.model": str,
+             "miles?": schema.NUM, "build.trim?": str, "build.drivetrain?": str,
+             "dealer.zip?": (str, int), "dealer.latitude?": schema.NUM,
+             "dealer.longitude?": schema.NUM, "first_seen_at_date?": str, "vin?": str}
 
 
 def enabled(cfg: dict) -> bool:
@@ -170,6 +178,11 @@ def poll(cfg: dict) -> list[NormalizedListing]:
             rep.malformed(f"page{page}", f"unexpected response: {e}")
             break
         rep.parsed(f"page{page}", len(items))
+        sc = schema.check_items([it for it in items if isinstance(it, dict)], ITEM_SPEC)
+        LAST_RESULTS["schema"] = sc
+        if schema.drifted(sc):
+            rep.malformed(f"page{page}", schema.describe(sc))
+            break
         batch = [n for n in (normalize(it) for it in items if isinstance(it, dict)) if n]
         out.extend(batch)
         LAST_RESULTS.update({"num_found": data.get("num_found"), "pages": page + 1,
