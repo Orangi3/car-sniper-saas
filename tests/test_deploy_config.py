@@ -61,3 +61,24 @@ def test_fresh_host_gets_every_backup_tool_and_backup_checks_them():
 
 def test_proxy_sends_hsts():
     assert 'Strict-Transport-Security "max-age=' in (DEPLOY / "Caddyfile.staging").read_text()
+
+
+def test_deploy_runs_app_steps_as_the_app_user_with_the_production_env():
+    """Deploys go in as root (the sniper account has no shell); the canary
+    and pre-flip migration must see /etc/sniper/env, or they silently test
+    a throwaway SQLite file instead of PostgreSQL."""
+    sync = (DEPLOY / "sync.sh").read_text()
+    assert "sniper@<host>" not in sync and "root@<host>" in sync
+    assert "--uid=sniper" in sync and "EnvironmentFile=/etc/sniper/env" in sync
+    assert "runuser -u sniper -- /opt/sniper/.venv/bin/pip install" in sync
+    canary = sync.index("--unit=sniper-canary")
+    flip = sync.index("Canary OK — flipping current symlink")
+    assert sync.index("migrations.runner") < canary < flip
+    install = (DEPLOY / "install.sh").read_text()
+    assert "nologin" in install          # the reason root is the deploy user
+
+
+def test_web_writes_logs_outside_the_read_only_release_dir():
+    unit = (DEPLOY / "systemd" / "sniper-web.service").read_text()
+    assert "Environment=SNIPER_LOG_DIR=/var/log/sniper" in unit
+    assert "/var/log/sniper" in unit.split("ReadWritePaths=")[1].splitlines()[0]

@@ -6,7 +6,7 @@
 #   curl ... | bash      # NO. Don't curl-pipe-shell secrets-adjacent stuff.
 #
 # Instead, on the new VPS:
-#   ssh sniper@<vps-ip>           # via Tailscale, see STAGING_RUNBOOK.md
+#   ssh root@<vps-ip>             # public IP, first time only; see STAGING_RUNBOOK.md
 #   git clone <local-repo-bundle> /tmp/sniper-bootstrap
 #   sudo bash /tmp/sniper-bootstrap/deploy/install.sh
 #
@@ -230,8 +230,8 @@ echo "  Next:"
 echo "    1. sudo tailscale up --ssh --hostname=sniper-staging"
 echo "       (the URL it prints goes to your Tailscale admin console)"
 echo "    2. Verify a SECOND SSH session works:"
-echo "       ssh sniper@sniper-staging.<your-tailnet>.ts.net"
+echo "       ssh root@sniper-staging   (over Tailscale; keep this session open until it works)"
 echo "    3. On your Mac, run:"
-echo "       bash deploy/sync.sh --apply sniper@sniper-staging"
+echo "       bash deploy/sync.sh --apply root@sniper-staging"
 echo "  At that point web/migrate will start (no Stripe yet — that's fine)."
 echo "=========================================================="
