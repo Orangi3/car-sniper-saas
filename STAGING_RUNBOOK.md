@@ -109,6 +109,8 @@ for you. ~3 minutes.
 2. Location: **Ashburn, VA (ash)**
 3. Image: **Ubuntu 24.04**
 4. Type: **CCX13** (Dedicated vCPU · 2 cores · 8 GB · 80 GB NVMe)
+   (More than the pilot needs: the measured stack fits a 2 GB shared-vCPU
+   server — see `FIRST_DEPLOY.md`.)
 5. SSH key: Hetzner will offer "Add new SSH key" — paste your `~/.ssh/id_ed25519.pub` (it's the `.pub` file, non-secret)
 6. Name: `sniper-staging`
 7. Networking: leave IPv4 + IPv6 on; **no firewall yet** (we'll configure ufw inside the box)

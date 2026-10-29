@@ -8,8 +8,8 @@ Sniper has no seller partnerships yet — don't imply otherwise.
 ## Before the first invitation (gates)
 
 - [ ] Release merged and running on an HTTPS host (`OWNER_ACTIONS.md`)
-- [ ] SMTP configured (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
-      `SMTP_PASSWORD`, `SMTP_FROM`) and a test confirmation email received.
+- [ ] Email configured (`FIRST_DEPLOY.md` → Email setup) and a test
+      confirmation email received in Gmail and Outlook, not in spam.
       Without it nothing publishes (by design).
 - [ ] Short seller terms + privacy notice published (yours to write/approve):
       who sees the contact email (signed-in paid buyers), that listings
@@ -127,3 +127,48 @@ Don't charge yet. Invite buyers who actually buy cars in the territory.
 Stop and reassess if: a seller's details are used outside Car Sniper, a
 listing turns out fraudulent, or buyers report the estimates as
 misleading.
+
+Record buyer feedback in a simple sheet you keep yourself (one row per
+conversation): date, buyer, which alert or listing, "was this relevant?"
+(yes/no/why), "did you contact the seller?", "would you pay, and how
+much?". Copy anything about a specific car into that car's `notes` in
+`review.csv`.
+
+## First 14 days after go-live (targets, not results)
+
+| Days | Target | How you know |
+|---|---|---|
+| 1–2 | Site on HTTPS, email arrives, one backup + one restore drill done, Healthchecks green | `FIRST_DEPLOY.md` steps 8–13 |
+| 3–5 | 3 real seller listings verified and live; 1 alert reaches a real buyer's phone | ops view; ask the buyer |
+| 6–10 | 10 real listings; each reviewed by you in `review.csv` | `python -m evaluation cohort --source direct --sheet review.csv` |
+| 11–14 | Feedback from every pilot buyer; first cohort review imported | your feedback sheet; `evaluation import` |
+
+What to measure, and what each threshold is based on:
+
+- **Listing completeness**: every required field present (the form
+  enforces this), plus VIN or trim on at least half. Without trim or VIN,
+  comparables are coarser, so many missing would explain weak estimates.
+- **Comparable coverage**: share of listings whose estimate is not
+  `insufficient` (fewer than 3 usable comparables). There is no target
+  yet: it depends on how much licensed market data is connected, and
+  without a data source most seller cars will be `insufficient`. That is
+  the honest result, not a bug.
+- **Alert relevance**: buyer says "relevant" for an alert. Ask after
+  every alert during the pilot.
+- **False positives**: reviewed listings labeled `bad_comparison`,
+  `mechanical_condition_problem` or `suspicious_listing` among those that
+  alerted.
+- **Seller contact success**: buyers who tried to reach a seller and got
+  an answer.
+- **Buyer engagement**: buyers who open the app at least weekly and keep
+  their saved search.
+- **Uptime / alerts**: Healthchecks shows no missed ping lasting more
+  than an hour.
+- **Support burden**: minutes per week you spend helping sellers or
+  buyers. Above about 2 hours a week, the onboarding needs fixing before
+  you invite more people.
+
+Too early to judge with 10 cars: false-positive *rates*, valuation
+accuracy, and willingness to pay. With fewer than 20 reviewed listings
+(`MIN_N` in `evaluation.py`) any percentage swings by 5+ points per car.
+Record the raw counts; draw conclusions at 30+ listings.
