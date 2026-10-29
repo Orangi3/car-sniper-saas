@@ -505,6 +505,8 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 /* card-width aware: compact money and labels when the CARD is narrow (2-up grids, phones) */
 @container (max-width: 460px) {
   .deal .full { display: none; } .deal .compact { display: inline; } .deal .hide-narrow { display: none; }
+  .deal .deal__metrics { grid-template-columns: .95fr 1.4fr .8fr; }
+  .deal .deal__metrics .metric__value { font-size: 15px; }
 }
 
 /* price-vs-market bar */
