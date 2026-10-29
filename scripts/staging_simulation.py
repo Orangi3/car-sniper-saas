@@ -13,7 +13,9 @@ delivery over HTTP, crash/restart behaviour.
 What is SIMULATED (and labeled so in the output): the provider. A local
 HTTP server answers like eBay's OAuth + Browse endpoints with synthetic
 listings (EBAY_API_BASE), and stands in for the ntfy push server
-(NTFY_SERVER). No real listing data is used or produced.
+(NTFY_SERVER); a local SMTP server receives verification email (SMTP_*).
+Seller submissions are made by this script, not real sellers. No real
+listing data is used or produced.
 
 The code under test is a `git archive` of HEAD in a temp directory, so the
 working tree is never modified. Exit 0 only if every step passes.
@@ -49,6 +51,7 @@ class Provider:
         self.items: list[dict] = []
         self.pushes: list[dict] = []
         self.searches = 0
+        self.fail_next_pushes = 0          # push stand-in answers 503 this many times
         self.lock = threading.Lock()
 
     def item(self, iid, price, title, miles):
@@ -88,6 +91,9 @@ class Provider:
                 except ValueError:
                     payload = {"raw": body.decode(errors="replace")}
                 with prov.lock:
+                    if prov.fail_next_pushes > 0:
+                        prov.fail_next_pushes -= 1
+                        return self._send(503, {"error": "simulated outage"})
                     prov.pushes.append(payload)
                 return self._send(200, {"id": len(prov.pushes)})
 
@@ -99,6 +105,38 @@ class Provider:
                     return self._send(200, {"total": len(items), "itemSummaries": items})
                 return self._send(404, {})
         return H
+
+
+class SmtpSink:
+    """Local SMTP server; messages land in .mail (simulated inbox)."""
+
+    def __init__(self):
+        import socketserver
+        sink = self
+        self.mail: list[str] = []
+
+        class H(socketserver.StreamRequestHandler):
+            def handle(self):
+                w = lambda t: (self.wfile.write((t + "\r\n").encode()), self.wfile.flush())
+                w("220 sim")
+                data, in_data = [], False
+                for raw in self.rfile:
+                    line = raw.decode(errors="replace").rstrip("\r\n")
+                    if in_data:
+                        if line == ".":
+                            in_data = False
+                            sink.mail.append("\n".join(data)); data = []; w("250 ok")
+                        else:
+                            data.append(line)
+                        continue
+                    c = line[:4].upper()
+                    if c in ("EHLO", "HELO"): w("250 sim")
+                    elif c == "DATA": in_data = True; w("354 go")
+                    elif c == "QUIT": w("221 bye"); return
+                    else: w("250 ok")
+        self.server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), H)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
 
 # ---------------------------------------------------------------- helpers
@@ -134,6 +172,7 @@ class Sim:
         self.logs = self.tmp / "logs"
         self.logs.mkdir()
         self.prov = Provider()
+        self.smtp = SmtpSink()
         self.dbname = "sniper_sim_" + uuid.uuid4().hex[:8]
         u = urlparse(args.pg_admin_url)
         self.db_url = urlunparse(u._replace(path="/" + self.dbname))
@@ -168,7 +207,10 @@ class Sim:
                   "ALLOW_REGISTRATION": "1", "EBAY_CLIENT_ID": "sim", "EBAY_CLIENT_SECRET": "sim",
                   "EBAY_API_BASE": f"http://127.0.0.1:{self.prov_port}",
                   "NTFY_SERVER": f"http://127.0.0.1:{self.prov_port}",
-                  "PYTHONUNBUFFERED": "1", "SNIPER_SECRET_KEY": "sim-secret"})
+                  "PYTHONUNBUFFERED": "1", "SNIPER_SECRET_KEY": "sim-secret",
+                  "SNIPER_SELLER_SUBMISSIONS": "1", "SMTP_HOST": "127.0.0.1",
+                  "SMTP_PORT": str(self.smtp.port), "SMTP_STARTTLS": "0",
+                  "SMTP_FROM": "Car Sniper <no-reply@sim.test>", "BILLING_ORIGIN": self.base})
         return e
 
     def sql(self, q, params=()):
@@ -373,6 +415,79 @@ class Sim:
                     f"notifications {di['notifications']['delivered_to_provider']} delivered; "
                     f"system ready_for={o['system_health']['ready_for']}")
         ok &= S("16 owner operations view", ops)
+
+        seller = requests.Session()
+        state: dict = {}
+
+        def seller_submit():
+            r = seller.post(self.base + "/api/auth/register",
+                            json={"email": "sim-seller@example.com", "password": "sim-pass-123"})
+            assert r.ok, r.text
+            car = {"year": 2015, "make": "Toyota", "model": "Camry", "trim": "SE",
+                   "mileage": 126000, "price": 6300, "zip": "35473", "title_status": "clean",
+                   "mechanical_issues": "", "cosmetic_issues": "scuffed bumper",
+                   "attest": {"authorized_to_sell": True, "details_accurate": True,
+                              "share_contact_with_buyers": True}}
+            r = seller.post(self.base + "/api/seller/listings", json=car)
+            assert r.status_code == 201 and r.json()["status"] == "pending", r.text
+            state.update(r.json())
+            assert not self.sql("SELECT 1 FROM listings WHERE composite_id = %s",
+                                (state["composite_id"],)), "pending listing was published"
+            # duplicate VIN / unauthorized access over HTTP
+            other = requests.Session()
+            other.post(self.base + "/api/auth/register",
+                       json={"email": "sim-other@example.com", "password": "sim-pass-123"})
+            assert other.delete(self.base + f"/api/seller/listings/{state['id']}").status_code == 404
+            return f"SIMULATED seller submitted {state['composite_id']}: pending, not published; another account can't remove it"
+        ok &= S("21 seller submission (pending until email verified)", seller_submit)
+
+        def seller_verify():
+            import re as _re
+            r = seller.post(self.base + "/api/seller/contact", json={})
+            assert r.ok and r.json()["sent"], r.text
+            msg = wait_for(lambda: self.smtp.mail and self.smtp.mail[-1], 20, what="email")
+            tok = _re.search(r"#verify=([A-Za-z0-9_-]+)", msg).group(1)
+            bad = seller.post(self.base + "/api/seller/contact/verify", json={"token": tok[:-2] + "xx"})
+            assert bad.status_code == 400
+            r = seller.post(self.base + "/api/seller/contact/verify", json={"token": tok})
+            assert r.ok and r.json()["published"] == 1, r.text
+            again = seller.post(self.base + "/api/seller/contact/verify", json={"token": tok})
+            assert again.status_code == 400
+            return "email received via SMTP; wrong token refused; link published the listing; reuse refused"
+        ok &= S("22 seller email verification (SMTP)", seller_verify)
+
+        def seller_to_buyer():
+            # the subscriber from step 08 (Pro, max $9,000 Camry search) gets it;
+            # the first push attempt hits a simulated provider outage
+            self.prov.fail_next_pushes = 1
+            cid = state["composite_id"]
+            wait_for(lambda: [p for p in self.prov.pushes if "$6,300" in json.dumps(p)], 150,
+                     what="buyer alert for the seller listing")
+            d = s.get(self.base + f"/api/deals/{cid}").json()
+            assert d["seller_contact"] == {"available": True, "email": "sim-seller@example.com",
+                                           "verified_email": True}, d.get("seller_contact")
+            assert "seller-reported" in d["provenance"]
+            feed = s.get(self.base + "/api/deals?feed=mine").text
+            assert "sim-seller@example.com" not in feed
+            retried = self.sql("SELECT attempts FROM jobs WHERE kind = 'notify' AND status = 'done' "
+                               "AND payload LIKE %s", (f'%{cid}%',))
+            return (f"valued, matched, alerted (push delivered after a simulated 503, attempts "
+                    f"{[r['attempts'] for r in retried]}); Pro buyer sees the verified contact; "
+                    "contact absent from feeds")
+        ok &= S("23 seller listing → buyer alert (with push retry) → contact", seller_to_buyer)
+
+        def seller_withdraw():
+            cid = state["composite_id"]
+            r = seller.delete(self.base + f"/api/seller/listings/{state['id']}")
+            assert r.ok, r.text
+            assert cid not in s.get(self.base + "/api/deals?feed=mine").text
+            assert s.get(self.base + f"/api/deals/{cid}").status_code in (404, 410)
+            assert not self.sql("SELECT 1 FROM listings WHERE composite_id = %s", (cid,))
+            n = len(self.prov.pushes)
+            time.sleep(8)
+            assert len(self.prov.pushes) == n, "withdrawn listing produced a notification"
+            return "withdrawn: gone from feeds and detail, rows deleted, no further notifications"
+        ok &= S("24 seller withdrawal", seller_withdraw)
 
         def worker_crash():
             before = len(self.pushes_for("2001"))
