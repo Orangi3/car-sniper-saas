@@ -67,6 +67,13 @@ for f in /etc/sniper/backup_age.key /etc/sniper/age.key \
     fi
 done
 
+# Every tool in the pipeline must exist BEFORE we start: a missing one
+# would otherwise leave a truncated, unencrypted-looking file behind.
+for tool in pg_dump zstd age aws sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "FATAL: $tool not found — re-run deploy/install.sh" >&2; exit 3; }
+done
+
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 OUT="/var/backups/sniper/sniper-${STAMP}.sql.zst.age"
 LOG="/var/log/sniper/backup-${STAMP}.log"

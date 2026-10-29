@@ -66,7 +66,7 @@ apt-get update -q
 apt-get -y upgrade
 apt-get -y install \
     curl wget gnupg ca-certificates lsb-release software-properties-common \
-    rsync ufw fail2ban age jq sqlite3 git \
+    rsync ufw fail2ban age zstd jq sqlite3 git \
     build-essential libpq-dev pkg-config \
     python3.12 python3.12-venv python3.12-dev \
     postgresql-16 postgresql-contrib-16
@@ -127,6 +127,17 @@ sudo -u sniper /opt/sniper/.venv/bin/python3 -m pip install --upgrade pip wheel
 # (re)installed per release via sync.sh.
 sudo -u sniper /opt/sniper/.venv/bin/python3 -m pip install \
     "psycopg2-binary>=2.9"
+
+# AWS CLI for backup.sh uploads to B2 (S3-compatible). Ubuntu 24.04 has
+# no awscli package; install a pinned copy in its own root-owned venv so
+# it never mixes with the app's dependencies.
+AWSCLI_VERSION="1.33.0"
+if [[ "$(/opt/sniper-tools/bin/aws --version 2>&1 | awk -F'[/ ]' '{print $2}')" != "$AWSCLI_VERSION" ]]; then
+    echo "▸ Installing AWS CLI $AWSCLI_VERSION (backup uploads)"
+    [[ -x /opt/sniper-tools/bin/python3 ]] || python3.12 -m venv /opt/sniper-tools
+    /opt/sniper-tools/bin/python3 -m pip install -q "awscli==$AWSCLI_VERSION"
+fi
+ln -sf /opt/sniper-tools/bin/aws /usr/local/bin/aws
 
 # ----------------------------------------------------------------------
 # 6. /etc/sniper/env (root:sniper 0600). Seeded from template only if
