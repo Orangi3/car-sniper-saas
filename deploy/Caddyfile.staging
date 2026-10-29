@@ -9,6 +9,10 @@
 __STAGING_HOSTNAME__ {
     encode zstd gzip
 
+    # Browsers stay on HTTPS (the session cookie is Secure behind this
+    # proxy). No includeSubDomains/preload: those are hard to undo.
+    header Strict-Transport-Security "max-age=31536000"
+
     # Health probe (Healthchecks.io and Stripe sanity hits) — uncached.
     @health path /health
     handle @health {

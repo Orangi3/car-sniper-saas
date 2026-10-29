@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 pytestmark = pytest.mark.skipif(not shutil.which("sh"), reason="needs sh")
 
 
-def _run(tmp_path, web_ok=True):
+def _run(tmp_path, web_ok=True, **extra_env):
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     log = tmp_path / "curl.log"
@@ -31,7 +31,7 @@ def _run(tmp_path, web_ok=True):
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
            "SNIPER_APP_DIR": str(ROOT), "SNIPER_PYTHON": sys.executable,
            "HEALTHCHECK_WEB_URL": "https://hc.test/web",
-           "HEALTHCHECK_PIPELINE_URL": "https://hc.test/pipeline"}
+           "HEALTHCHECK_PIPELINE_URL": "https://hc.test/pipeline", **extra_env}
     r = subprocess.run(["sh", str(ROOT / "deploy" / "healthcheck.sh")], env=env,
                        capture_output=True, text=True, timeout=120)
     pinged = log.read_text().split() if log.exists() else []
@@ -75,3 +75,12 @@ def test_web_down_withholds_web_ping(app, tmp_path):
     rc, out, pinged = _run(tmp_path, web_ok=False)
     assert rc == 1 and "web /health FAILED" in out
     assert "https://hc.test/web" not in pinged and "https://hc.test/pipeline" in pinged
+
+
+def test_web_probe_uses_the_public_origin_from_the_env_file(app, tmp_path):
+    """/etc/sniper/env has BILLING_ORIGIN (written by install.sh) but no
+    STAGING_HOSTNAME; probing https://127.0.0.1 fails TLS on every host."""
+    _tick(1)
+    rc, out, pinged = _run(tmp_path, BILLING_ORIGIN="https://staging.example.test/")
+    assert rc == 0, out
+    assert "https://staging.example.test/health" in pinged

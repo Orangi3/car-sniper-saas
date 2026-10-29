@@ -36,13 +36,17 @@
 #     the prior known-good is NEVER pruned even if it falls out of the
 #     last-5 window.
 #
+# Deploy user: root over Tailscale SSH (the `sniper` service account has
+# no login shell and no sudo). App steps run as `sniper` via runuser /
+# systemd-run; release files stay root-owned and read-only to the app.
+#
 # Modes:
 #   bash deploy/sync.sh                                # dry-run (default)
-#   bash deploy/sync.sh --apply sniper@<host>          # full deploy + canary + flip
+#   bash deploy/sync.sh --apply root@<host>          # full deploy + canary + flip
 #   bash deploy/sync.sh --apply --no-restart …         # transfer + flip only
-#   bash deploy/sync.sh --rollback sniper@<host>       # flip current → previous_revision
-#   bash deploy/sync.sh --status sniper@<host>         # show current + previous + service status
-#   bash deploy/sync.sh --verify-delete-scope sniper@<host>
+#   bash deploy/sync.sh --rollback root@<host>       # flip current → previous_revision
+#   bash deploy/sync.sh --status root@<host>         # show current + previous + service status
+#   bash deploy/sync.sh --verify-delete-scope root@<host>
 #       Dry-run rsync with --itemize-changes to show EXACTLY which paths
 #       --delete would touch. Asserts every touched path is under
 #       /opt/sniper/releases/<sha>/. Fails loudly if not.
@@ -71,7 +75,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$HOST" ]]; then
-    echo "▸ usage: bash deploy/sync.sh [--apply|--rollback|--status|--verify-delete-scope] sniper@<host>"
+    echo "▸ usage: bash deploy/sync.sh [--apply|--rollback|--status|--verify-delete-scope] root@<host>"
     exit 1
 fi
 
@@ -303,41 +307,35 @@ CANARY_PORT=18765    # private port used only during canary; bound 127.0.0.1
 ssh "$HOST" "set -euo pipefail
     cd $REL_DIR
 
-    echo '▸ Installing requirements…'
-    /opt/sniper/.venv/bin/pip install --quiet -r requirements.txt
+    # Everything below runs as the sniper user with the PRODUCTION
+    # environment, parsed by systemd exactly as the real services see it
+    # (without it the app silently falls back to a SQLite file here).
+    AS_APP='systemd-run --quiet --collect --uid=sniper --gid=sniper -p EnvironmentFile=/etc/sniper/env -p Environment=SNIPER_LOG_DIR=/var/log/sniper -p WorkingDirectory=$REL_DIR'
 
-    echo '▸ Running migrations against live DB from new release…'
-    # Migrations are forward-only and additive (Phase 1–3 schema is
-    # backward-compatible with the previous code release).
-    /opt/sniper/.venv/bin/python3 -m migrations.runner
+    echo '▸ Installing requirements…'
+    runuser -u sniper -- /opt/sniper/.venv/bin/pip install --quiet -r requirements.txt
+
+    echo '▸ Running migrations against the live database from the new release…'
+    # Migrations are forward-only and additive (each schema stays
+    # compatible with the previous code release, so rollback is safe).
+    \$AS_APP --wait --pipe /opt/sniper/.venv/bin/python3 -m migrations.runner
 
     echo '▸ Starting canary gunicorn on 127.0.0.1:${CANARY_PORT}…'
-    set +e
-    /opt/sniper/.venv/bin/gunicorn server:app \
-        --bind 127.0.0.1:${CANARY_PORT} --workers 1 --pid /tmp/sniper_canary.pid \
-        --log-file /tmp/sniper_canary.log --error-logfile /tmp/sniper_canary.log \
-        --daemon
-    GUN_RC=\$?
-    set -e
-    [ \"\$GUN_RC\" = 0 ] || { echo 'canary gunicorn failed to start'; tail -40 /tmp/sniper_canary.log >&2; exit 9; }
-
-    # Give it 3 seconds to bind + load.
-    sleep 3
-    set +e
-    HC=\$(curl -fsS -m 5 http://127.0.0.1:${CANARY_PORT}/health)
-    HC_RC=\$?
-    set -e
-
+    systemctl stop sniper-canary.service 2>/dev/null || true
+    \$AS_APP --unit=sniper-canary /opt/sniper/.venv/bin/gunicorn server:app \
+        --bind 127.0.0.1:${CANARY_PORT} --workers 1
+    HC=''; HC_RC=1
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 1
+        HC=\$(curl -fsS -m 5 http://127.0.0.1:${CANARY_PORT}/health 2>/dev/null) && { HC_RC=0; break; }
+    done
     # Always stop the canary before judging.
-    if [ -f /tmp/sniper_canary.pid ]; then
-        kill \$(cat /tmp/sniper_canary.pid) 2>/dev/null || true
-        rm -f /tmp/sniper_canary.pid
-    fi
+    systemctl stop sniper-canary.service 2>/dev/null || true
 
     if [ \"\$HC_RC\" != 0 ] || ! echo \"\$HC\" | grep -q '\"status\":\"ok\"'; then
         echo 'CANARY FAILED — leaving /opt/sniper/current at prior release.' >&2
-        echo \"curl rc=\$HC_RC body=\$HC\" >&2
-        tail -40 /tmp/sniper_canary.log >&2 || true
+        echo \"body=\$HC\" >&2
+        journalctl -u sniper-canary.service -n 40 --no-pager >&2 || true
         exit 10
     fi
     echo '▸ Canary OK — flipping current symlink…'
@@ -377,12 +375,20 @@ if ! $NO_RESTART; then
         fi
         if systemctl is-enabled --quiet sniper-worker.service; then
             sudo systemctl restart sniper-worker.service
-        fi"
+        fi
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            sleep 2
+            curl -fsS -m 5 http://127.0.0.1:8765/health >/dev/null 2>&1 && { echo '▸ sniper-web healthy'; exit 0; }
+        done
+        echo 'FATAL: sniper-web is not healthy after restart. Roll back with:' >&2
+        echo '       bash deploy/sync.sh --rollback $HOST' >&2
+        journalctl -u sniper-web.service -n 30 --no-pager >&2 || true
+        exit 11"
 fi
 
 echo
 echo "▸ Deploy complete. current → $SHA"
-echo "▸ Rollback target  : \$(ssh $HOST cat /opt/sniper/previous_revision 2>/dev/null || echo '(none yet)')"
+echo "▸ Rollback target  : $(ssh "$HOST" cat /opt/sniper/previous_revision 2>/dev/null || echo '(none yet)')"
 echo "▸ Verify:"
 echo "    bash deploy/sync.sh --status $HOST"
 echo "    curl -fsS https://\$STAGING_HOSTNAME/health"

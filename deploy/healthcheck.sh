@@ -14,7 +14,10 @@ rc=0
 APP_DIR=${SNIPER_APP_DIR:-/opt/sniper/current}
 PY=${SNIPER_PYTHON:-/opt/sniper/.venv/bin/python3}
 
-if curl -fsS -m 8 "https://${STAGING_HOSTNAME:-127.0.0.1}/health" >/dev/null; then
+# The public origin (install.sh writes BILLING_ORIGIN=https://<hostname>
+# into /etc/sniper/env); Caddy has no certificate for a bare IP.
+ORIGIN=${BILLING_ORIGIN:-https://${STAGING_HOSTNAME:-127.0.0.1}}
+if curl -fsS -m 8 "${ORIGIN%/}/health" >/dev/null; then
     [ -n "${HEALTHCHECK_WEB_URL:-}" ] && curl -fsS -m 10 "$HEALTHCHECK_WEB_URL" >/dev/null
 else
     echo "healthcheck: web /health FAILED"
