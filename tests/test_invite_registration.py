@@ -40,6 +40,29 @@ def test_closed_without_or_with_a_bad_invitation(client, closed):
     assert _users() == []
 
 
+def test_unusable_invitations_are_refused_before_any_password_hashing(client, closed, monkeypatch):
+    """A made-up, used, revoked or expired token costs one indexed lookup,
+    not a ~0.3 s bcrypt hash, so it can't be used to load the server."""
+    import auth
+    import db
+    import invites
+    hashed, real = [], auth.hash_password
+    monkeypatch.setattr(auth, "hash_password", lambda p: hashed.append(1) or real(p))
+    (_, used), (rid, revoked), (eid, expired), (_, fresh) = invites.issue(4)
+    assert _register(client, "first@example.com", used).status_code == 200
+    client.post("/api/auth/logout", json={})
+    assert invites.revoke(rid) is True
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    with db.session() as c:
+        c.execute("UPDATE invitations SET expires_at = ? WHERE id = ?", (past, eid))
+    hashed.clear()
+    for bad in ("not-a-real-token", used, revoked, expired, 12345):
+        assert _register(client, "x@example.com", bad).status_code == 403, bad
+    assert hashed == []
+    assert _register(client, "y@example.com", fresh).status_code == 200 and hashed == [1]
+    assert _users() == ["first@example.com", "y@example.com"]
+
+
 def test_invitation_creates_an_ordinary_account_with_own_password(client, closed):
     import invites
     (iid, token), = invites.issue(1, note="Pat (seller)")

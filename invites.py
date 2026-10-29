@@ -65,6 +65,20 @@ def issue(count: int = 1, note: str | None = None, days: int = DEFAULT_DAYS) -> 
     return out
 
 
+def is_claimable(token) -> bool:
+    """Read-only check made before a password is hashed (~0.3 s of CPU per
+    bcrypt hash): a made-up, used, revoked or expired token is refused for
+    the price of one indexed lookup. claim() still decides, atomically."""
+    if not isinstance(token, str) or not token.strip():
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    with _db().transaction() as conn:
+        row = _exec(conn, f"SELECT 1 FROM invitations WHERE token_hash = {_ph()} AND used_at IS NULL "
+                          f"AND revoked_at IS NULL AND expires_at > {_ph()}",
+                    (_hash(token.strip()), now)).fetchone()
+    return row is not None
+
+
 def claim(conn, token, user_id: int) -> None:
     """Mark the invitation used by `user_id`, inside the caller's
     transaction. One conditional UPDATE: of two concurrent registrations
