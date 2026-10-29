@@ -272,6 +272,31 @@ source rate-limit budgets. The only legitimate manual tick is on the
 host: stop the scheduler service, run `python3 -m jobs.scheduler --once`,
 restart the service.
 
+## Operating modes
+
+Each mode is a set of values in `/etc/sniper/env`; switch by editing the
+file and `sudo systemctl restart sniper-web sniper-worker sniper-scheduler`.
+Going back is the same edit in reverse. Nothing switches automatically.
+
+| Flag | A internal staging | B seller pilot | C buyer pilot | D paid beta |
+|---|---|---|---|---|
+| `ALLOW_REGISTRATION` | 0 | 0 (invited accounts) | 0 (invited accounts) | owner decision |
+| `SNIPER_SELLER_SUBMISSIONS` | 0 | 1 | 1 | 1 |
+| `SMTP_*` | empty (no real email) | set, tested | set | set |
+| `STRIPE_*` | `sk_test_` or empty | `sk_test_` | `sk_test_` (no charges) | live keys, after terms are published |
+| Provider keys (`EBAY_*`, `MARKETCHECK_*`) | empty or sandbox | only with licence terms accepted | same | same |
+| Alert channels (`NTFY_*`, `TWILIO_*`) | unused (no real users) | unused | set | set |
+| `SNIPER_COMMERCIAL_MODE` | 1 | 1 | 1 | 1 |
+| `SNIPER_ALLOW_MANUAL_VERIFY_LINKS` | unset | unset | unset | unset |
+| Agent runs (`AGENT_PAUSED`, repo variable) | owner's choice | same | same | same |
+
+Fixtures and simulation data never go into a deployed database: the
+staging simulation (`scripts/staging_simulation.py`) creates and drops its
+own throwaway database. The seller CLI `issue-link` (hand-delivered
+verification link) refuses to run in commercial mode.
+`python -m preflight --target free` / `--target paid` checks a mode
+before you open it to anyone.
+
 ## Reverse proxy
 
 Terminate TLS at Caddy or nginx; the dashboard uses `Secure` cookies
