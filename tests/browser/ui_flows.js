@@ -16,6 +16,9 @@ const fail = msg => {
   process.exitCode = 1;
 };
 const ok = msg => console.log("ok   " + msg);
+// waits for text through a locator: older Playwright (CI pins 1.47) runs
+// page.waitForFunction predicates through eval, which the app's CSP refuses
+const textIn = (page, sel, text = /\S/, timeout) => page.locator(sel, { hasText: text }).waitFor({ timeout });
 
 (async () => {
   const b = await chromium.launch();
@@ -38,7 +41,7 @@ const ok = msg => console.log("ok   " + msg);
   const email = `pilot${Date.now()}@example.com`;
   let p = await newPage();
   await p.goto(BASE + "/login");
-  await p.waitForFunction(() => document.getElementById("switch").textContent.length > 0);
+  await textIn(p, "#switch");
   if (!(await p.textContent("#switch")).includes("invite-only")) fail("login page doesn't explain invite-only access");
   if (await p.$("#switch button")) fail("create-account offered without an invitation");
   await p.goto(BASE + link[0]);
@@ -54,7 +57,7 @@ const ok = msg => console.log("ok   " + msg);
   await reuse.waitForSelector("#invite-note:not([hidden])");
   await reuse.fill("#email", "second@example.com"); await reuse.fill("#password", "pilot-pass-123");
   await reuse.click("#submit");
-  await reuse.waitForFunction(() => document.getElementById("err").textContent.length > 0);
+  await textIn(reuse, "#err");
   if (!/already used/i.test(await reuse.textContent("#err"))) fail("reused invitation not refused: " + await reuse.textContent("#err"));
   else ok("reused invitation refused");
   await reuse.context().close();
@@ -86,7 +89,7 @@ const ok = msg => console.log("ok   " + msg);
   await p.click("#next");
   await p.waitForSelector("#c-send");
   await p.click("#c-send");                                   // no SMTP in CI → honest message, nothing published
-  await p.waitForFunction(() => document.getElementById("c-msg").textContent.length > 0);
+  await textIn(p, "#c-msg");
   if (!/email delivery isn't set up/.test(await p.textContent("#c-msg"))) fail("missing-SMTP state not explained: " + await p.textContent("#c-msg"));
   await p.click("#next");
   const review = await p.textContent("#wiz");
@@ -101,7 +104,7 @@ const ok = msg => console.log("ok   " + msg);
   if (!/Waiting for email confirmation/.test(await p.textContent("#main"))) fail("unverified listing not shown as pending");
   else ok("seller wizard submits a pending listing");
   await p.click("[data-unlist]");
-  await p.waitForFunction(() => !document.querySelector("[data-listing]"), null, { timeout: 8000 }).catch(() => fail("listing not removed"));
+  await p.waitForSelector("[data-listing]", { state: "detached", timeout: 8000 }).catch(() => fail("listing not removed"));
   ok("seller can withdraw the listing");
 
   // ---- 4. account settings ---------------------------------------------
@@ -109,12 +112,12 @@ const ok = msg => console.log("ok   " + msg);
   await p.waitForSelector("#t-zip");
   await p.fill("#t-zip", "35401"); await p.fill("#t-radius", "150");
   await p.click("#terr-form button[type=submit]");
-  await p.waitForFunction(() => document.getElementById("terr-msg").textContent === "Saved.").catch(() => fail("territory not saved"));
+  await textIn(p, "#terr-msg", /^\s*Saved\.\s*$/).catch(() => fail("territory not saved"));
   await p.click('[data-theme-opt="dark"]');
   if (await p.getAttribute("html", "data-theme") !== "dark") fail("dark theme not applied");
   await p.click('[data-theme-opt="system"]');
   await p.click("#assume-form button[type=submit]");
-  await p.waitForFunction(() => document.getElementById("assume-msg").textContent.length > 0);
+  await textIn(p, "#assume-msg");
   if (!/Lite and Pro/.test(await p.textContent("#assume-msg"))) fail("assumptions plan gate not explained");
   ok("account: territory, theme, plan-gated assumptions");
 
