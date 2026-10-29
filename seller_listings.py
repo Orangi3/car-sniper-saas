@@ -266,7 +266,7 @@ def send_verification(user, origin: str) -> dict:
                     f"The link works once and expires in {TOKEN_TTL_H} hours. Confirming shows "
                     "you control this address; it doesn't verify the vehicle.\n\n"
                     "If you didn't ask for this, you can ignore this email.\n\n"
-                    "— FlipFirst · Find it first. Flip it better.")
+                    "-- FlipFirst | Find it first. Flip it better.")
     except mailer.MailerError as e:
         # not delivered: withdraw the token so it neither works nor counts
         # against the seller's send limits, and say so plainly
