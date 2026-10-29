@@ -6,7 +6,7 @@ Disabled until configured; nothing falls back to "pretend it was sent":
     SMTP_HOST, SMTP_PORT (587 = STARTTLS, 465 = implicit TLS; SMTP_SSL=1
     forces implicit TLS on another port),
     SMTP_USER, SMTP_PASSWORD,
-    SMTP_FROM ("Car Sniper <no-reply@your-domain>")
+    SMTP_FROM ("FlipFirst <no-reply@your-domain>")
 
 TLS always verifies the server certificate and host name (Python's
 smtplib does NOT unless given a context). Plain-text SMTP (SMTP_STARTTLS=0)

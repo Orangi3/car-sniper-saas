@@ -170,7 +170,7 @@ def _to_listing(sid: int, f: dict, created: str):
         extras={"seller_type": "private", "submitted_by_seller": True,
                 "verified": False, "contact_verified": True,
                 "title_status": f["title_status"], "trim": f["trim"],
-                "provenance": "seller-submitted on Car Sniper; seller's email verified; "
+                "provenance": "seller-submitted on FlipFirst; seller's email verified; "
                               "vehicle details are seller-reported, not independently verified"})
 
 
@@ -259,10 +259,14 @@ def send_verification(user, origin: str) -> dict:
             return {"email": c["email"], "verified": True, "sent": False}
         token = _issue_token(conn, user.id, c["email"])
     try:
-        mailer.send(c["email"], "Confirm your email to publish your car on Car Sniper",
-                    "Open this link while signed in to Car Sniper to confirm this address and "
-                    f"publish your listing:\n\n{link_for(origin, token)}\n\nThe link works once "
-                    f"and expires in {TOKEN_TTL_H} hours. If you didn't ask for this, ignore it.")
+        mailer.send(c["email"], "Confirm your email to publish your car on FlipFirst",
+                    "Hi,\n\nConfirm this email address to publish your listing on FlipFirst. "
+                    "Open this link while signed in:\n\n"
+                    f"{link_for(origin, token)}\n\n"
+                    f"The link works once and expires in {TOKEN_TTL_H} hours. Confirming shows "
+                    "you control this address; it doesn't verify the vehicle.\n\n"
+                    "If you didn't ask for this, you can ignore this email.\n\n"
+                    "— FlipFirst · Find it first. Flip it better.")
     except mailer.MailerError as e:
         # not delivered: withdraw the token so it neither works nor counts
         # against the seller's send limits, and say so plainly
