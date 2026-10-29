@@ -1,128 +1,189 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-v="__ASSET_V__">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Car Sniper — sign in</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in · FlipFirst</title>
+<meta name="description" content="FlipFirst sends alerts for underpriced used cars near you, with the comparables, confidence and profit math behind every estimate.">
+<meta property="og:title" content="FlipFirst — Find it first. Flip it better.">
+<meta property="og:description" content="Alerts for underpriced used cars near you, with the comparables and profit math behind every estimate.">
+<meta name="theme-color" content="#0B1324">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/static/brand/favicon.svg?v=__ASSET_V__" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png?v=__ASSET_V__">
+<link rel="manifest" href="/static/manifest.webmanifest?v=__ASSET_V__">
+<link rel="stylesheet" href="/static/ff.css?v=__ASSET_V__">
+<script>try{var t=localStorage.getItem("ff-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <style>
-  :root {
-    --bg:#0b0d10; --panel:#13171c; --line:#222a33; --text:#e7ecf2;
-    --muted:#8b97a4; --accent:#27e1a4; --danger:#ff6e6e; --magenta:#ff4eb8;
+  .auth { min-height: 100vh; min-height: 100dvh; display: grid; grid-template-columns: minmax(0, 1fr); }
+  .auth__brand { background: #0B1324; color: #E7ECF5; padding: var(--s6) var(--s5); position: relative; overflow: hidden; }
+  .auth__brand::after { content: ""; position: absolute; right: -180px; top: -180px; width: 520px; height: 520px; border-radius: 50%;
+                        background: radial-gradient(closest-side, rgba(53, 99, 245, .35), transparent); pointer-events: none; }
+  .auth__brand .brand { color: #fff; position: relative; z-index: 1; }
+  .auth__brand .brand__word b { color: #8FB0FF; }
+  .auth__tag { margin-top: var(--s5); font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -.025em; line-height: 1.15; position: relative; z-index: 1; }
+  .auth__lede { margin-top: var(--s3); color: #B6C2D9; font-size: var(--fs-md); max-width: 460px; position: relative; z-index: 1; }
+  .auth__props { display: none; list-style: none; margin: var(--s8) 0 0; padding: 0; position: relative; z-index: 1; }
+  .auth__props li { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s3) 0; color: #C9D3E6; font-size: var(--fs-sm); border-top: 1px solid rgba(255,255,255,.08); }
+  .auth__props li strong { display: block; color: #fff; font-size: var(--fs-md); font-weight: 650; margin-bottom: 2px; }
+  .auth__props .ico { color: #8FB0FF; width: 22px; height: 22px; margin-top: 2px; }
+  .auth__foot { display: none; position: relative; z-index: 1; color: #8D9AB3; font-size: var(--fs-xs); }
+  .auth__main { display: flex; align-items: flex-start; justify-content: center; padding: var(--s6) var(--s4) var(--s10); }
+  .auth__card { width: 100%; max-width: 420px; }
+  .auth__card h1 { font-size: var(--fs-2xl); }
+  .auth__card .lead { margin-top: 6px; color: var(--muted); font-size: var(--fs-sm); }
+  .pw { position: relative; }
+  .pw .input { padding-right: 76px; }
+  .pw button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); }
+  .auth__switch { margin-top: var(--s5); font-size: var(--fs-sm); color: var(--muted); text-align: center; }
+  .auth__switch button { background: none; border: 0; padding: 0; color: var(--accent); font-weight: 600; cursor: pointer; }
+  .auth__switch button:hover { text-decoration: underline; }
+  .auth__legal { margin-top: var(--s6); font-size: var(--fs-xs); color: var(--muted); line-height: 1.55; }
+  @media (min-width: 960px) {
+    .auth { grid-template-columns: minmax(420px, 46%) minmax(0, 1fr); }
+    .auth__brand { display: flex; flex-direction: column; padding: var(--s10) var(--s12); }
+    .auth__tag { margin-top: auto; font-size: var(--fs-4xl); }
+    .auth__props { display: block; }
+    .auth__foot { display: block; margin-top: var(--s10); }
+    .auth__main { align-items: center; padding: var(--s10); }
   }
-  * { box-sizing: border-box; }
-  html, body { margin:0; padding:0; background:var(--bg); color:var(--text);
-               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  .wrap { min-height:100vh; display:grid; place-items:center; padding:24px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
-          padding:28px; width:100%; max-width:380px; box-shadow:0 8px 32px rgba(0,0,0,.4); }
-  h1 { margin:0 0 4px; font-size:22px; letter-spacing:.2px; }
-  .sub { margin:0 0 22px; color:var(--muted); font-size:13px; }
-  .tabs { display:flex; gap:8px; margin-bottom:18px; }
-  .tabs button { flex:1; background:transparent; color:var(--muted);
-                 border:1px solid var(--line); padding:8px 0; border-radius:8px;
-                 cursor:pointer; font-size:13px; }
-  .tabs button.active { background:var(--line); color:var(--text); }
-  label { display:block; margin:10px 0 4px; font-size:12px; color:var(--muted); }
-  input { width:100%; padding:10px 12px; background:#0e1115; color:var(--text);
-          border:1px solid var(--line); border-radius:8px; font-size:14px;
-          font-family:inherit; }
-  input:focus { outline:none; border-color:var(--accent); }
-  button.primary { width:100%; margin-top:16px; padding:11px 16px;
-                   background:var(--accent); color:#0a1714; border:0;
-                   border-radius:8px; font-size:14px; font-weight:600;
-                   cursor:pointer; }
-  button.primary:disabled { opacity:.5; cursor:default; }
-  .err { color:var(--danger); font-size:13px; min-height:18px; margin-top:10px; }
-  .hint { color:var(--muted); font-size:11px; margin-top:14px; text-align:center; }
-  .brand { color:var(--magenta); font-weight:700; letter-spacing:.4px; }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="card">
-    <h1>Car Sniper <span class="brand">⟁</span></h1>
-    <p class="sub">Alerts for underpriced used cars near you — with the comparables,
-       confidence and profit math behind every estimate.</p>
-    <div class="tabs">
-      <button id="tab-login" class="active" type="button">Sign in</button>
-      <button id="tab-register" type="button">Create account</button>
+<div class="auth">
+  <section class="auth__brand" aria-label="About FlipFirst">
+    <a class="brand brand--lg" href="/login" aria-label="FlipFirst">
+      <img class="brand__mark" src="/static/brand/flipfirst-mark.svg?v=__ASSET_V__" alt="" width="40" height="40">
+      <span class="brand__word">Flip<b>First</b></span>
+    </a>
+    <p class="auth__tag">Find it first.<br>Flip it better.</p>
+    <p class="auth__lede">Alerts for underpriced used cars near you — with the comparables, confidence and profit math behind every estimate.</p>
+    <ul class="auth__props">
+      <li><svg class="ico" aria-hidden="true"><use href="/static/icons.svg?v=__ASSET_V__#i-bell"></use></svg><div><strong>First to know</strong>New listings are checked continuously; matches reach your phone in minutes.</div></li>
+      <li><svg class="ico" aria-hidden="true"><use href="/static/icons.svg?v=__ASSET_V__#i-chart"></use></svg><div><strong>Evidence, not hype</strong>Every value shows its comparables and how confident the estimate is.</div></li>
+      <li><svg class="ico" aria-hidden="true"><use href="/static/icons.svg?v=__ASSET_V__#i-dollar"></use></svg><div><strong>Real profit math</strong>Repairs, fees, transport and holding costs — on your own assumptions.</div></li>
+    </ul>
+    <p class="auth__foot">Private pilot · Tuscaloosa, Alabama and surrounding area</p>
+  </section>
+
+  <main class="auth__main" id="main">
+    <div class="auth__card">
+      <div id="signin">
+        <h1 id="form-title">Welcome back</h1>
+        <p class="lead" id="form-lead">Sign in to see today's deals.</p>
+        <div class="notice notice--info" id="invite-note" style="margin-top:var(--s4)" hidden>
+          <svg class="ico" aria-hidden="true"><use href="/static/icons.svg?v=__ASSET_V__#i-mail"></use></svg>
+          <div>You've been invited to the FlipFirst pilot. Create your account with your own password — this invitation link works once.</div>
+        </div>
+        <form id="form" style="margin-top:var(--s6)" novalidate>
+          <div class="field">
+            <label class="label" for="email">Email</label>
+            <input class="input" id="email" name="email" type="email" required autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false">
+          </div>
+          <div class="field">
+            <label class="label" for="password">Password</label>
+            <div class="pw">
+              <input class="input" id="password" name="password" type="password" required minlength="8" autocomplete="current-password">
+              <button class="btn btn--ghost btn--sm" type="button" id="pw-toggle" aria-pressed="false" aria-controls="password">Show</button>
+            </div>
+            <span class="hint" id="pw-hint" hidden>At least 8 characters.</span>
+          </div>
+          <div class="error-text" id="err" role="alert" style="margin-top:var(--s3);min-height:18px"></div>
+          <button class="btn btn--primary btn--lg btn--block" id="submit" type="submit" style="margin-top:var(--s2)">Sign in</button>
+        </form>
+        <p class="auth__switch" id="switch"></p>
+        <p class="auth__legal">FlipFirst finds underpriced used cars near you. Values and profits are estimates from comparable listings, not guarantees. Every deal links to the original listing — inspect the car and check the title before you buy.</p>
+        <p class="auth__legal" id="help" style="margin-top:var(--s2)">Trouble signing in? Reply to your invitation email.</p>
+      </div>
     </div>
-    <form id="form" autocomplete="on">
-      <label for="email">Email</label>
-      <input id="email" name="email" type="email" required autocomplete="email">
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" required
-             minlength="8" autocomplete="current-password">
-      <button class="primary" id="submit" type="submit">Sign in</button>
-      <div class="err" id="err"></div>
-    </form>
-    <p class="hint">Values and profits are estimates from comparable listings, not
-       guarantees. Every deal links to the original listing — inspect the car and
-       check the title before you buy.</p>
-  </div>
+  </main>
 </div>
+<script src="/static/ff.js?v=__ASSET_V__"></script>
 <script>
+"use strict";
 (function () {
-  const $ = (id) => document.getElementById(id);
-  let mode = "login"; // "login" | "register"
+  const $ = id => document.getElementById(id);
+  let mode = "login", registration = "invite", invite = null;
+
+  // Invite link: /login#invite=<token>. A fragment never reaches the server
+  // or proxy logs; drop it from the address bar once read.
+  function readInvite() {
+    const inv = location.hash.match(/^#invite=([A-Za-z0-9_-]+)$/);
+    if (!inv) return false;
+    invite = inv[1]; history.replaceState(null, "", location.pathname);
+    return true;
+  }
+  readInvite();
+  // an invite link opened in a tab that already shows /login only changes the fragment
+  window.addEventListener("hashchange", () => { if (readInvite()) setMode("register"); });
 
   function setMode(m) {
     mode = m;
-    $("tab-login").classList.toggle("active", m === "login");
-    $("tab-register").classList.toggle("active", m === "register");
-    $("submit").textContent = (m === "login") ? "Sign in" : "Create account";
-    $("password").setAttribute("autocomplete",
-      m === "login" ? "current-password" : "new-password");
+    const reg = m === "register";
+    $("form-title").textContent = reg ? "Create your account" : "Welcome back";
+    $("form-lead").textContent = reg ? "Pick the email and password you'll sign in with." : "Sign in to see today's deals.";
+    $("invite-note").hidden = !(reg && invite);
+    $("submit").textContent = reg ? "Create account" : "Sign in";
+    $("password").setAttribute("autocomplete", reg ? "new-password" : "current-password");
+    $("pw-hint").hidden = !reg;
     $("err").textContent = "";
+    const canRegister = !!invite || registration === "open";
+    const sw = $("switch");
+    sw.textContent = "";
+    if (reg) {
+      sw.append("Already have an account? ");
+      const b = document.createElement("button"); b.type = "button"; b.textContent = "Sign in"; b.onclick = () => setMode("login"); sw.append(b);
+    } else if (canRegister) {
+      sw.append("New to FlipFirst? ");
+      const b = document.createElement("button"); b.type = "button"; b.textContent = "Create an account"; b.onclick = () => setMode("register"); sw.append(b);
+    } else {
+      sw.textContent = "FlipFirst is invite-only during the pilot.";
+    }
+    document.title = (reg ? "Create account" : "Sign in") + " · FlipFirst";
   }
 
-  $("tab-login").addEventListener("click", () => setMode("login"));
-  $("tab-register").addEventListener("click", () => setMode("register"));
+  $("pw-toggle").onclick = () => {
+    const p = $("password"), show = p.type === "password";
+    p.type = show ? "text" : "password";
+    $("pw-toggle").textContent = show ? "Hide" : "Show";
+    $("pw-toggle").setAttribute("aria-pressed", show ? "true" : "false");
+  };
 
-  // Invite link: /login#invite=<code>. A fragment never reaches the server
-  // or proxy logs; drop it from the address bar once read.
-  let invite = null;
-  const inv = location.hash.match(/^#invite=([A-Za-z0-9_-]+)$/);
-  if (inv) {
-    invite = inv[1];
-    history.replaceState(null, "", location.pathname);
-    setMode("register");
-  }
-
-  // If we're already signed in, jump straight to the dashboard.
-  fetch("/api/me", {credentials: "same-origin"})
-    .then(r => r.ok ? location.replace("/") : null)
+  // Already signed in → straight to the app. ?optional=1 answers 200 when
+  // signed out (no console error) and says whether sign-up is open.
+  fetch("/api/me?optional=1", {credentials: "same-origin"})
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (!d) return;
+      if (d.user) { location.replace("/m"); return; }
+      registration = d.registration || "invite";
+      setMode(invite ? "register" : mode);
+    })
     .catch(() => {});
+  setMode(invite ? "register" : "login");
 
-  $("form").addEventListener("submit", async (e) => {
+  $("form").addEventListener("submit", async e => {
     e.preventDefault();
-    const email = $("email").value.trim();
-    const password = $("password").value;
-    if (!email || !password) return;
-    $("submit").disabled = true;
-    $("err").textContent = "";
-    const url = (mode === "login")
-      ? "/api/auth/login" : "/api/auth/register";
+    const email = $("email").value.trim(), password = $("password").value;
+    const err = $("err");
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { err.textContent = "Enter a valid email address."; $("email").focus(); return; }
+    if (!password || (mode === "register" && password.length < 8)) { err.textContent = mode === "register" ? "Use at least 8 characters for your password." : "Enter your password."; $("password").focus(); return; }
+    FF.busy($("submit"), true); err.textContent = "";
+    const url = mode === "login" ? "/api/auth/login" : "/api/auth/register";
+    const body = mode === "register" && invite ? {email, password, invite} : {email, password};
     try {
-      const r = await fetch(url, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(mode === "register" && invite
-                             ? {email, password, invite}
-                             : {email, password}),
-      });
+      const r = await fetch(url, {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
-        $("err").textContent = data.error || ("HTTP " + r.status);
-        $("submit").disabled = false;
+        err.textContent = data.error ? data.error.charAt(0).toUpperCase() + data.error.slice(1) + (/[.!?]$/.test(data.error) ? "" : ".")
+          : r.status === 429 ? "Too many attempts — wait a minute and try again." : "Something went wrong. Try again.";
+        FF.busy($("submit"), false);
         return;
       }
-      // Cookie is set; go to the dashboard.
-      location.replace("/");
-    } catch (err) {
-      $("err").textContent = "Network error: " + err.message;
-      $("submit").disabled = false;
+      location.replace("/m");
+    } catch (x) {
+      err.textContent = "Can't reach FlipFirst right now. Check your connection and try again.";
+      FF.busy($("submit"), false);
     }
   });
 })();

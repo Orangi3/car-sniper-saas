@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>SNIPER ⟁ HUNT MODE</title>
+<title>Classic console · FlipFirst</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet">
 <style>
 /* ============================================================
    CYBERPUNK TERMINAL — v7
@@ -579,6 +579,30 @@ tr:hover { background: rgba(0,212,255,.04); }
 }
 small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
 .urgent-row { background: rgba(255,46,154,.06) !important; }
+
+/* ============================================================
+   FlipFirst theme layer (owner-only classic console) — remaps the
+   v7 palette to FlipFirst tokens and switches the neon effects off.
+   ============================================================ */
+:root {
+  --bg: #070B14; --bg-2: #0D1424; --panel: #0D1424; --panel-2: #121B2E;
+  --border: #1D2840; --border-2: #1D2840; --ink: #E7ECF5; --ink-2: #C3CCDB; --muted: #8A97AE;
+  --neon: #34D399; --neon-d: #10B981; --cyan: #6B91FF; --magenta: #FF7A7A; --gold: #F5B544; --orange: #F59E6B;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+}
+html, body { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.bg-layer, .bg-scan, #code-rain { display: none !important; }
+*, *::before, *::after { text-shadow: none !important; }
+.ff-brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 750; letter-spacing: -.03em; }
+.ff-brand img { border-radius: 7px; }
+.ff-brand b { color: #8FB0FF; font-weight: 750; }
+.ff-brand small a { color: #8FB0FF; }
+/* calm the v7 terminal look: no neon glows, readable type, room for the account chip */
+*, *::before, *::after { box-shadow: none !important; }
+:focus-visible { outline: 2px solid #6B91FF !important; outline-offset: 2px; }
+body *:not(code):not(pre):not(kbd) { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; }
+.mono, td, .value { font-variant-numeric: tabular-nums; }
+@media (min-width: 900px) { header { padding-right: 330px !important; } }
 </style>
 </head>
 <body>
@@ -591,12 +615,12 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
 
 <!-- ============ HEADER ============ -->
 <header>
-  <h1>⟁ SNIPER <small>HUNT MODE v7 · build r5</small></h1>
+  <h1 class="ff-brand"><img src="/static/brand/flipfirst-mark.svg" alt="" width="28" height="28"><span>Flip<b>First</b></span> <small>Classic console · <a href="/m">Open app</a> · <a href="/admin/ops">Operations</a></small></h1>
   <span class="live-pill"><span class="live-dot"></span><span id="hero-status">SCANNING</span></span>
   <span class="hd-meta">ZIP <strong id="hero-zip">35401</strong> · R<strong id="hero-radius">100</strong>mi</span>
   <span class="hd-meta">LAST <strong id="hero-last">–</strong></span>
   <span class="hd-meta">THRESHOLD <strong id="hero-thresh">25</strong>%</span>
-  <button id="poll-now" class="cta-poll">⚡ Poll All Sources Now</button>
+  <button id="poll-now" class="cta-poll">Poll all sources now</button>
 </header>
 
 <!-- ============ LIVE TICKER ============ -->
@@ -607,22 +631,22 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
 <!-- ============ STAT TILES ============ -->
 <div class="stats">
   <div class="stat-tile profit">
-    <div class="label">⟁ Profit Pool</div>
+    <div class="label">Profit Pool</div>
     <div class="value mono" id="hero-profit">$0</div>
     <div class="sub">across active alerts</div>
   </div>
   <div class="stat-tile discount">
-    <div class="label">⟁ Best Discount</div>
+    <div class="label">Best Discount</div>
     <div class="value mono" id="hero-best">—</div>
     <div class="sub" id="hero-best-car">no deals yet</div>
   </div>
   <div class="stat-tile deals">
-    <div class="label">⟁ Deals Found</div>
+    <div class="label">Deals Found</div>
     <div class="value mono" id="hero-deals">0</div>
     <div class="sub" id="hero-saved-count">0 saved</div>
   </div>
   <div class="stat-tile scanned">
-    <div class="label">⟁ Listings Scanned</div>
+    <div class="label">Listings Scanned</div>
     <div class="value mono" id="hero-scanned">0</div>
     <div class="sub" id="hero-poll-secs">poll: – s</div>
   </div>
@@ -631,16 +655,16 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
 <!-- ============ TOP DEAL HERO ============ -->
 <div class="top-deal" id="top-deal">
   <div class="top-deal-content"><div class="top-deal-main">
-    <div class="empty">⏳ Click "⚡ POLL ALL SOURCES NOW" to begin hunting.</div>
+    <div class="empty">Click “Poll all sources now” to begin.</div>
   </div></div>
 </div>
 
 <!-- ============ TABS ============ -->
 <div class="tabs">
-  <div class="tab active" data-tab="deals">⚡ Best Deals <span class="count" id="tab-count-deals">0</span></div>
-  <div class="tab" data-tab="closing">⏰ Closing Soon <span class="count" id="tab-count-closing">0</span></div>
-  <div class="tab" data-tab="saved">★ Saved <span class="count" id="tab-count-saved">0</span></div>
-  <div class="tab" data-tab="all">▦ All Listings <span class="count" id="tab-count-all">0</span></div>
+  <div class="tab active" data-tab="deals">Best deals <span class="count" id="tab-count-deals">0</span></div>
+  <div class="tab" data-tab="closing">Closing soon <span class="count" id="tab-count-closing">0</span></div>
+  <div class="tab" data-tab="saved">Saved <span class="count" id="tab-count-saved">0</span></div>
+  <div class="tab" data-tab="all">All listings <span class="count" id="tab-count-all">0</span></div>
 </div>
 
 <main>
@@ -654,12 +678,12 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
     </div>
 
     <div class="card">
-      <h2>⟁ Quick Filters</h2>
+      <h2>Quick Filters</h2>
       <label class="checkbox-row"><input type="checkbox" id="cash-only" checked> Cash only</label>
       <label class="checkbox-row"><input type="checkbox" id="hide-dealer"> Hide dealers</label>
       <label class="checkbox-row"><input type="checkbox" id="hide-salvage" checked> Hide salvage</label>
       <label class="checkbox-row"><input type="checkbox" id="hide-auction" checked> Hide auctions</label>
-      <label class="checkbox-row"><input type="checkbox" id="show-scams"> 🚩 Show scams</label>
+      <label class="checkbox-row"><input type="checkbox" id="show-scams"> Show scams</label>
       <div class="filter-group" style="margin-top:10px;">
         <label>Posted Within</label>
         <div class="age-chips">
@@ -674,7 +698,7 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
     </div>
 
     <div class="card">
-      <h2>⟁ Location</h2>
+      <h2>Location</h2>
       <div class="filter-group"><label>ZIP</label><input id="set-zip" maxlength="5"></div>
       <div class="filter-group"><label>Radius (mi)</label><input id="set-radius" type="number" min="1" max="1000"></div>
       <div class="filter-group"><label>CL regions</label><input id="set-cl-regions" placeholder="tuscaloosa, bham, montgomery"></div>
@@ -684,7 +708,7 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
     </div>
 
     <div class="card">
-      <h2>⟁ Specs</h2>
+      <h2>Specs</h2>
       <div class="filter-group"><label>Search</label><input id="f-search" placeholder="e.g. F-150, Miata"></div>
       <div class="filter-group"><label>Year</label>
         <div class="row"><input id="f-year-min" placeholder="min" type="number"><input id="f-year-max" placeholder="max" type="number"></div>
@@ -709,7 +733,7 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
     </div>
 
     <div class="card">
-      <h2>⟁ Sources</h2>
+      <h2>Sources</h2>
       <div class="filter-group"><label>By Source</label>
         <select id="f-source"><option value="">All sources</option></select>
       </div>
@@ -728,14 +752,14 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
     </div>
 
     <div id="pane-closing" class="pane" style="display:none;">
-      <div class="alert-bar">⏰ Auctions ending within <strong id="closing-hrs-disp">24</strong> hours
+      <div class="alert-bar">Auctions ending within <strong id="closing-hrs-disp">24</strong> hours
         <button class="secondary" id="closing-hrs-btn" style="float:right;padding:2px 8px;font-size:10px;">Window</button>
       </div>
       <div id="closing-out"><div class="empty">▸ Loading…</div></div>
     </div>
 
     <div id="pane-saved" class="pane" style="display:none;">
-      <div id="saved-out"><div class="empty">★ Star a deal anywhere to save it here.</div></div>
+      <div id="saved-out"><div class="empty">Star a deal anywhere to save it here.</div></div>
     </div>
 
     <div id="pane-all" class="pane" style="display:none;">
@@ -759,7 +783,7 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
          hides upgrade controls — admins don't pay themselves. No Stripe
          price IDs, customer IDs, or subscription IDs are ever surfaced. -->
     <div class="card" id="billing-card" aria-live="polite">
-      <h2>⟁ Subscription</h2>
+      <h2>Subscription</h2>
       <div id="billing-card-body">
         <div class="empty" id="billing-skeleton">▸ Loading subscription…</div>
       </div>
@@ -780,13 +804,13 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
     </div>
 
     <div class="card">
-      <h2>⟁ VIN Check</h2>
+      <h2>VIN Check</h2>
       <div class="row"><input id="vin-input" placeholder="17-char VIN" maxlength="17" style="text-transform:uppercase;"><button id="vin-go" style="flex:0 0 auto;">Check</button></div>
       <div id="vin-out"></div>
     </div>
 
     <div class="card">
-      <h2>⟁ Sold Comps (2025+)</h2>
+      <h2>Sold Comps (2025+)</h2>
       <div class="row"><input id="c-year" placeholder="Year" type="number"><input id="c-make" placeholder="Make"></div>
       <div class="row"><input id="c-model" placeholder="Model"><input id="c-miles" placeholder="Miles" type="number"></div>
       <div style="margin: 8px 0;">
@@ -801,13 +825,13 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
     </div>
 
     <div class="card">
-      <h2>⟁ Diagnostics</h2>
+      <h2>Diagnostics</h2>
       <small class="muted" style="display:block;margin-bottom:8px;">If a source returns 0 the reason shows here.</small>
       <div id="diagnostics-out" style="font-size:11px;"><div class="empty">▸ Waiting…</div></div>
     </div>
 
     <div class="card">
-      <h2>⟁ FB / OfferUp / Nextdoor</h2>
+      <h2>FB / OfferUp / Nextdoor</h2>
       <div style="font-size:12px;margin-bottom:8px;">Pushed: <strong id="mp-count">0</strong></div>
       <small class="muted">Install the Chrome extension at <code>~/Desktop/sniper/marketplace_extension</code>. Browser-session capture tool. Use only on accounts and sites where you have permission and review each platform's terms.</small>
     </div>
@@ -1078,7 +1102,7 @@ window.__SNIPER_BILLING = (function () {
         + 'border:1px solid rgba(255,201,77,.3);border-radius:8px;'
         + 'background:rgba(255,201,77,.06);color:var(--gold);font-size:12px;'
         + 'line-height:1.5;">'
-        + '⏳ Billing is temporarily unavailable. Please try again later. '
+        + 'Billing is temporarily unavailable. Please try again later. '
         + 'Your account and saved data are unaffected.</div>')
       : "";
     return prefix
@@ -1141,7 +1165,7 @@ window.__SNIPER_BILLING = (function () {
       healthLine = '<div style="margin-top:8px;padding:8px;border-radius:6px;'
         + 'background:rgba(255,201,77,.08);border:1px solid rgba(255,201,77,.3);'
         + 'color:var(--gold);font-size:12px;">'
-        + '⏳ Scheduled to cancel on ' + _escape(periodEnd)
+        + 'Scheduled to cancel on ' + _escape(periodEnd)
         + '. You keep full access until then.</div>';
     } else if (periodEnd) {
       healthLine = '<div style="margin-top:6px;color:var(--muted);font-size:12px;">'
@@ -1175,7 +1199,7 @@ window.__SNIPER_BILLING = (function () {
         + 'border:1px solid rgba(255,201,77,.3);border-radius:8px;'
         + 'background:rgba(255,201,77,.06);color:var(--gold);font-size:12px;'
         + 'line-height:1.5;">'
-        + '⏳ Billing is temporarily unavailable. Please try again later.</div>')
+        + 'Billing is temporarily unavailable. Please try again later.</div>')
       : "";
     return (opts.returnBanner || "")
       + unavailableBanner
@@ -1725,10 +1749,10 @@ async function refreshHero() {
 function renderTopDeal(r, isNearMiss) {
   const root = $("#top-deal");
   if (!r) {
-    root.innerHTML = `<div class="empty">⏳ Click "⚡ POLL ALL SOURCES NOW" to begin hunting.</div>`; return;
+    root.innerHTML = `<div class="empty">Click “Poll all sources now” to begin.</div>`; return;
   }
   const profitHtml = r.est_profit && r.est_profit > 0
-    ? `<div class="big-profit">⟁ Est. profit ${fmt(r.est_profit)}</div>` : '';
+    ? `<div class="big-profit">Est. profit ${fmt(r.est_profit)}</div>` : '';
   root.innerHTML = `
     <div class="car">${r.year||""} ${H(r.make)} ${H(r.model)}
       ${r.odometer ? '<span class="tag">'+fmtMi(r.odometer)+'</span>' : ""}
@@ -1825,7 +1849,7 @@ function renderAlert(r, isNearMiss=false) {
     try { reasons = JSON.parse(r.scam_reasons || "[]") || []; } catch (e) {}
     if (!Array.isArray(reasons)) reasons = [];
     const tip = (reasons.slice(0, 5).join(" · ") || "suspicious patterns").replace(/"/g,"&quot;");
-    scamTag = `<span class="tag bad" title="${tip}">🚩 SCAM ${r.scam_score}</span>`;
+    scamTag = `<span class="tag bad" title="${tip}">SCAM ${r.scam_score}</span>`;
   }
   const pending = r.pending_scoring;
   let discountHtml;
@@ -1928,15 +1952,15 @@ async function refreshAlerts() {
     if (fallbackKind === "board") {
       header.style.display = "block";
       header.innerHTML = alerts.length
-        ? '⚡ <strong>'+alerts.length+'</strong> verified deal'+(alerts.length===1?'':'s')
+        ? '<strong>'+alerts.length+'</strong> verified deal'+(alerts.length===1?'':'s')
           +' · remaining rows are live estimates refining to verified sold comps.'
-        : '⚡ <strong>'+rows.length+'</strong> ranked listings — instant estimates, upgrading to verified sold comps as comps load.';
+        : '<strong>'+rows.length+'</strong> ranked listings — instant estimates, upgrading to verified sold comps as comps load.';
     } else if (fallbackKind === "fresh" && rows.length) {
       header.style.display = "block";
       header.innerHTML = '▸ Showing <strong>'+rows.length+'</strong> newest listings.';
     } else header.style.display = "none";
 
-    if (!rows.length) { root.innerHTML = '<div class="empty">▸ Database empty. Click "⚡ POLL ALL SOURCES NOW" to ingest the first batch.</div>'; return; }
+    if (!rows.length) { root.innerHTML = '<div class="empty">No listings yet. Click “Poll all sources now” to ingest the first batch.</div>'; return; }
     root.innerHTML = rows.map(r => renderAlert(r, !r._verifiedDeal)).join("");
     wireStarButtons();
   } catch (e) { $("#alerts").innerHTML = '<div class="empty">Error: '+e.message+'</div>'; }
@@ -2008,7 +2032,7 @@ async function refreshSaved() {
     $("#tab-count-saved").textContent = rows.length;
     const root = $("#saved-out");
     if (!rows.length) {
-      root.innerHTML = '<div class="empty">★ Star a deal anywhere to save it here. Use ✕ to Pass on a deal — it lands here as <em>passed</em>.</div>';
+      root.innerHTML = '<div class="empty">Star a deal anywhere to save it here. Use ✕ to Pass on a deal — it lands here as <em>passed</em>.</div>';
       return;
     }
     // Render each saved deal + append pipeline/notes controls inside the card.
@@ -2070,7 +2094,7 @@ async function refreshListings() {
           ${r.is_salvage ? '<span class="tag salvage">salvage</span>' : ''}
           ${r.is_auction ? '<span class="tag auction">auction</span>' : ''}
           ${r.is_cash_only ? '<span class="tag cash">cash</span>' : ''}
-          ${(r.scam_score && r.scam_score >= 30) ? '<span class="tag bad">🚩'+r.scam_score+'</span>' : ''}</td>
+          ${(r.scam_score && r.scam_score >= 30) ? '<span class="tag bad">scam '+r.scam_score+'</span>' : ''}</td>
       </tr>`).join("");
   } catch (e) { $("#listings-table tbody").innerHTML = '<tr><td colspan="8" class="empty">'+e.message+'</td></tr>'; }
 }
