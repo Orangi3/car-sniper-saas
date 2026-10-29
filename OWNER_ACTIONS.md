@@ -12,6 +12,7 @@ what unblocks the most.
 | **B. First live data check (eBay)** | After #4 below: Settings → Secrets and variables → Actions → add `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`. Then Actions → *live-source-check* → Run workflow (ZIP, radius). Download the `live-source-probe` artifact | First real listings ever seen by the adapter; aggregate counts and field coverage only. One search call |
 | **C. Same for MarketCheck** (after #3) | add secret `MARKETCHECK_API_KEY`, run the workflow with `marketcheck_fsbo` | Live FSBO field mapping + listing count for the territory (one call ≈ $0.01). The probe stores nothing; it does not replace the written agreement for production use |
 | **D. Accept or change the launch-stage thresholds** | Read `CURRENT_STATE.md` §5 and edit the numbers | Fixes the bar before data arrives |
+| **E. Email for seller verification** | Pick any SMTP service you already have (your mailbox provider's SMTP with an app password, or a transactional provider's free tier). Put `SMTP_HOST`, `SMTP_PORT` (587), `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM="Car Sniper <no-reply@yourdomain>"` in `/etc/sniper/env`. Confirm: Setup → "Email me a confirmation link" arrives | Seller listings publish only after the seller confirms their email; without SMTP nothing publishes. See `SELLER_PILOT.md` |
 
 Optional: activate agent runs (`AGENTS.md` § Activation) — your own
 spend-limited `ANTHROPIC_API_KEY`, `AGENT_MODEL` variable, `agent-go` label.
