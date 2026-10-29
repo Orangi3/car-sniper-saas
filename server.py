@@ -1404,9 +1404,9 @@ def billing_cancel_return():
 def api_register():
     """Create an account. Open registration unless ALLOW_REGISTRATION=0.
     New users default to plan='free', role='user'."""
-    if not auth.ALLOW_REGISTRATION:
-        return jsonify({"error": "registration disabled"}), 403
     body = request.get_json(silent=True) or {}
+    if not auth.ALLOW_REGISTRATION and not auth.invite_ok(body.get("invite_code")):
+        return jsonify({"error": "registration is by invitation only"}), 403
     email = (body.get("email") or "").strip().lower()
     password = body.get("password") or ""
     try:

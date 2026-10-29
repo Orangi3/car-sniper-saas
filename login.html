@@ -79,6 +79,16 @@
   $("tab-login").addEventListener("click", () => setMode("login"));
   $("tab-register").addEventListener("click", () => setMode("register"));
 
+  // Invite link: /login#invite=<code>. A fragment never reaches the server
+  // or proxy logs; drop it from the address bar once read.
+  let invite = null;
+  const inv = location.hash.match(/^#invite=([A-Za-z0-9_-]+)$/);
+  if (inv) {
+    invite = inv[1];
+    history.replaceState(null, "", location.pathname);
+    setMode("register");
+  }
+
   // If we're already signed in, jump straight to the dashboard.
   fetch("/api/me", {credentials: "same-origin"})
     .then(r => r.ok ? location.replace("/") : null)
@@ -98,7 +108,9 @@
         method: "POST",
         credentials: "same-origin",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({email, password}),
+        body: JSON.stringify(mode === "register" && invite
+                             ? {email, password, invite_code: invite}
+                             : {email, password}),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {

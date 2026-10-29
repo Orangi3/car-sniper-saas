@@ -51,6 +51,15 @@ SESSION_TTL_DAYS = 30
 # lock down to admin-created users only.
 ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "1") != "0"
 
+
+def invite_ok(code) -> bool:
+    """With registration closed, people holding the owner's invite link
+    (/login#invite=<SNIPER_INVITE_CODE>) can still create their own
+    account and choose their own password. Unset or short = no invites."""
+    expected = os.environ.get("SNIPER_INVITE_CODE", "").strip()
+    return (len(expected) >= 16 and isinstance(code, str)
+            and secrets.compare_digest(code.strip().encode(), expected.encode()))
+
 # Cookies set Secure when the request arrived via HTTPS (real prod) but not
 # when reaching the dev server over http://127.0.0.1. SameSite=Lax keeps
 # cookies on top-level navigations while blocking the common CSRF flows.
