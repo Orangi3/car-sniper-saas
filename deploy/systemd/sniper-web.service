@@ -13,6 +13,7 @@ User=sniper
 Group=sniper
 WorkingDirectory=/opt/sniper/current
 EnvironmentFile=/etc/sniper/env
+Environment=SNIPER_LOG_DIR=/var/log/sniper
 # GUNICORN_WORKERS lives in /etc/sniper/env (default 2 — tune AFTER
 # observing CPU/RSS/request load; do NOT hard-code as a correctness req).
 ExecStart=/opt/sniper/.venv/bin/gunicorn server:app \

@@ -123,7 +123,9 @@ if _os.environ.get("SNIPER_SKIP_MIGRATION_CHECK", "0") != "1":
 # ---------- Structured request logging + global error handling ----------
 _logger = logging.getLogger("sniper")
 if not _logger.handlers:
-    _h = logging.FileHandler(ROOT / "sniper-requests.log")
+    # SNIPER_LOG_DIR: deployed hosts set /var/log/sniper (release dirs are
+    # read-only to the app user and replaced on every deploy)
+    _h = logging.FileHandler(Path(_os.environ.get("SNIPER_LOG_DIR") or ROOT) / "sniper-requests.log")
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     _logger.addHandler(_h)
     _logger.setLevel(logging.INFO)
