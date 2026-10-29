@@ -60,11 +60,20 @@ _DEFAULTS: dict[str, dict] = {
 # Approximate unit costs for usage instrumentation (USD cents). These are
 # operator-set assumptions, NOT measured prices — set them from your actual
 # provider invoices via env.
+def _cents(name: str, default: float) -> float:
+    # an empty value (as in deploy/env.staging.example) means "not set";
+    # a bad value must not take down every request that imports plans
+    try:
+        return float(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
 UNIT_COST_CENTS = {
-    "sms": float(os.environ.get("COST_SMS_CENTS", "1.0")),
-    "push": float(os.environ.get("COST_PUSH_CENTS", "0")),
-    "webhook": float(os.environ.get("COST_WEBHOOK_CENTS", "0")),
-    "comps_lookup": float(os.environ.get("COST_COMPS_LOOKUP_CENTS", "0")),
+    "sms": _cents("COST_SMS_CENTS", 1.0),
+    "push": _cents("COST_PUSH_CENTS", 0),
+    "webhook": _cents("COST_WEBHOOK_CENTS", 0),
+    "comps_lookup": _cents("COST_COMPS_LOOKUP_CENTS", 0),
 }
 
 

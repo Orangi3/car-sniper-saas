@@ -82,3 +82,20 @@ def test_web_writes_logs_outside_the_read_only_release_dir():
     unit = (DEPLOY / "systemd" / "sniper-web.service").read_text()
     assert "Environment=SNIPER_LOG_DIR=/var/log/sniper" in unit
     assert "/var/log/sniper" in unit.split("ReadWritePaths=")[1].splitlines()[0]
+
+
+def test_app_modules_load_under_the_shipped_env_template(tmp_path):
+    """Every empty KEY= in the template must mean "not set". COST_SMS_CENTS=
+    made `import plans` raise, which 500'd saved-search creation and failed
+    every alert delivery job on a host configured from the template."""
+    import os
+    import subprocess
+    import sys
+    env = {k: v for k, v in systemd_env((DEPLOY / "env.staging.example").read_text()).items()
+           if k != "DATABASE_URL"}
+    env.update(PATH=os.environ.get("PATH", ""), SNIPER_DB_PATH=str(tmp_path / "t.db"))
+    code = ("import plans, notifications, seller_listings, mailer, config, preflight, ops\n"
+            "assert plans.UNIT_COST_CENTS['sms'] == 1.0\n")
+    r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-800:]
