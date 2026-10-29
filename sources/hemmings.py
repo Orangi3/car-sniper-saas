@@ -8,11 +8,14 @@ from __future__ import annotations
 import feedparser
 import requests
 
-from .base import (NormalizedListing, extract_int, extract_make_model,
+from . import health
+from .base import (NormalizedListing, extract_int, extract_price, extract_make_model,
                     extract_miles, extract_year, PRICE_RE)
 
 SOURCE_ID = "hemmings"
 SOURCE_NAME = "Hemmings (classics)"
+# Data-licensing class (see SOURCES.md): Public RSS feed; permission to redistribute in a paid product not confirmed.
+LICENSING = "unverified"
 FEEDS = [
     "https://www.hemmings.com/classifieds/cars-for-sale/feed/",
     "https://www.hemmings.com/feed/cars-for-sale.xml",
@@ -29,20 +32,10 @@ def enabled(cfg: dict) -> bool:
 
 
 def poll(cfg: dict) -> list[NormalizedListing]:
-    content = None
-    for feed_url in FEEDS:
-        try:
-            r = requests.get(feed_url, headers=UA, timeout=10)
-            LAST_RESULTS["last_url"] = feed_url
-            LAST_RESULTS["last_status"] = r.status_code
-            if r.status_code == 200 and len(r.content) > 200:
-                content = r.content; break
-        except requests.RequestException as e:
-            LAST_RESULTS["last_error"] = f"{type(e).__name__}"
-            continue
-    if not content:
+    feed = health.fetch_feed(health.report(SOURCE_ID), SOURCE_ID, FEEDS,
+                             headers=UA, timeout=10)
+    if feed is None:
         return []
-    feed = feedparser.parse(content)
     out: list[NormalizedListing] = []
     for e in feed.entries:
         url = e.get("link") or ""
@@ -54,7 +47,7 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         mk, mdl = extract_make_model(title)
         out.append(NormalizedListing(
             source=SOURCE_ID, source_id=slug, url=url, title=title,
-            price=extract_int(PRICE_RE, title) or extract_int(PRICE_RE, desc),
+            price=extract_price(title) or extract_price(desc),
             year=extract_year(title), make=mk, model=mdl,
             odometer=extract_miles(desc),
             description=desc, posted_at=e.get("published"),

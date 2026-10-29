@@ -251,6 +251,19 @@ Put `DATABASE_URL`, `SECRET_KEY`, `ALLOW_REGISTRATION`,
 `GUNICORN_WORKERS`, and all `STRIPE_*` test-mode keys in
 `/etc/sniper/env` (0600, owned by sniper).
 
+### 3. `sniper-worker.service` — durable jobs (one or more)
+
+Scores listings and delivers notifications from the `jobs` table. Safe to
+run several (atomic claims, leases). Unit file: `deploy/systemd/sniper-worker.service`
+(`python3 -m jobs.worker --threads 4`). Without it nothing is scored or
+alerted. Enable with `systemctl enable --now sniper-worker.service`.
+
+### Preflight
+
+After every deploy run `python3 -m preflight --target paid` (or `--target
+free`). It exits non-zero and lists the blockers unless the deployment is
+actually ready for that stage; `/health` returning 200 is not that check.
+
 **Why no `/api/admin/poll` HTTP route.** Phase 2C.1 deliberately removed
 the previous admin-only poll trigger. Web workers must never call
 `sniper.poll_once` — N gunicorn workers could each spawn the scorer
@@ -258,6 +271,31 @@ thread pool, fan out duplicate writes, race the scheduler, and burn
 source rate-limit budgets. The only legitimate manual tick is on the
 host: stop the scheduler service, run `python3 -m jobs.scheduler --once`,
 restart the service.
+
+## Operating modes
+
+Each mode is a set of values in `/etc/sniper/env`; switch by editing the
+file and `sudo systemctl restart sniper-web sniper-worker sniper-scheduler`.
+Going back is the same edit in reverse. Nothing switches automatically.
+
+| Flag | A internal staging | B seller pilot | C buyer pilot | D paid beta |
+|---|---|---|---|---|
+| `ALLOW_REGISTRATION` | 0 | 0 (invited accounts) | 0 (invited accounts) | owner decision |
+| `SNIPER_SELLER_SUBMISSIONS` | 0 | 1 | 1 | 1 |
+| `SMTP_*` | empty (no real email) | set, tested | set | set |
+| `STRIPE_*` | `sk_test_` or empty | `sk_test_` | `sk_test_` (no charges) | live keys, after terms are published |
+| Provider keys (`EBAY_*`, `MARKETCHECK_*`) | empty or sandbox | only with licence terms accepted | same | same |
+| Alert channels (`NTFY_*`, `TWILIO_*`) | unused (no real users) | unused | set | set |
+| `SNIPER_COMMERCIAL_MODE` | 1 | 1 | 1 | 1 |
+| `SNIPER_ALLOW_MANUAL_VERIFY_LINKS` | unset | unset | unset | unset |
+| Agent runs (`AGENT_PAUSED`, repo variable) | owner's choice | same | same | same |
+
+Fixtures and simulation data never go into a deployed database: the
+staging simulation (`scripts/staging_simulation.py`) creates and drops its
+own throwaway database. The seller CLI `issue-link` (hand-delivered
+verification link) refuses to run in commercial mode.
+`python -m preflight --target free` / `--target paid` checks a mode
+before you open it to anyone.
 
 ## Reverse proxy
 

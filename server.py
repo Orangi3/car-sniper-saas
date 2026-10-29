@@ -35,11 +35,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3  # noqa
 import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Optional
 
 from flask import (Flask, g, jsonify, make_response, redirect, request,
                    send_from_directory)
@@ -121,7 +123,9 @@ if _os.environ.get("SNIPER_SKIP_MIGRATION_CHECK", "0") != "1":
 # ---------- Structured request logging + global error handling ----------
 _logger = logging.getLogger("sniper")
 if not _logger.handlers:
-    _h = logging.FileHandler(ROOT / "sniper-requests.log")
+    # SNIPER_LOG_DIR: deployed hosts set /var/log/sniper (release dirs are
+    # read-only to the app user and replaced on every deploy)
+    _h = logging.FileHandler(Path(_os.environ.get("SNIPER_LOG_DIR") or ROOT) / "sniper-requests.log")
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     _logger.addHandler(_h)
     _logger.setLevel(logging.INFO)
@@ -324,6 +328,17 @@ def _rows(query: str, params=()) -> list[dict]:
         return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
+def _iso_minutes_ago(minutes: int) -> str:
+    """UTC ISO timestamp `minutes` ago (negative = in the future)."""
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
+def _uid_or_zero() -> int:
+    u = auth.current_user()
+    return u.id if u else 0
+
+
 # ---------- Pages -----------------------------------------------------
 
 @app.get("/")
@@ -332,8 +347,17 @@ def index():
     # We still ALLOW the dashboard HTML to load so its JS can call /api/me
     # and decide for itself, but unauthenticated requests are redirected to
     # /login as the visible entry point.
-    if not auth.current_user():
+    u = auth.current_user()
+    if not u:
         return redirect("/login", code=302)
+    if not u.is_admin:
+        # Customers use the mobile-first app (/m): its deal cards show the
+        # full profit model, evidence and confidence. The legacy desktop
+        # dashboard is the owner console — its "est. profit" is the gross
+        # gap to the comp average, before costs, which overstates profit.
+        rv = (request.args.get("billing_return") or "").strip().lower()
+        return redirect("/m" + (f"?billing_return={rv}" if rv in ("success", "cancel") else ""),
+                        code=302)
     # Cache-buster redirect: every fresh hit goes to /?v=<file mtime> so the
     # browser must fetch the latest dashboard.html and can NEVER keep running
     # an outdated cached JS bundle — even when Safari ignores Cache-Control.
@@ -384,9 +408,9 @@ def api_alerts():
     where = []
     args = []
     if cash_only:
-        where.append("l.is_cash_only=1")
+        where.append("l.is_cash_only = TRUE")
     if hide_auction:
-        where.append("l.is_auction=0")
+        where.append("l.is_auction = FALSE")
     if request.args.get("show_scams") != "1":
         where.append("(l.scam_score IS NULL OR l.scam_score < 50)")
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
@@ -400,9 +424,9 @@ def api_alerts():
                (CASE WHEN s.composite_id IS NULL THEN 0 ELSE 1 END) AS is_saved,
                s.status AS save_status
         FROM alerts a JOIN listings l ON l.composite_id = a.composite_id
-        LEFT JOIN saved s ON s.composite_id = a.composite_id
+        LEFT JOIN saved_v2 s ON s.composite_id = a.composite_id AND s.user_id = ?
         {where_sql}
-        ORDER BY a.score DESC LIMIT ?""", (*args, limit))
+        ORDER BY a.score DESC LIMIT ?""", (_uid_or_zero(), *args, limit))
     # Inject estimated profit
     fees = 1500
     for r in rows:
@@ -418,8 +442,8 @@ def api_fresh_listings():
     empty — and a row only shows 'pending' if it genuinely has no score yet."""
     limit = int(request.args.get("limit", 30))
     where = ["l.price IS NOT NULL", "l.year IS NOT NULL"]
-    if request.args.get("cash_only") == "1":    where.append("l.is_cash_only=1")
-    if request.args.get("hide_auction") == "1": where.append("l.is_auction=0")
+    if request.args.get("cash_only") == "1":    where.append("l.is_cash_only = TRUE")
+    if request.args.get("hide_auction") == "1": where.append("l.is_auction = FALSE")
     if request.args.get("show_scams") != "1":
         where.append("(l.scam_score IS NULL OR l.scam_score < 50)")
     rows = _rows(f"""
@@ -450,8 +474,8 @@ def api_near_misses():
     ranked board (instant estimates + verified comps), ordered by score."""
     limit = int(request.args.get("limit", 30))
     where = ["nm.discount_pct > 0"]
-    if request.args.get("cash_only") == "1":    where.append("l.is_cash_only=1")
-    if request.args.get("hide_auction") == "1": where.append("l.is_auction=0")
+    if request.args.get("cash_only") == "1":    where.append("l.is_cash_only = TRUE")
+    if request.args.get("hide_auction") == "1": where.append("l.is_auction = FALSE")
     if request.args.get("show_scams") != "1":
         where.append("(l.scam_score IS NULL OR l.scam_score < 50)")
     rows = _rows(f"""
@@ -460,13 +484,14 @@ def api_near_misses():
                l.url, l.title, l.price, l.year, l.make, l.model,
                l.odometer, l.source, l.state, l.posted_at, l.first_seen_at,
                l.is_auction, l.is_cash_only, l.scam_score, l.scam_reasons,
-               l.image_urls,
+               l.image_urls, nm.evidence_class, nm.confidence, nm.trust,
+               nm.risk_flags, nm.value_low, nm.value_high,
                (CASE WHEN s.composite_id IS NULL THEN 0 ELSE 1 END) AS is_saved,
                s.status AS save_status
         FROM near_misses nm JOIN listings l ON l.composite_id = nm.composite_id
-        LEFT JOIN saved s ON s.composite_id = nm.composite_id
+        LEFT JOIN saved_v2 s ON s.composite_id = nm.composite_id AND s.user_id = ?
         WHERE {' AND '.join(where)}
-        ORDER BY nm.score DESC LIMIT ?""", (limit,))
+        ORDER BY nm.score DESC LIMIT ?""", (_uid_or_zero(), limit))
     fees = 1500
     for r in rows:
         if r.get("comp_avg") and r.get("price"):
@@ -597,10 +622,10 @@ def _build_filters(args):
         if srcs:
             where.append(f"source IN ({','.join('?' for _ in srcs)})")
             params.extend(srcs)
-    if args.get("cash_only") == "1":   where.append("is_cash_only=1")
-    if args.get("hide_dealer") == "1": where.append("is_dealer=0")
-    if args.get("hide_auction") == "1":where.append("is_auction=0")
-    if args.get("hide_salvage") == "1":where.append("is_salvage=0")
+    if args.get("cash_only") == "1":   where.append("is_cash_only = TRUE")
+    if args.get("hide_dealer") == "1": where.append("is_dealer = FALSE")
+    if args.get("hide_auction") == "1":where.append("is_auction = FALSE")
+    if args.get("hide_salvage") == "1":where.append("is_salvage = FALSE")
     # Scam guard — default ON; user must explicitly request show_scams=1 to bypass
     if args.get("show_scams") != "1":
         where.append("(scam_score IS NULL OR scam_score < 50)")
@@ -621,8 +646,11 @@ def _build_filters(args):
     except (ValueError, TypeError):
         age = 0
     if age > 0:
-        where.append("first_seen_at > datetime('now', ?)")
-        params.append(f"-{age} minutes")
+        # ISO cutoff computed here: portable, and compares correctly with
+        # the ISO timestamps stored in first_seen_at (SQLite's datetime()
+        # emits "YYYY-MM-DD HH:MM:SS", which mis-sorts against "…T…").
+        where.append("first_seen_at > ?")
+        params.append(_iso_minutes_ago(age))
     for k, col in [("make","make"),("model","model"),("state","state")]:
         v = args.get(k)
         if v:
@@ -665,10 +693,11 @@ def api_closing_soon():
                odometer, location, state, first_seen_at,
                is_auction, auction_end_at, bid_count, buy_now_price
         FROM listings
-        WHERE is_auction=1 AND auction_end_at IS NOT NULL
-          AND auction_end_at > datetime('now')
-          AND auction_end_at < datetime('now', ?)
-        ORDER BY auction_end_at ASC LIMIT 200""", (f"+{hrs} hours",)))
+        WHERE is_auction = TRUE AND auction_end_at IS NOT NULL
+          AND auction_end_at > ?
+          AND auction_end_at < ?
+        ORDER BY auction_end_at ASC LIMIT 200""",
+        (_iso_minutes_ago(0), _iso_minutes_ago(-hrs * 60))))
 
 
 # ---------- Stats / Sources / Facets ---------------------------------
@@ -686,10 +715,10 @@ def api_stats():
         n_deals = conn.execute(
             "SELECT COUNT(*) FROM near_misses WHERE discount_pct > 0"
         ).fetchone()[0]
-        n_cash = conn.execute("SELECT COUNT(*) FROM listings WHERE is_cash_only=1").fetchone()[0]
-        n_auction = conn.execute("SELECT COUNT(*) FROM listings WHERE is_auction=1").fetchone()[0]
-        n_dealer = conn.execute("SELECT COUNT(*) FROM listings WHERE is_dealer=1").fetchone()[0]
-        n_salvage = conn.execute("SELECT COUNT(*) FROM listings WHERE is_salvage=1").fetchone()[0]
+        n_cash = conn.execute("SELECT COUNT(*) FROM listings WHERE is_cash_only = TRUE").fetchone()[0]
+        n_auction = conn.execute("SELECT COUNT(*) FROM listings WHERE is_auction = TRUE").fetchone()[0]
+        n_dealer = conn.execute("SELECT COUNT(*) FROM listings WHERE is_dealer = TRUE").fetchone()[0]
+        n_salvage = conn.execute("SELECT COUNT(*) FROM listings WHERE is_salvage = TRUE").fetchone()[0]
         last = conn.execute("SELECT MAX(first_seen_at) FROM listings").fetchone()[0]
         per_source = [{"source": r["source"], "n": r["n"]}
                       for r in conn.execute("SELECT source, COUNT(*) n FROM listings "
@@ -707,19 +736,45 @@ def api_stats():
 
 @app.get("/api/diagnostics")
 def api_diagnostics():
-    """Per-source last-poll diagnostics: count, elapsed, error, regions.
-    Shown in dashboard so user can immediately see WHY a source is empty."""
-    out = []
+    """Per-source health, read from the source_health table the scheduler
+    writes (the web process never polls, so in-memory state would be empty
+    in production). See sources/health.py for status meanings."""
     enabled_ids = {s.SOURCE_ID for s in sources.iter_sources(CONFIG)}
+    try:
+        with sniper.db() as conn:
+            rows = {r["source_id"]: dict(r) for r in
+                    conn.execute("SELECT * FROM source_health").fetchall()}
+    except Exception:
+        rows = {}
+    out = []
     for s in sources.all_sources():
-        d = sniper.SOURCE_DIAG.get(s.SOURCE_ID, {})
+        h = rows.get(s.SOURCE_ID, {})
+        issue = getattr(s, "config_issue", lambda cfg: None)(CONFIG)
+        status = h.get("status") or ("disabled" if s.SOURCE_ID not in enabled_ids
+                                     else "auth_config" if issue else "unverified")
         out.append({
             "id": s.SOURCE_ID, "name": s.SOURCE_NAME,
             "enabled": s.SOURCE_ID in enabled_ids,
-            "count": d.get("count"), "elapsed_s": d.get("elapsed_s"),
-            "error": d.get("error"), "regions": d.get("regions"),
-            "polled_at": d.get("polled_at"),
+            "status": status,
+            "reason": h.get("status_reason") or issue,
+            "count": h.get("last_count"), "elapsed_s": h.get("last_elapsed_s"),
+            "error": None if status == "healthy" else (h.get("status_reason") or issue),
+            "requests_attempted": h.get("requests_attempted"),
+            "requests_ok": h.get("requests_ok"),
+            "listings_new": h.get("listings_new"),
+            "listings_total": h.get("listings_total"),
+            "polled_at": h.get("last_attempt_at"),
+            "last_success_at": h.get("last_success_at"),
+            "last_genuine_success_at": h.get("last_genuine_success_at"),
+            "next_poll_after": h.get("next_poll_after"),
+            "ingest_latency_s": h.get("ingest_latency_s"),
         })
+    u = auth.current_user()
+    if not (u and u.is_admin):
+        # Reasons can quote provider error text (credentials, plan, quota):
+        # operator detail, not for customers. Status stays visible.
+        for row in out:
+            row["reason"] = row["error"] = None
     return jsonify(out)
 
 
@@ -799,7 +854,8 @@ def api_poll_all():
         attempted = enabled and (diag.get("polled_at") is not None
                                  or per.get("fetched") is not None)
         err       = diag.get("error")
-        success   = attempted and not err
+        st        = (base.get("source_status") or {}).get(sid, {})
+        success   = attempted and st.get("status") in ("healthy", "degraded")
         skipped   = None if enabled else "source disabled"
         if enabled and not attempted:
             skipped = "not run this tick (tiered schedule)"
@@ -813,7 +869,9 @@ def api_poll_all():
             "new_listings":      int(per.get("new") or 0),
             "elapsed_s":         diag.get("elapsed_s"),
             "error":             err,
-            "skipped_reason":    skipped,
+            "status":            st.get("status"),
+            "status_reason":     st.get("reason"),
+            "skipped_reason":    skipped or (st.get("reason") if st.get("skipped") else None),
         })
     # deals_n: count of below-comp listings — same threshold as the BEST
     # DEALS tab and /api/stats `deals` so the poll-button result, the hero
@@ -1905,6 +1963,20 @@ def api_saved_searches_create():
     if not isinstance(filter_obj, dict):
         return jsonify({"error": "filter must be an object"}), 400
     notify = 1 if body.get("notify_enabled") else 0
+    import plans
+    lim = plans.limits(u.plan)
+    with sniper.db() as conn:
+        have = int(conn.execute("SELECT COUNT(*) FROM saved_searches WHERE user_id = ?",
+                                (u.id,)).fetchone()[0])
+    if have >= lim["saved_searches"]:
+        return jsonify({"error": f"{plans.display_name(u.plan)} plan allows "
+                                 f"{lim['saved_searches']} saved searches",
+                        "limit": lim["saved_searches"], "current_plan": u.plan,
+                        "upgrade_to": "pro" if u.plan != "pro" else None}), 402
+    if str(filter_obj.get("risk_mode", "")).lower() == "aggressive" \
+            and not lim["aggressive_mode"]:
+        return jsonify({"error": "aggressive mode is a Pro feature",
+                        "required_plan": "pro"}), 402
     with _db.transaction() as conn:
         cur = conn.cursor()
         if _db.IS_PG:
@@ -1932,6 +2004,620 @@ def api_saved_searches_delete(sid: int):
             f"DELETE FROM saved_searches WHERE id={_PH()} AND user_id={_PH()}",
             (int(sid), u.id))
     return jsonify({"ok": True, "deleted": int(sid)})
+
+
+# ---- Per-user alert channels + alert tray --------------------------------
+
+_NTFY_TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
+
+
+def _safe_webhook(url: str) -> Optional[str]:
+    """Save-time destination check (delivery re-checks at connect time —
+    see safe_http.py). Returns an error string or None."""
+    import safe_http
+    return safe_http.validate_destination(url)
+
+
+@app.get("/api/me/alert_channels")
+@auth.login_required
+def api_me_alert_channels_get():
+    u = auth.current_user()
+    with _db.transaction() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT ntfy_topic, alert_webhook, notify_phone FROM users "
+                    f"WHERE id={_PH()}", (u.id,))
+        r = dict(cur.fetchone() or {})
+    phone = r.get("notify_phone") or ""
+    return jsonify({
+        "ntfy_topic": r.get("ntfy_topic") or "",
+        "ntfy_server": os.environ.get("NTFY_SERVER", "https://ntfy.sh"),
+        "alert_webhook": r.get("alert_webhook") or "",
+        "notify_phone": ("•••••" + phone[-4:]) if len(phone) >= 4 else phone,
+        "sms_available": all(os.environ.get(k) for k in
+                             ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM")),
+    })
+
+
+@app.post("/api/me/alert_channels")
+@auth.plan_required("starter")
+def api_me_alert_channels_post():
+    """Set where this user's saved-search matches are pushed. Send
+    {"ntfy_topic": "generate"} to get a fresh unguessable topic."""
+    import secrets
+    u = auth.current_user()
+    body = request.get_json(silent=True) or {}
+    sets, vals = [], []
+    if "ntfy_topic" in body:
+        t = str(body["ntfy_topic"] or "").strip()
+        if t == "generate":
+            t = "sniper-" + secrets.token_urlsafe(18).replace("-", "").replace("_", "")[:24]
+        if t and not _NTFY_TOPIC_RE.match(t):
+            return jsonify({"error": "ntfy topic must be 12-64 letters, digits, - or _ "
+                                     "(long + random, since ntfy topics are public)"}), 400
+        sets.append("ntfy_topic"); vals.append(t or None)
+    if "alert_webhook" in body:
+        w = str(body["alert_webhook"] or "").strip()
+        if w:
+            err = _safe_webhook(w)
+            if err:
+                return jsonify({"error": err}), 400
+        sets.append("alert_webhook"); vals.append(w or None)
+    if "notify_phone" in body:
+        raw = str(body["notify_phone"] or "").strip()
+        if "•" not in raw:
+            digits = re.sub(r"\D", "", raw)
+            if raw and len(digits) not in (10, 11):
+                return jsonify({"error": "phone must be a 10-digit US number"}), 400
+            sets.append("notify_phone"); vals.append(raw or None)
+    if sets:
+        with _db.transaction() as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET " + ", ".join(f"{c}={_PH()}" for c in sets)
+                        + f" WHERE id={_PH()}", (*vals, u.id))
+    return api_me_alert_channels_get()
+
+
+@app.post("/api/me/alert_channels/test")
+@auth.plan_required("starter")
+def api_me_alert_channels_test():
+    rl = _rl_or_fail("user_notify_test", 3)
+    if rl: return rl
+    u = auth.current_user()
+    with _db.transaction() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT ntfy_topic, alert_webhook, notify_phone FROM users "
+                    f"WHERE id={_PH()}", (u.id,))
+        r = dict(cur.fetchone() or {})
+    from notifications import send_user_test
+    results = send_user_test(phone=r.get("notify_phone"), ntfy_topic=r.get("ntfy_topic"),
+                             webhook=r.get("alert_webhook"))
+    if not results:
+        return jsonify({"ok": False, "error": "no alert channel set"}), 400
+    ok = any(v[0] for v in results.values())
+    return jsonify({"ok": ok, "channels": {ch: {"ok": v[0], "detail": v[1]}
+                                           for ch, v in results.items()}}), (200 if ok else 502)
+
+
+@app.get("/api/me/alerts")
+@auth.login_required
+def api_me_alerts():
+    """This user's personalized matches (new listings and price drops that
+    met one of their saved searches), newest first."""
+    u = auth.current_user()
+    limit = max(1, min(200, int(request.args.get("limit", 50))))
+    with sniper.db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT m.id, m.seen, m.dismissed, m.notified, m.created_at, m.event, "
+            "  m.saved_search_id, s.name AS saved_search_name, m.discount_pct, "
+            "  m.price, m.previous_price, m.value_mid, m.profit_base, m.confidence, "
+            "  m.trust, l.composite_id, l.title, l.url, l.year, l.make, l.model, "
+            "  l.odometer, l.source, l.state, l.location, l.image_urls "
+            "FROM user_matches m "
+            "JOIN listings l ON l.composite_id = m.composite_id "
+            "LEFT JOIN saved_searches s ON s.id = m.saved_search_id "
+            "WHERE m.user_id = ? AND m.dismissed = FALSE "
+            "ORDER BY m.created_at DESC, m.id DESC LIMIT ?", (u.id, limit)).fetchall()]
+    return jsonify(rows)
+
+
+# ---- Deals API (mobile app) ---------------------------------------------
+#
+# Everything a deal card / detail sheet needs, from the shared valuation
+# (near_misses) plus the caller's own state (saved_v2, user_matches, profit
+# settings). Feeds:
+#   mine     this user's personalized matches (saved searches)
+#   trusted  shared feed: trusted valuations at least 10% under value
+#   risk     shared, clearly labeled: risk-flagged listings 10%+ under
+#   search   preview: current listings that satisfy one of the user's
+#            saved searches (used right after onboarding)
+
+_DEAL_COLS = (
+    "l.composite_id, l.source, l.url, l.title, l.price, l.previous_price, "
+    "l.price_changed_at, l.year, l.make, l.model, l.odometer, l.location, l.state, "
+    "l.posted_at, l.first_seen_at, l.last_seen_at, l.image_urls, l.is_dealer, "
+    "l.is_salvage, l.needs_work, l.is_auction, l.relist_of, l.scam_score, "
+    "nm.discount_pct, nm.comp_avg AS value_mid, nm.value_low, nm.value_high, "
+    "nm.comp_n, nm.evidence_class, nm.confidence, nm.trust, nm.risk_flags, "
+    "nm.refreshed_at AS valued_at, nm.evidence AS evidence_json, "
+    "l.zip, l.latitude, l.longitude, l.location_source")
+
+
+def _deal_row(r: dict, psettings: dict, plan: Optional[str],
+              home_zip: Optional[str] = None) -> dict:
+    import geo
+    import opportunity
+    import plans
+    import profit as profit_mod
+    d = dict(r)
+    try:
+        ev = json.loads(d.pop("evidence_json", None) or "{}")
+    except ValueError:
+        ev = {}
+    d["dealer_share"] = ev.get("dealer_share") or 0.0
+    d["distance_mi"] = geo.distance_mi(home_zip, d.get("latitude"), d.get("longitude"))
+    try:
+        imgs = json.loads(d.pop("image_urls") or "[]")
+    except ValueError:
+        imgs = []
+    d["image"] = imgs[0] if imgs else None
+    try:
+        d["risk_flags"] = json.loads(d.get("risk_flags") or "[]")
+    except ValueError:
+        d["risk_flags"] = []
+    pr = profit_mod.compute(d.get("price"), d.get("value_low"), d.get("value_mid"),
+                            d.get("value_high"), d.get("evidence_class"), psettings,
+                            scenarios=plans.limits(plan)["profit_scenarios"],
+                            distance_mi=d["distance_mi"], dealer_share=d["dealer_share"])
+    d["profit"] = ({k: v["profit"] for k, v in pr["scenarios"].items()} if pr else None)
+    # ranking always uses the conservative case, whatever the plan shows
+    cons = profit_mod.compute(d.get("price"), d.get("value_low"), d.get("value_mid"),
+                              d.get("value_high"), d.get("evidence_class"), psettings,
+                              distance_mi=d["distance_mi"], dealer_share=d["dealer_share"])
+    d["opportunity"] = opportunity.score(
+        d, cons["scenarios"]["conservative"]["profit"] if cons else None, d["distance_mi"])
+    return d
+
+
+def _display_limits() -> dict:
+    """source -> max hours since last confirmed by a poll, for sources whose
+    terms limit how stale displayed data may be (eBay: 6 h); plus the set of
+    seller listings that are currently discoverable (seller_listings)."""
+    import seller_listings as sl
+    out: dict = {m.SOURCE_ID: m.DISPLAY_MAX_AGE_HOURS for m in sources.all_sources()
+                 if getattr(m, "DISPLAY_MAX_AGE_HOURS", None)}
+    with sniper.db() as conn:
+        out["__direct__"] = sl.discoverable_ids(conn)
+    return out
+
+
+def _displayable(d: dict, limits: dict) -> bool:
+    if d.get("source") == "direct":
+        return d.get("composite_id") in limits.get("__direct__", set())
+    hrs = limits.get(d.get("source"))
+    if not hrs:
+        return True
+    from datetime import datetime, timedelta, timezone
+    seen = d.get("last_seen_at") or d.get("first_seen_at")
+    try:
+        t = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
+        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) - t <= timedelta(hours=hrs)
+
+
+def _rank(rows: list[dict]) -> list[dict]:
+    """Highest risk-adjusted profit first; unvalued last."""
+    return sorted(rows, key=lambda d: -(d["opportunity"]["risk_adjusted_profit"]
+                                        if d["opportunity"]["risk_adjusted_profit"] is not None
+                                        else -10**9))
+
+
+def _user_ctx(conn, u):
+    import profit as profit_mod
+    return profit_mod.load_user_settings(conn, u.id), u.plan
+
+
+def _territory(conn, uid) -> tuple[Optional[str], Optional[int]]:
+    r = conn.execute("SELECT home_zip, radius_mi FROM users WHERE id = ?", (uid,)).fetchone()
+    return (r[0], r[1]) if r else (None, None)
+
+
+@app.get("/api/deals")
+@auth.login_required
+def api_deals():
+    u = auth.current_user()
+    feed = (request.args.get("feed") or "trusted").lower()
+    limit = max(1, min(100, int(request.args.get("limit", 30))))
+    with sniper.db() as conn:
+        psettings, plan = _user_ctx(conn, u)
+        home_zip, home_radius = _territory(conn, u.id)
+        if feed == "mine":
+            rows = conn.execute(
+                f"SELECT {_DEAL_COLS}, m.id AS match_id, m.event, m.created_at AS matched_at, "
+                "  s.name AS search_name, sv.status AS user_status "
+                "FROM user_matches m JOIN listings l ON l.composite_id = m.composite_id "
+                "LEFT JOIN near_misses nm ON nm.composite_id = m.composite_id "
+                "LEFT JOIN saved_searches s ON s.id = m.saved_search_id "
+                "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
+                "WHERE m.user_id = ? AND m.dismissed = FALSE "
+                "ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+                (u.id, u.id, limit)).fetchall()
+        elif feed in ("trusted", "risk"):
+            rows = conn.execute(
+                f"SELECT {_DEAL_COLS}, sv.status AS user_status FROM near_misses nm "
+                "JOIN listings l ON l.composite_id = nm.composite_id "
+                "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
+                "WHERE nm.trust = ? AND nm.discount_pct >= 10 "
+                "  AND (sv.status IS NULL OR sv.status <> 'passed') "
+                "ORDER BY nm.score DESC LIMIT ?",
+                (u.id, feed, limit)).fetchall()
+        elif feed == "search":
+            import plans
+            import saved_search_alerts as ssa
+            sid = int(request.args.get("search_id", 0))
+            s = conn.execute("SELECT filter_json FROM saved_searches WHERE id = ? "
+                             "AND user_id = ?", (sid, u.id)).fetchone()
+            if not s:
+                return jsonify({"error": "saved search not found"}), 404
+            f = json.loads(s[0] or "{}")
+            cands = conn.execute(
+                f"SELECT {_DEAL_COLS}, sv.status AS user_status FROM near_misses nm "
+                "JOIN listings l ON l.composite_id = nm.composite_id "
+                "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
+                "WHERE nm.discount_pct > 0 ORDER BY nm.score DESC LIMIT 500",
+                (u.id,)).fetchall()
+            lim = plans.limits(plan)
+            rows = []
+            for r in cands:
+                d = _deal_row(dict(r), psettings, plan, home_zip)
+                opp = {**d, "est_profit": (d.get("profit") or {}).get("base"),
+                       "event": "new", "_home_zip": home_zip, "_home_radius": home_radius}
+                if ssa.criteria_match(f, opp, lim)[0]:
+                    rows.append(r)
+                if len(rows) >= limit:
+                    break
+        else:
+            return jsonify({"error": "feed must be mine|trusted|risk|search"}), 400
+    limits = _display_limits()
+    out = [_deal_row(dict(r), psettings, plan, home_zip) for r in rows
+           if _displayable(dict(r), limits)]
+    if feed in ("trusted", "risk") and home_zip and home_radius:
+        # shared feeds respect the user's territory too
+        out = [d for d in out if d["distance_mi"] is not None
+               and d["distance_mi"] <= home_radius]
+    if feed != "mine":                    # "mine" stays newest-first
+        out = _rank(out)
+    return jsonify(out)
+
+
+@app.get("/api/deals/<path:cid>")
+@auth.login_required
+def api_deal_detail(cid: str):
+    import plans
+    import profit as profit_mod
+    u = auth.current_user()
+    with sniper.db() as conn:
+        r = conn.execute(
+            f"SELECT {_DEAL_COLS}, l.description, nm.confidence_reasons, nm.evidence, "
+            "  sv.status AS user_status, sv.note AS user_note "
+            "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
+            "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
+            "WHERE l.composite_id = ?", (u.id, cid)).fetchone()
+        if r and not _displayable(dict(r), _display_limits()):
+            return jsonify({"error": "this listing hasn't been re-confirmed by its source "
+                                     "recently and may no longer be available"}), 410
+        if not r:
+            return jsonify({"error": "not found"}), 404
+        hist = [dict(h) for h in conn.execute(
+            "SELECT price, event, observed_at FROM listing_prices "
+            "WHERE composite_id = ? ORDER BY observed_at, id", (cid,)).fetchall()]
+        psettings, plan = _user_ctx(conn, u)
+        home_zip, _ = _territory(conn, u.id)
+    d = _deal_row(dict(r), psettings, plan, home_zip)
+    for k in ("confidence_reasons", "evidence"):
+        try:
+            d[k] = json.loads(d.get(k) or ("[]" if k == "confidence_reasons" else "{}"))
+        except ValueError:
+            d[k] = None
+    d["description"] = (d.get("description") or "")[:2000]
+    d["price_history"] = hist
+    d["profit_detail"] = profit_mod.compute(
+        d.get("price"), d.get("value_low"), d.get("value_mid"), d.get("value_high"),
+        d.get("evidence_class"), psettings,
+        scenarios=plans.limits(plan)["profit_scenarios"],
+        distance_mi=d["distance_mi"], dealer_share=d["dealer_share"])
+    d["plan"] = {"plan": plan, "name": plans.display_name(plan), **plans.limits(plan)}
+    if d.get("source") == "direct":
+        import seller_listings as sl
+        with sniper.db() as conn:
+            d["seller_contact"] = sl.contact_for(conn, d["composite_id"], plan)
+        d["provenance"] = ("Listed on Car Sniper by the seller. The seller's email address is "
+                           "verified; the vehicle details are seller-reported and not "
+                           "independently verified.")
+    return jsonify(d)
+
+
+_DEAL_ACTIONS = {"save": "saved", "contacted": "contacted", "dismiss": "passed",
+                 "passed": "passed", "negotiating": "negotiating",
+                 "going_to_see": "going_to_see", "bought": "bought"}
+
+
+@app.post("/api/deals/<path:cid>/action")
+@auth.plan_required("starter")
+def api_deal_action(cid: str):
+    u = auth.current_user()
+    action = str((request.get_json(silent=True) or {}).get("action") or "").lower()
+    if action not in _DEAL_ACTIONS and action != "clear":
+        return jsonify({"error": f"action must be one of {sorted(_DEAL_ACTIONS)} or clear"}), 400
+    now = _db.now_utc_iso()
+    with sniper.db() as conn:
+        if not conn.execute("SELECT 1 FROM listings WHERE composite_id = ?", (cid,)).fetchone():
+            return jsonify({"error": "not found"}), 404
+        if action == "clear":
+            conn.execute("DELETE FROM saved_v2 WHERE user_id = ? AND composite_id = ?",
+                         (u.id, cid))
+            conn.execute("UPDATE user_matches SET dismissed = FALSE WHERE user_id = ? "
+                         "AND composite_id = ?", (u.id, cid))
+            return jsonify({"ok": True, "status": None})
+        status = _DEAL_ACTIONS[action]
+        conn.execute(
+            "INSERT INTO saved_v2(user_id, composite_id, note, saved_at, status, updated_at) "
+            "VALUES (?,?,?,?,?,?) ON CONFLICT(user_id, composite_id) DO UPDATE SET "
+            "status = excluded.status, updated_at = excluded.updated_at",
+            (u.id, cid, "", now, status, now))
+        if action == "dismiss":
+            conn.execute("UPDATE user_matches SET dismissed = TRUE WHERE user_id = ? "
+                         "AND composite_id = ?", (u.id, cid))
+        conn.execute("UPDATE user_matches SET seen = TRUE WHERE user_id = ? "
+                     "AND composite_id = ?", (u.id, cid))
+    return jsonify({"ok": True, "status": status})
+
+
+@app.get("/api/me/territory")
+@auth.login_required
+def api_territory_get():
+    u = auth.current_user()
+    with sniper.db() as conn:
+        z, r = _territory(conn, u.id)
+    return jsonify({"home_zip": z, "radius_mi": r})
+
+
+@app.post("/api/me/territory")
+@auth.login_required
+def api_territory_post():
+    """Set the buying territory: a US ZIP and a radius (10-500 miles)."""
+    import geo
+    u = auth.current_user()
+    body = request.get_json(silent=True) or {}
+    z = str(body.get("home_zip") or "").strip()[:5]
+    try:
+        radius = int(body.get("radius_mi") or 0)
+    except (TypeError, ValueError):
+        radius = 0
+    if z and not geo.valid_zip(z):
+        return jsonify({"error": "unknown US ZIP code"}), 400
+    if z and not 10 <= radius <= 500:
+        return jsonify({"error": "radius must be 10-500 miles"}), 400
+    with sniper.db() as conn:
+        conn.execute("UPDATE users SET home_zip = ?, radius_mi = ? WHERE id = ?",
+                     (z or None, radius if z else None, u.id))
+    return api_territory_get()
+
+
+@app.get("/api/me/profit_settings")
+@auth.login_required
+def api_profit_settings_get():
+    import profit as profit_mod
+    u = auth.current_user()
+    with sniper.db() as conn:
+        mine = profit_mod.load_user_settings(conn, u.id)
+    return jsonify({"settings": mine, "defaults": profit_mod.DEFAULTS,
+                    "effective": profit_mod.merged(mine), "labels": profit_mod.LABELS})
+
+
+@app.post("/api/me/profit_settings")
+@auth.plan_required("starter")
+def api_profit_settings_post():
+    import plans
+    import profit as profit_mod
+    u = auth.current_user()
+    if not plans.limits(u.plan)["custom_profit_assumptions"]:
+        return jsonify({"error": "upgrade required", "required_plan": "pro"}), 402
+    body = request.get_json(silent=True) or {}
+    with sniper.db() as conn:
+        cur = profit_mod.load_user_settings(conn, u.id)
+        cur.update(profit_mod.clean_settings(body))
+        cur = {k: v for k, v in cur.items() if v is not None or k in
+               ("sales_tax_pct", "title_registration")}
+        conn.execute("UPDATE users SET profit_settings = ? WHERE id = ?",
+                     (json.dumps(cur), u.id))
+    return api_profit_settings_get()
+
+
+@app.get("/api/plans")
+def api_plans():
+    import plans
+    u = auth.current_user()
+    return jsonify({"plans": plans.public_table(),
+                    "current": u.plan if u else None,
+                    "note": "Prices are set in Stripe; limits are enforced server-side."})
+
+
+@app.get("/api/me/usage")
+@auth.login_required
+def api_me_usage():
+    import plans
+    u = auth.current_user()
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    with sniper.db() as conn:
+        by_kind = {r["kind"]: int(r["n"]) for r in conn.execute(
+            "SELECT kind, COALESCE(SUM(units), 0) AS n FROM usage_events "
+            "WHERE user_id = ? AND created_at >= ? GROUP BY kind", (u.id, month))}
+        searches = int(conn.execute("SELECT COUNT(*) FROM saved_searches WHERE user_id = ?",
+                                    (u.id,)).fetchone()[0])
+        today = int(conn.execute("SELECT COUNT(*) FROM user_matches WHERE user_id = ? "
+                                 "AND notified = TRUE AND created_at >= ?",
+                                 (u.id, day)).fetchone()[0])
+    return jsonify({"plan": u.plan, "plan_name": plans.display_name(u.plan),
+                    "limits": plans.limits(u.plan), "saved_searches": searches,
+                    "alerts_today": today, "sends_this_month": by_kind})
+
+
+@app.get("/api/admin/usage")
+@auth.admin_required
+def api_admin_usage():
+    """Per-account billable usage this month with ESTIMATED cost (unit costs
+    are operator-set assumptions — see plans.UNIT_COST_CENTS)."""
+    from datetime import datetime, timezone
+    month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0,
+                                               microsecond=0).isoformat()
+    with sniper.db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT e.user_id, u.email, u.plan, e.kind, SUM(e.units) AS units, "
+            "  SUM(e.cost_cents) AS est_cost_cents "
+            "FROM usage_events e LEFT JOIN users u ON u.id = e.user_id "
+            "WHERE e.created_at >= ? GROUP BY e.user_id, u.email, u.plan, e.kind "
+            "ORDER BY est_cost_cents DESC", (month,))]
+        jq = __import__("jobqueue").stats()
+    return jsonify({"since": month, "rows": rows, "jobs": jq})
+
+
+@app.get("/api/admin/eval/report")
+@auth.admin_required
+def api_admin_eval_report():
+    """Real-world evaluation metrics (evaluation.py). ?fixtures=1 includes
+    synthetic demo rows and labels the report accordingly."""
+    import evaluation
+    return jsonify(evaluation.report(include_fixtures=request.args.get("fixtures") == "1"))
+
+
+# ---- Seller-submitted listings (seller_listings.py; off by default) -------
+
+def _seller_err(e):
+    return jsonify({"error": e.errors[0], "errors": e.errors}), e.status
+
+
+@app.get("/api/seller/listings")
+@auth.login_required
+def api_seller_mine():
+    import seller_listings as sl
+    return jsonify({"enabled": sl.enabled(), "listings": sl.mine(auth.current_user()) if sl.enabled() else [],
+                    "limits": {"active": sl.MAX_ACTIVE_PER_USER,
+                               "per_day": sl.MAX_NEW_PER_USER_PER_DAY,
+                               "confirm_days": sl.CONFIRM_DAYS}})
+
+
+@app.post("/api/seller/listings")
+@auth.login_required
+def api_seller_create():
+    import seller_listings as sl
+    try:
+        return jsonify(sl.create(auth.current_user(), request.get_json(silent=True) or {})), 201
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+def _origin() -> str:
+    return (os.environ.get("BILLING_ORIGIN") or request.host_url).rstrip("/")
+
+
+@app.get("/api/seller/contact")
+@auth.login_required
+def api_seller_contact():
+    import mailer
+    import seller_listings as sl
+    with sniper.db() as conn:
+        c = sl.contact(conn, auth.current_user())
+    return jsonify({**c, "email_delivery": mailer.configured()})
+
+
+@app.post("/api/seller/contact")
+@auth.login_required
+def api_seller_contact_set():
+    """Set (or keep) the contact address and email a verification link."""
+    import seller_listings as sl
+    u = auth.current_user()
+    try:
+        sl.set_contact(u, (request.get_json(silent=True) or {}).get("email"))
+        return jsonify(sl.send_verification(u, _origin()))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.post("/api/seller/contact/verify")
+@auth.login_required
+def api_seller_contact_verify():
+    import seller_listings as sl
+    try:
+        return jsonify(sl.verify(auth.current_user(),
+                                 (request.get_json(silent=True) or {}).get("token")))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.post("/api/seller/listings/<int:sid>/renew")
+@auth.login_required
+def api_seller_renew(sid: int):
+    import seller_listings as sl
+    try:
+        return jsonify(sl.renew(auth.current_user(), sid))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.patch("/api/seller/listings/<int:sid>")
+@auth.login_required
+def api_seller_update(sid: int):
+    import seller_listings as sl
+    try:
+        return jsonify(sl.update_price(auth.current_user(), sid,
+                                       (request.get_json(silent=True) or {}).get("price")))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.delete("/api/seller/listings/<int:sid>")
+@auth.login_required
+def api_seller_remove(sid: int):
+    import seller_listings as sl
+    try:
+        return jsonify(sl.remove(auth.current_user(), sid))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.get("/api/admin/ops")
+@auth.admin_required
+def api_admin_ops():
+    """Owner operations snapshot (ops.py): data health, deals, system, costs.
+    Unmeasurable values are returned as unavailable, never estimated."""
+    import ops
+    try:
+        hours = max(1, min(168, int(request.args.get("hours", 24))))
+    except ValueError:
+        hours = 24
+    return jsonify(ops.snapshot(hours))
+
+
+@app.get("/admin/ops")
+@auth.admin_required
+def admin_ops_page():
+    resp = send_from_directory(ROOT, "ops.html")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.get("/m")
+def mobile_page():
+    if not auth.current_user():
+        return redirect("/login", code=302)
+    resp = send_from_directory(ROOT, "mobile.html")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 # ---- Admin: source health + manual poll trigger -------------------------
@@ -2158,13 +2844,18 @@ def _notify_post_v2():
 
 @auth.admin_required
 def _notify_test_v2():
-    from notifications import send_imessage
+    from notifications import send_test
     phone = CONFIG.get("notify_phone")
-    if not phone:
-        return jsonify({"ok": False, "error": "no phone configured"}), 400
-    ok, detail = send_imessage(phone,
-        "SNIPER test alert — your number is wired up.")
-    return jsonify({"ok": ok, "detail": detail, "phone": phone}), (200 if ok else 500)
+    results = send_test(phone=phone)
+    if not results:
+        return jsonify({"ok": False, "error": (
+            "no alert channel configured — set NTFY_TOPIC (free phone push), "
+            "Pushover, Twilio, Discord or a webhook, or a phone on macOS")}), 400
+    ok = any(r[0] for r in results.values())
+    detail = "; ".join(f"{ch}: {'ok' if r[0] else r[1]}" for ch, r in results.items())
+    return jsonify({"ok": ok, "detail": detail, "phone": phone,
+                    "channels": {ch: {"ok": r[0], "detail": r[1]}
+                                 for ch, r in results.items()}}), (200 if ok else 500)
 
 
 @auth.admin_required

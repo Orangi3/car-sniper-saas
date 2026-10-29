@@ -48,12 +48,41 @@ def all_sources() -> list[ModuleType]:
     return list(_ALL)
 
 
+# Licensing classes allowed to feed a paid, multi-user product. Everything
+# else (terms that prohibit automated collection, unverified permission,
+# personal-use-only data) is switched off when commercial_mode is on.
+COMMERCIAL_OK = {"licensed_api"}
+
+
+def licensing_block(m: ModuleType, cfg: dict) -> str | None:
+    """Why this source may not run in commercial mode (None = allowed).
+
+    `requires_agreement` sources (e.g. MarketCheck) are licensed APIs whose
+    public terms don't clearly cover Car Sniper's use; they unlock only when
+    the owner records a signed agreement reference in the source's
+    AGREEMENT_ENV variable."""
+    if not cfg.get("commercial_mode"):
+        return None
+    cls = getattr(m, "LICENSING", "unverified")
+    if cls in COMMERCIAL_OK:
+        return None
+    if cls == "requires_agreement":
+        import os
+        env = getattr(m, "AGREEMENT_ENV", None)
+        if env and os.environ.get(env, "").strip():
+            return None
+        return (f"requires a written commercial agreement — set {env} to the "
+                f"signed agreement reference (see OWNER_ACTIONS.md)")
+    return f"not licensed for commercial use ({cls}) — see SOURCES.md"
+
+
 def iter_sources(cfg: dict) -> list[ModuleType]:
-    """Return enabled sources in stable order."""
+    """Return enabled sources in stable order (commercial mode drops
+    sources that aren't licensed for a paid product)."""
     enabled = []
     for m in all_sources():
         try:
-            if m.enabled(cfg):
+            if m.enabled(cfg) and not licensing_block(m, cfg):
                 enabled.append(m)
         except Exception as e:
             print(f"[sources] {m.SOURCE_ID} enabled() error: {e}", file=sys.stderr)

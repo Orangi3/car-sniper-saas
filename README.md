@@ -1,182 +1,185 @@
-# Car Sniper — Multi-source
+# Car Sniper
 
-A self-hosted, local-first car deal sniper that polls **every auto-listings
-source that legally allows automated access**, normalizes them to a common
-schema, scores each listing against actual sold-price comps (not KBB), and
-alerts you when something appears at least 10% below comp average.
+Finds underpriced used cars, explains what each one is worth and why, estimates
+realistic flip profit, and alerts each subscriber when a listing meets **their**
+criteria — including when a car they're watching drops in price.
 
-## What's plugged in
+Runs two ways:
 
-Out of the box, polling every 2 minutes:
+- **Personal / local** (macOS, SQLite): double-click `START HERE.command`.
+- **Paid SaaS** (Linux, PostgreSQL, systemd): see `LAUNCH_CHECKLIST.md`,
+  `DEPLOY.md` and `RUNBOOK.md`. Requires `SNIPER_COMMERCIAL_MODE=1`.
+  `python -m preflight` says what a deployment is actually ready for.
+- Business docs: `CURRENT_STATE.md` (start here), `DATA_PROVIDER_DECISION.md`,
+  `UNIT_ECONOMICS.md`, `COMPETITIVE_ANALYSIS.md`, `OWNER_ACTIONS.md`,
+  `EVALUATION.md`.
+- Engineering process: `AGENTS.md`, `OWNERSHIP.md`; live data check:
+  `python -m verify_sources`.
 
-| Source | What it covers | Method |
-| --- | --- | --- |
-| **Craigslist** | Tuscaloosa + Birmingham + Montgomery, by owner | RSS |
-| **Bring a Trailer** | Collector / enthusiast cars, nationwide | RSS |
-| **Cars & Bids** | Modern enthusiast auctions | RSS |
-| **Hemmings** | Classics, vintage | RSS |
-| **GovDeals** | State/local government surplus (fleet trucks, cruisers, vans) — AL, MS, GA, TN, FL | RSS |
-| **GSA Auctions** | Federal government surplus vehicles | RSS |
-| **PublicSurplus** | More state/local surplus | RSS |
-| **Copart (live)** | Active salvage lots near AL — projects, parts, rebuildables | JSON endpoint |
-| **IAA (live)** | The other big salvage marketplace | JSON endpoint |
+> **Data licensing matters.** Several sources this tool can read (Craigslist,
+> RSS feeds, scraped sold-price pages, the owner's own browser and inbox) are
+> **not** licensed for a paid multi-user product. Commercial mode switches them
+> off. Read `SOURCES.md` before charging anyone.
 
-Optional, with a free/paid API key:
+## Architecture
 
-| Source | What it adds | Setup |
-| --- | --- | --- |
-| **eBay Motors** | Nationwide active listings + auctions, dealers + private | Free dev account at developer.ebay.com → set `EBAY_CLIENT_ID` + `EBAY_CLIENT_SECRET` |
-| **MarketCheck** | **Cars.com, Autotrader, CarGurus, dealer.com inventory** — the legal way to cover the big aggregators | Sign up at marketcheck.com (~$50/mo) → set `MARKETCHECK_API_KEY` |
+```
+sources/*  ──poll──▶  jobs/scheduler.py ──ingest()──▶  listings + listing_prices
+ (health.py records every request: healthy/blocked/rate-limited/…)   │
+                                                                     ▼ durable "score" job
+                                            jobs/worker.py ── valuation.py ── profit.py
+                                                                     │  one transaction:
+                                                                     ├─ near_misses (valuation + evidence)
+                                                                     ├─ alerts (owner's trusted feed)
+                                                                     ├─ user_matches (each subscriber's searches)
+                                                                     └─ durable "notify" jobs ─▶ ntfy/Pushover/Twilio/
+                                                                                                 Discord/webhook (safe_http)
+server.py (Flask) ── dashboard.html (desktop) · mobile.html (/m) · JSON API
+```
 
-## What's deliberately NOT included (and why)
+- **One database** (`db.py`): SQLite locally, PostgreSQL in production —
+  listings, valuations, alerts, users, searches and jobs all live together.
+  Schema comes only from `migrations/`.
+- **Durable jobs** (`jobqueue.py`): scoring and notifications survive
+  restarts; retries with backoff; dead-letter after bounded attempts.
+- **Shared work, personal results**: each listing is ingested and valued once;
+  every subscriber's saved searches are then evaluated against it.
 
-- **Facebook Marketplace** — TOS prohibits scraping. Real account-ban risk.
-- **OfferUp / 5miles** — same.
-- **Cars.com / Autotrader / CarGurus directly** — TOS prohibits scraping.
-  Use MarketCheck (above) for the licensed feed of these same sites.
-- **Carvana / Vroom / CarMax inventory** — TOS prohibits.
+## Sources
 
-If a site you want isn't here, check whether they offer an RSS feed or a
-public API. If they do, drop a new file into `sources/` following the
-pattern in `sources/base.py` — the sniper will auto-discover it.
+See `SOURCES.md` for the full coverage + licensing table. Summary:
 
-## Setup
+| Source | Status | Commercial mode |
+|---|---|---|
+| Craigslist (by owner) | implemented, terms prohibit automated collection | off |
+| Bring a Trailer, Hemmings, GovDeals RSS | implemented, redistribution permission unverified | off |
+| eBay Motors (Browse API) | implemented, needs `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | on |
+| **MarketCheck private sellers (FSBO API, paid)** | implemented, fixture-tested; needs `MARKETCHECK_API_KEY` **and a signed agreement** (`MARKETCHECK_COMMERCIAL_AGREEMENT`) | off until agreement |
+| MarketCheck dealer inventory (retail asks, paid) | implemented; same agreement requirement | off until agreement |
+| Browser extension / email digests | owner's personal data only | off |
+| Cars & Bids, Copart, IAA, GSA, PublicSurplus | stubs (no code) | — |
 
-Easiest path: open the folder, double-click **`START HERE.command`**.
-First time only: right-click → Open (macOS Gatekeeper).
+Each source is polled no more often than its minimum interval
+(`DEFAULT_MIN_INTERVAL_S` in `sniper.py`, overridable via
+`source_min_interval_s`) and backs off automatically when blocked or
+rate-limited. **The scheduler tick is not a discovery-speed guarantee** — how
+quickly a new listing is seen depends on the source and these budgets. The
+dashboard's source panel shows each source's real status.
 
-That's it. Dashboard opens at `http://127.0.0.1:8765`.
+## How a listing becomes an alert
 
-See `QUICKSTART.txt` for the no-jargon version.
+1. **Ingest** (`sniper.ingest`) — upsert; price changes are kept in
+   `listing_prices`; VINs (check digit verified) identify the same car across
+   sources; relists are matched only by VIN or by same source/region/title/
+   odometer/photo after the old post disappears. Salvage/rebuilt/parts,
+   needs-work, dealer and payment-teaser prices are detected for every source.
+2. **Value** (`valuation.py`) — evidence is kept in separate classes:
+   `confirmed_sales` (dated completed sales), `asking_comparables` (what
+   sellers ask), `historical_incomplete` (undated/old/last-asking records),
+   `insufficient`. Comparables exclude the car itself, its cross-posts, stale
+   and damaged cars; prefer same trim and ±1 model year; mileage-adjust only
+   with enough data; robust statistics. Confidence (high/medium/low) comes
+   with the reasons behind it. It is **not** calibrated against real sale
+   outcomes yet.
+3. **Assess** — risk flags (scam signals, too good to be true, branded title,
+   needs work, dealer, mileage unknown, relisted, low confidence) → `trusted`
+   or `risk`. Risky cars stay visible in a labeled feed.
+4. **Match** (`saved_search_alerts.py`) — every entitled subscriber's own
+   criteria: min % under, min profit, confidence floor, conservative /
+   aggressive, condition, price/year/miles/make/model/state. One notification
+   per car per event; price drops are new events.
+5. **Deliver** (`notifications.py`) — durable jobs; destinations read at send
+   time; user webhooks pass connect-time SSRF checks (`safe_http.py`).
 
-## Daily commands (if you prefer the terminal)
+## Profit estimates
+
+`profit.py` separates known facts (asking price, value range) from
+assumptions (negotiation, repairs, transport, selling fees, and — only if the
+user sets them — sales tax and title fees for their state). Asking-price-based
+values get a labeled asking-to-sale haircut. Users edit assumptions without
+touching the valuation. Every figure is shown as an estimate, not a promise.
+
+## Plans (enforced server-side — `plans.py`)
+
+| | Lite (`starter`) | Pro (`pro`) |
+|---|---|---|
+| Target price | $2.99/mo | $4.99/mo |
+| Saved searches | 3 | 15 |
+| Alerts per day | 25 | 100 |
+| Price-drop alerts | – | ✓ |
+| Aggressive (risk-labeled) mode | – | ✓ |
+| Profit scenarios | base case | conservative / base / optimistic |
+| SMS (needs Twilio) | – | 30/month |
+
+Prices live in Stripe (`STRIPE_PRICE_STARTER`, `STRIPE_PRICE_PRO`); limits can
+be tuned with `PLAN_LIMITS_JSON`. Usage per account: `/api/admin/usage`.
+
+## Local setup (macOS)
+
+Double-click **`START HERE.command`** (first time: right-click → Open). It
+installs dependencies, applies migrations, starts the scheduler, the job
+worker and the dashboard at `http://127.0.0.1:8765` (mobile view: `/m`).
+`STOP.command` stops everything. See `QUICKSTART.txt`.
+
+## Terminal commands
 
 ```bash
 source .venv/bin/activate
-
-python sniper.py poll              # one-shot poll of every source
-python sniper.py daemon            # poll forever
-python sniper.py sources           # see which sources are on/off
-python sniper.py recent 25         # last 25 alerts
-python sniper.py stats             # per-source listing counts
-
-python vin.py 1HGCM82633A123456    # VIN check
-python comps.py "2015 Mazda Miata" # sold comps
-
-python server.py                   # dashboard
+python -m migrations.runner          # apply schema migrations
+python -m jobs.scheduler --once      # poll due sources once
+python -m jobs.worker --once         # process queued scoring/alert jobs
+python sniper.py sources             # which sources are on/off
+python sniper.py recent 25           # owner's recent alerts
+python comps.py "2015 Mazda Miata"   # sold-comp lookup (dated sales only)
+python benchmarks/run_benchmark.py   # labeled edge-case benchmark
+python server.py                     # dashboard
+python -m pytest -q                  # tests (SQLite)
+SNIPER_TEST_PG_URL=postgresql://postgres@127.0.0.1:5432/postgres python -m pytest -q   # tests on Postgres
 ```
 
-## Enabling the optional API sources
+## Alert channels
 
-### eBay Motors (free, ~5,000 calls/day)
+| Channel | Settings |
+|---|---|
+| ntfy push (free) | owner: `NTFY_TOPIC`; subscribers: their own topic from the app |
+| Pushover | `PUSHOVER_TOKEN`, `PUSHOVER_USER` (owner) |
+| Twilio SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` (+ phone) |
+| Discord / webhook | `DISCORD_WEBHOOK_URL`, `ALERT_WEBHOOK_URL`; subscribers: their own https webhook |
+| iMessage | macOS only, owner phone `NOTIFY_PHONE` |
 
-1. Sign up: https://developer.ebay.com/
-2. Application Keys → "Production" → copy Client ID and Client Secret
-3. Add to your shell profile (or run before launching):
-   ```bash
-   export EBAY_CLIENT_ID=your_id
-   export EBAY_CLIENT_SECRET=your_secret
-   ```
-4. Restart the sniper. eBay should show "ON" in the dashboard's Sources panel.
-
-### MarketCheck (paid, covers Cars.com / Autotrader / CarGurus)
-
-1. Sign up: https://www.marketcheck.com/automotive/cars-api
-2. Free trial (~250 calls) gets you started; paid plans from ~$50/mo
-3. ```bash
-   export MARKETCHECK_API_KEY=your_key
-   ```
-4. Restart. MarketCheck flips to "ON" automatically.
-
-## Adding your own source
-
-Drop `sources/your_site.py` with this shape:
-
-```python
-SOURCE_ID = "your_site"
-SOURCE_NAME = "Your Site"
-
-def enabled(cfg): return True
-def poll(cfg) -> list[NormalizedListing]:
-    # fetch + parse; return normalized objects
-    return [...]
-```
-
-The sniper auto-discovers it on next launch. Use existing source files as
-templates — `craigslist.py` is the simplest RSS pattern, `ebay_motors.py`
-shows OAuth-based API auth, `copart_live.py` shows raw JSON endpoints.
-
-## Tuning
-
-All knobs live in `config.py`:
-
-| Knob | What it does |
-| --- | --- |
-| `zip` / `radius_mi` | Used by sources that respect geo (eBay, MarketCheck) |
-| `min_price` / `max_price` | Filter listings outside this band |
-| `deal_threshold_pct` | How far below comp avg to alert. Default `10`. |
-| `poll_interval_sec` | Daemon polling frequency. Default `120`. |
-| `sources.<id>.enabled` | Turn any source on/off without deleting it |
-| `sources.craigslist.regions` | Add/remove CL subdomains |
-| `sources.govdeals.states` | Which states to pull govt surplus from |
-| `sources.copart_live.states` | Which states for salvage |
-
-## How alerts work
-
-Every new listing from every source goes through:
-1. Filter dealers (unless source is dealer-by-design like MarketCheck).
-2. Filter outside `min_price`/`max_price`.
-3. Skip if can't extract year/make/model.
-4. Skip if salvage (surfaced in the listings table, not as a "deal").
-5. Pull sold comps from eBay + BaT + Cars & Bids (cached 24h).
-6. If listing is ≥ `deal_threshold_pct` below comp avg → write an alert.
-
-Alerts surface in the dashboard's "Live deals" panel and via
-`python sniper.py recent`.
+Delivery is at-least-once: a crash between the provider accepting a message
+and the job being marked done can send one duplicate. Alerts are not lost.
 
 ## File map
 
 ```
-sniper/
-├── START HERE.command       # ← double-click this
-├── STOP.command
-├── QUICKSTART.txt
-├── config.py                # all knobs
-├── sniper.py                # orchestrator + CLI + DB
-├── server.py                # Flask backend
-├── dashboard.html           # local web UI
-├── vin.py                   # VIN decoder + recalls + complaints
-├── comps.py                 # sold-comp aggregator (eBay + BaT + CB + Copart)
-├── sources/                 # plugin sources, auto-discovered
-│   ├── base.py
-│   ├── craigslist.py
-│   ├── ebay_motors.py
-│   ├── bring_a_trailer.py
-│   ├── cars_and_bids.py
-│   ├── hemmings.py
-│   ├── govdeals.py
-│   ├── gsa_auctions.py
-│   ├── publicsurplus.py
-│   ├── copart_live.py
-│   ├── iaa_live.py
-│   └── marketcheck.py
-├── requirements.txt
-└── setup.sh                 # alternative manual installer
+config.py               knobs (env + overrides.json); commercial_mode
+db.py                   one connection layer for SQLite + Postgres
+migrations/             schema (0000–0010), applied by migrations/runner.py
+sniper.py               ingestion, scoring, source scheduling + health, CLI
+sources/                source adapters (auto-discovered) + health.py
+valuation.py            comparables, evidence classes, confidence
+comps.py                sold-price lookups (dated sales only count as sales)
+profit.py               profit scenarios with explicit assumptions
+saved_search_alerts.py  per-subscriber matching + plan limits
+plans.py                Lite / Pro entitlements
+jobqueue.py             durable jobs (claim, lease, retry, dead-letter)
+jobs/scheduler.py       polling process      jobs/worker.py   job process
+notifications.py        alert channels       safe_http.py     SSRF-safe webhooks
+server.py               Flask API + pages    mobile.html      /m mobile app
+benchmarks/             labeled edge cases + run_benchmark.py
+tests/                  pytest suite (SQLite or Postgres) + browser/ smoke test
+SOURCES.md              data coverage + licensing audit
+LAUNCH_CHECKLIST.md     paid-beta deployment checklist
+RELEASE_READINESS.md    audit, results and GO / NO-GO
 ```
 
-## Notes & limits
+## Known limits
 
-- All sources are polled **in parallel-but-not-async** — total tick takes
-  ~5–15 sec depending on which APIs respond fast that minute. One slow
-  source doesn't block the others.
-- All scrapers are best-effort and use polite User-Agents. Some endpoints
-  (Copart, IAA, Cars & Bids) occasionally change their JSON shape — if you
-  see a source returning 0 over many cycles, file an issue and I'll update
-  the parser.
-- Title parsing is regex-based and won't catch every car. Cars without a
-  parseable year/make/model still appear in the listings table; they just
-  don't get scored as deals.
-- Mileage adjustment is a flat `-$0.08/mi above 100k`. Replace in
-  `comps.py` if you want a model-specific curve.
-- Personal, non-commercial use only. Be respectful with poll intervals;
-  the defaults are conservative.
+- Title parsing is rule-based; cars without a parseable year/make/model are
+  stored but not valued. A seller who mislabels the trim can fool the
+  valuation (kept as a measured case in the benchmark).
+- Valuation confidence is evidence-based but **not yet calibrated** against
+  real sale outcomes; the benchmark is synthetic.
+- In commercial mode there is no licensed confirmed-sales feed yet, so values
+  come from asking-price comparables (labeled as such).

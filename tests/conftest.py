@@ -23,6 +23,22 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
+# Set SNIPER_TEST_PG_URL (a Postgres URL whose user may CREATE DATABASE,
+# e.g. postgresql://postgres@127.0.0.1:55432/postgres) to run the whole
+# suite against real Postgres: every test gets its own throwaway database.
+PG_ADMIN_URL = os.environ.get("SNIPER_TEST_PG_URL", "").strip()
+
+
+def _pg_admin_exec(sql: str) -> None:
+    import psycopg2
+    conn = psycopg2.connect(PG_ADMIN_URL)
+    conn.autocommit = True
+    try:
+        conn.cursor().execute(sql)
+    finally:
+        conn.close()
+
+
 @pytest.fixture()
 def temp_db_path(tmp_path):
     """Function-scoped temp DB. Each test starts with a clean schema; no
@@ -34,7 +50,21 @@ def temp_db_path(tmp_path):
     os.environ.pop("DATABASE_URL", None)
     # Open registration ON so tests can create users without an admin.
     os.environ["ALLOW_REGISTRATION"] = "1"
-    return p
+    dbname = None
+    if PG_ADMIN_URL:
+        import uuid
+        from urllib.parse import urlparse, urlunparse
+        dbname = "sniper_t_" + uuid.uuid4().hex[:12]
+        _pg_admin_exec(f'CREATE DATABASE "{dbname}"')
+        os.environ["DATABASE_URL"] = urlunparse(
+            urlparse(PG_ADMIN_URL)._replace(path="/" + dbname))
+    yield p
+    if dbname:
+        os.environ.pop("DATABASE_URL", None)
+        try:
+            _pg_admin_exec(f'DROP DATABASE IF EXISTS "{dbname}" WITH (FORCE)')
+        except Exception:
+            pass
 
 
 @pytest.fixture()
@@ -53,7 +83,8 @@ def app(temp_db_path):
     # `jobs.scheduler` is popped so the test runner's --once invocations
     # re-bind the module-level imports against the fresh test DB.
     for mod in ("server", "db", "auth", "sniper", "billing", "joblock",
-                "jobs.scheduler", "jobs",
+                "jobqueue", "notifications", "saved_search_alerts",
+                "jobs.scheduler", "jobs.worker", "jobs",
                 "migrations.runner", "migrations"):
         sys.modules.pop(mod, None)
     import db                       # noqa: F401  (re-import w/ new SNIPER_DB_PATH)

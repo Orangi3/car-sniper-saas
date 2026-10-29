@@ -16,8 +16,6 @@ endpoint. This source just reads them on each poll.
 from __future__ import annotations
 
 import json
-import sqlite3
-from pathlib import Path
 from typing import Optional
 
 from .base import (NormalizedListing, extract_make_model, extract_miles,
@@ -25,38 +23,35 @@ from .base import (NormalizedListing, extract_make_model, extract_miles,
 
 SOURCE_ID = "marketplace"
 SOURCE_NAME = "Marketplace (browser extension)"
-INBOX_PATH = Path(__file__).resolve().parent.parent / "marketplace_inbox.sqlite"
-
-
-def _ensure_inbox():
-    INBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(INBOX_PATH)
-    c.execute("""CREATE TABLE IF NOT EXISTS inbox (
-        id TEXT PRIMARY KEY,
-        platform TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        received_at TEXT NOT NULL
-    )""")
-    c.commit()
-    return c
+# Data-licensing class (see SOURCES.md): Captured from the owner's own logged-in browsing; not licensed for redistribution to other subscribers.
+LICENSING = "personal_use_only"
+# Imports are kept in the main database (table marketplace_inbox, migration
+# 0008) — previously a separate marketplace_inbox.sqlite next to the code,
+# invisible to other hosts and outside backups. poll() only re-reads recent
+# rows so the table can grow without making every tick slower.
+INBOX_LOOKBACK_HOURS = 72
 
 
 def push(payload: dict) -> Optional[str]:
     """Called by /api/import endpoint to insert a new listing from the extension."""
+    import db as _db
     listing_id = payload.get("id") or payload.get("url") or ""
     if not listing_id:
         return None
-    platform = payload.get("platform", "facebook")
+    platform = str(payload.get("platform", "facebook"))[:40]
     from datetime import datetime, timezone
-    with _ensure_inbox() as c:
-        try:
-            c.execute("INSERT OR REPLACE INTO inbox(id, platform, payload, received_at) VALUES(?,?,?,?)",
-                      (f"{platform}:{listing_id}", platform, json.dumps(payload),
-                       datetime.now(timezone.utc).isoformat()))
-            c.commit()
-            return f"{platform}:{listing_id}"
-        except Exception:
-            return None
+    key = f"{platform}:{listing_id}"[:500]
+    try:
+        with _db.session() as c:
+            c.execute(
+                "INSERT INTO marketplace_inbox(id, platform, payload, received_at) "
+                "VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "payload=excluded.payload, received_at=excluded.received_at",
+                (key, platform, json.dumps(payload)[:20000],
+                 datetime.now(timezone.utc).isoformat()))
+        return key
+    except Exception:
+        return None
 
 
 # ---------- Email-digest parser -----------------------------------------
@@ -149,10 +144,14 @@ def enabled(cfg: dict) -> bool:
 
 
 def poll(cfg: dict) -> list[NormalizedListing]:
-    if not INBOX_PATH.exists():
-        return []
-    with sqlite3.connect(INBOX_PATH) as c:
-        rows = c.execute("SELECT id, platform, payload FROM inbox").fetchall()
+    import db as _db
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(hours=INBOX_LOOKBACK_HOURS)).isoformat()
+    with _db.session() as c:
+        rows = [tuple(r) for r in c.execute(
+            "SELECT id, platform, payload FROM marketplace_inbox "
+            "WHERE received_at >= ?", (cutoff,)).fetchall()]
     # Platforms whose listings are dealer inventory by default. Dealers
     # accept financing and aren't cash-only — opposite of FB/OfferUp/Nextdoor.
     DEALER_PLATFORMS = {"cars_com", "autotrader", "cargurus"}

@@ -14,17 +14,25 @@ from Terminal — they're plain bash with a `.command` extension.
 
 **Method A — recommended:** double-click **`START HERE.command`**.
 
-It launches `sniper.py daemon` (poller) and `server.py` (Flask backend on
-port 8765), writes `sniper.pid` / `server.pid`, and waits for `/health`.
+It applies migrations, then launches three processes: `jobs.scheduler`
+(polls due sources, ingests), `jobs.worker` (scores listings and sends
+alerts from durable jobs) and `server.py` (Flask on port 8765), writing
+`sniper.pid` / `worker.pid` / `server.pid`.
 
 **Method B — manual:** open Terminal, then:
 
 ```
 cd ~/Desktop/sniper
-.venv/bin/python sniper.py daemon &  echo $! > sniper.pid
-.venv/bin/python server.py        &  echo $! > server.pid
-curl -s http://127.0.0.1:8765/health    # should print {"status":"ok",...}
+.venv/bin/python -m migrations.runner
+.venv/bin/python -m jobs.scheduler --interval 60 &  echo $! > sniper.pid
+.venv/bin/python -m jobs.worker --threads 2      &  echo $! > worker.pid
+.venv/bin/python server.py                       &  echo $! > server.pid
+curl -s http://127.0.0.1:8765/health    # proves only that the web process runs
+.venv/bin/python -m preflight           # what the deployment is actually ready for
 ```
+
+Without the worker nothing is scored or delivered (work waits safely in the
+`jobs` table until a worker runs).
 
 Then open the dashboard: `http://127.0.0.1:8765/`. The server's 302
 cache-bust redirect at `server.py:268` automatically appends `?v=<mtime>`

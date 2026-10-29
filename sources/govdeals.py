@@ -13,11 +13,14 @@ import re
 import requests
 from urllib.parse import urlencode
 
-from .base import (NormalizedListing, extract_int, extract_make_model,
+from . import health
+from .base import (NormalizedListing, extract_int, extract_price, extract_make_model,
                     extract_miles, extract_year, PRICE_RE)
 
 SOURCE_ID = "govdeals"
 SOURCE_NAME = "GovDeals (gov surplus)"
+# Data-licensing class (see SOURCES.md): Public RSS feed (URLs may be deprecated); redistribution terms not confirmed.
+LICENSING = "unverified"
 # Category 13: Cars/Trucks/Vehicles. They deprecated several feed URLs;
 # we try both the old and new patterns. If both fail this source silently
 # returns 0 and the diagnostics panel will say so.
@@ -39,17 +42,11 @@ def enabled(cfg: dict) -> bool:
 
 
 def _fetch_state(st: str):
-    """Fetch one state's GovDeals feed. Tight 5s timeout per template."""
-    for tmpl in FEED_TEMPLATES:
-        try:
-            r = requests.get(tmpl.format(state=st), headers=UA, timeout=5)
-            LAST_RESULTS[st] = {"status": r.status_code, "url": tmpl}
-            if r.status_code == 200 and len(r.content) > 200:
-                return st, r.content
-        except requests.RequestException as e:
-            LAST_RESULTS[st] = {"error": type(e).__name__}
-            continue
-    return st, None
+    """Fetch one state's GovDeals feed (outcomes go to the health report)."""
+    feed = health.fetch_feed(health.report(SOURCE_ID), f"govdeals:{st}",
+                             [t.format(state=st) for t in FEED_TEMPLATES],
+                             headers=UA, timeout=5)
+    return st, feed
 
 
 def poll(cfg: dict) -> list[NormalizedListing]:
@@ -64,9 +61,9 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         done, not_done = wait(futs, timeout=8)
         for f in done:
             try:
-                st, content = f.result(timeout=0.5)
-                if content:
-                    state_contents.append((st, content))
+                st, feed = f.result(timeout=0.5)
+                if feed is not None:
+                    state_contents.append((st, feed))
             except Exception:
                 continue
         for f in not_done:
@@ -74,8 +71,7 @@ def poll(cfg: dict) -> list[NormalizedListing]:
     finally:
         ex.shutdown(wait=False)
 
-    for st, content in state_contents:
-        feed = feedparser.parse(content)
+    for st, feed in state_contents:
         for e in feed.entries:
             url = e.get("link") or ""
             if not url:
@@ -87,7 +83,7 @@ def poll(cfg: dict) -> list[NormalizedListing]:
             mk, mdl = extract_make_model(title)
             out.append(NormalizedListing(
                 source=SOURCE_ID, source_id=f"{st}:{sid}", url=url, title=title,
-                price=extract_int(PRICE_RE, desc),  # current bid
+                price=extract_price(desc),  # current bid
                 year=extract_year(title), make=mk, model=mdl,
                 odometer=extract_miles(desc),
                 location=None, state=st, description=desc,

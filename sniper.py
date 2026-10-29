@@ -22,30 +22,24 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
+import re
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from queue import Queue, Empty
 from typing import Iterable, Optional
 
 import config as _config_mod
+import jobqueue
+import profit as profit_mod
+import valuation
 from config import CONFIG
 import sources
-from sources.base import NormalizedListing
-
-# Async scorer state
-_SCORE_QUEUE: "Queue[str]" = Queue()         # composite_id values pending scoring
-_SCORE_STATS = {"pending": 0, "scored": 0, "failed": 0,
-                "last_scored_at": None}
-_SCORER_STARTED = False
-_SCORER_LOCK = threading.Lock()
-
-# Estimated fees + reconditioning for the flipper profit calculator
-FEES_RECON_AVG = 1500
+from sources import health
+from sources.base import (NormalizedListing, looks_like_dealer, looks_needs_work,
+                          looks_salvage,
+                          to_iso)
 
 # Per-source diagnostics — captured each poll, exposed via /api/diagnostics
 SOURCE_DIAG: dict[str, dict] = {}
@@ -67,471 +61,488 @@ def _resolve_db_path() -> Path:
 # the env-driven path on re-import.
 DB_PATH = _resolve_db_path()
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS listings (
-    composite_id    TEXT PRIMARY KEY,
-    source          TEXT NOT NULL,
-    source_id       TEXT NOT NULL,
-    url             TEXT NOT NULL,
-    title           TEXT NOT NULL,
-    price           INTEGER,
-    year            INTEGER,
-    make            TEXT,
-    model           TEXT,
-    odometer        INTEGER,
-    location        TEXT,
-    state           TEXT,
-    description     TEXT,
-    posted_at       TEXT,
-    first_seen_at   TEXT NOT NULL,
-    is_dealer       INTEGER DEFAULT 0,
-    is_salvage      INTEGER DEFAULT 0,
-    is_auction      INTEGER DEFAULT 0,
-    auction_end_at  TEXT,
-    bid_count       INTEGER,
-    buy_now_price   INTEGER,
-    is_cash_only    INTEGER DEFAULT 0,
-    accepts_financing INTEGER DEFAULT 0,
-    scam_score      INTEGER DEFAULT 0,
-    scam_reasons    TEXT,
-    image_urls      TEXT,
-    extras          TEXT
-);
-
-CREATE TABLE IF NOT EXISTS alerts (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    composite_id    TEXT NOT NULL REFERENCES listings(composite_id),
-    comp_avg        REAL,
-    comp_median     REAL,
-    comp_n          INTEGER,
-    discount_pct    REAL,
-    score           REAL,
-    note            TEXT,
-    created_at      TEXT NOT NULL,
-    UNIQUE(composite_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_listings_first_seen ON listings(first_seen_at DESC);
-CREATE INDEX IF NOT EXISTS idx_listings_source     ON listings(source);
-CREATE INDEX IF NOT EXISTS idx_listings_auction    ON listings(is_auction, auction_end_at);
-CREATE INDEX IF NOT EXISTS idx_listings_scam       ON listings(scam_score);
-CREATE INDEX IF NOT EXISTS idx_listings_make_model ON listings(make, model);
-CREATE INDEX IF NOT EXISTS idx_alerts_created      ON alerts(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_alerts_score        ON alerts(score DESC);
-
-CREATE TABLE IF NOT EXISTS saved (
-    composite_id TEXT PRIMARY KEY REFERENCES listings(composite_id),
-    note         TEXT,
-    saved_at     TEXT NOT NULL
-);
-
--- "Near miss" cache so we can always surface SOMETHING even when nothing
--- meets the user's discount threshold. Discount must be > 0 (priced below
--- comp avg by any amount). Updated on every poll.
-CREATE TABLE IF NOT EXISTS near_misses (
-    composite_id  TEXT PRIMARY KEY REFERENCES listings(composite_id),
-    discount_pct  REAL,
-    score         REAL,
-    comp_avg      REAL,
-    note          TEXT,
-    refreshed_at  TEXT NOT NULL
-);
-"""
-
 DEAL_THRESHOLD = CONFIG["deal_threshold_pct"] / 100.0
 MIN_PRICE = CONFIG["min_price"]
 MAX_PRICE = CONFIG["max_price"]
 DEFAULT_POLL_SEC = CONFIG["poll_interval_sec"]
 
 
-def db() -> sqlite3.Connection:
-    # Re-resolve every call so a test that swapped SNIPER_DB_PATH after
-    # import (e.g. via the conftest fixture) still gets the right file.
-    path = _resolve_db_path()
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    # WAL + busy timeout: readers never block writers and concurrent writers
-    # wait politely instead of raising "database is locked". This removes the
-    # main source of intermittent scoring errors under the 6-thread scorer.
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=8000")
-        conn.execute("PRAGMA synchronous=NORMAL")
-    except sqlite3.OperationalError:
-        pass
-    conn.executescript(SCHEMA)
-    # Forward-compat ALTERs — safely add columns to pre-existing DBs
-    for stmt in (
-        "ALTER TABLE listings ADD COLUMN scam_score INTEGER DEFAULT 0",
-        "ALTER TABLE listings ADD COLUMN scam_reasons TEXT",
-        "ALTER TABLE listings ADD COLUMN image_urls TEXT",
-        "ALTER TABLE near_misses ADD COLUMN comp_n INTEGER",
-        "ALTER TABLE near_misses ADD COLUMN basis TEXT",
-        "ALTER TABLE alerts ADD COLUMN basis TEXT",
-        "ALTER TABLE saved ADD COLUMN status TEXT DEFAULT 'saved'",
-        "ALTER TABLE saved ADD COLUMN updated_at TEXT",
-    ):
-        try:
-            conn.execute(stmt)
-        except sqlite3.OperationalError:
-            pass  # column already exists
-    return conn
+def db():
+    """Portable connection to the configured database (SQLite locally,
+    Postgres when DATABASE_URL is set) — the SAME store auth, billing and
+    saved searches use. Schema comes only from migrations/; nothing is
+    created at connect time. Use as `with db() as conn:`."""
+    import db as _db_mod  # noqa: PLC0415 — re-resolved per call for tests
+    return _db_mod.session()
 
 
-def _record_score(conn, cid: str, comp_avg: float, comp_n: int,
-                  discount_pct: float, score: float, basis: str,
-                  note: str, now: str) -> None:
-    """Upsert one near_misses row — the single write path every scorer uses.
-    discount_pct may be <= 0 (priced at/above comp); those rows simply won't
-    surface in the deals pane but the listing still shows a real comp."""
-    conn.execute(
-        """INSERT INTO near_misses(composite_id, discount_pct, score, comp_avg,
-                comp_n, basis, note, refreshed_at)
-           VALUES(?,?,?,?,?,?,?,?)
-           ON CONFLICT(composite_id) DO UPDATE SET
-             discount_pct=excluded.discount_pct, score=excluded.score,
-             comp_avg=excluded.comp_avg, comp_n=excluded.comp_n,
-             basis=excluded.basis, note=excluded.note,
-             refreshed_at=excluded.refreshed_at""",
-        (cid, discount_pct, score, comp_avg, comp_n, basis, note, now))
+# ---------- Ingestion: upsert, price history, identity --------------------
+
+VIN_RE = re.compile(r"\b([A-HJ-NPR-Z0-9]{17})\b")
+MATERIAL_DROP_PCT = 3.0
+MATERIAL_DROP_USD = 250
+RELIST_GAP_HOURS = 6
 
 
-def instant_estimate(year, make, model, price, odometer=None, conn=None):
-    """Network-free market-value estimate from peer ASKING prices already in
-    the DB. Tier A = same make/model within 3 model-years; Tier B = same
-    make/model any year, each peer aged ~8%/yr toward the target year so
-    older/newer model years still inform the estimate. Instant, never raises.
-    Returns {'avg','n','basis'} or None when there are no usable peers."""
-    try:
-        if not (year and make and model and price):
-            return None
-        own = conn is None
-        c = conn or db()
-        try:
-            rows = c.execute(
-                """SELECT price, year FROM listings
-                   WHERE LOWER(make)=LOWER(?) AND LOWER(model)=LOWER(?)
-                     AND price IS NOT NULL AND price BETWEEN 1000 AND 250000
-                     AND year IS NOT NULL AND is_salvage=0""",
-                (str(make).strip(), str(model).strip())).fetchall()
-        finally:
-            if own:
-                c.close()
-        if len(rows) < 2:
-            return None
-        tight = [r["price"] for r in rows if abs(r["year"] - year) <= 3]
-        if len(tight) >= 2:
-            sample, n = tight, len(tight)
-        else:
-            # age peers within 8 model-years toward the target year (~8%/yr).
-            # The window + clamp keep a sparse feed from producing wild
-            # estimates (e.g. a 2002 truck priced off a 2022 one).
-            nearish = [r for r in rows if abs(r["year"] - year) <= 8]
-            if len(nearish) < 2:
-                return None
-            sample = [r["price"] * (1.08 ** max(-8, min(8, year - r["year"])))
-                      for r in nearish]
-            n = len(sample)
-        prices = sorted(sample)
-        # trim 10% off each tail to drop outliers, then take the median
-        k = int(len(prices) * 0.10)
-        core = prices[k:len(prices) - k] or prices
-        med = core[len(core) // 2]
-        # asking prices run a few % above realistic resale — small haircut
-        est = med * 0.93
-        # light mileage adjustment past a 120k-mile baseline
-        if odometer and odometer > 120_000:
-            est -= (odometer - 120_000) * 0.06
-        return {"avg": round(max(est, 500.0), 2), "n": n, "basis": "estimate"}
-    except Exception as e:
-        print(f"[instant_estimate] {make} {model}: {e}", file=sys.stderr)
+def find_vin(*texts: str) -> Optional[str]:
+    """A VIN printed in the listing, accepted only if its check digit
+    verifies (North American VINs) — a random 17-char token is not a VIN."""
+    import vin as vin_mod
+    for t in texts:
+        for m in VIN_RE.finditer((t or "").upper()):
+            cand = m.group(1)
+            if not (re.search(r"[A-Z]", cand) and re.search(r"\d", cand)):
+                continue
+            v = vin_mod.validate_vin(cand)
+            if v.get("ok") and v.get("check_digit_ok") is True:
+                return v["normalized"]
+    return None
+
+
+def _norm_title(t: str) -> str:
+    """Title without its price tag ("… - $9,000", "$9k"): a relist at a new
+    price must still compare equal."""
+    t = re.sub(r"\$\s?[\d,.]+\s?k?\b", " ", (t or "").lower())
+    return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def _find_relist(conn, l: NormalizedListing, vehicle_key: Optional[str],
+                 cid: str) -> Optional[dict]:
+    """An earlier listing of the SAME vehicle, matched cautiously:
+      1. same verified VIN (any source), or
+      2. same source + region, identical normalized title, identical
+         non-null odometer, (if both have photos) the same first photo, AND
+         the earlier post has been gone for RELIST_GAP_HOURS — two posts that
+         are both live are two listings, not a relist.
+    Never on year/make/model/price alone."""
+    if vehicle_key:
+        r = conn.execute(
+            "SELECT composite_id, source, price, last_seen_at FROM listings "
+            "WHERE vehicle_key = ? AND composite_id <> ? "
+            "ORDER BY last_seen_at DESC LIMIT 1", (vehicle_key, cid)).fetchone()
+        return dict(r) if r else None
+    if not l.odometer or not l.title:
         return None
+    region = str(l.source_id).split(":", 1)[0] if ":" in str(l.source_id) else None
+    rows = conn.execute(
+        "SELECT composite_id, source_id, title, price, last_seen_at, image_urls "
+        "FROM listings WHERE source = ? AND odometer = ? AND year = ? "
+        "  AND composite_id <> ? ORDER BY last_seen_at DESC LIMIT 20",
+        (l.source, l.odometer, l.year, cid)).fetchall()
+    nt = _norm_title(l.title)
+    first_img = (l.image_urls or [None])[0]
+    gone_before = (datetime.now(timezone.utc)
+                   - timedelta(hours=RELIST_GAP_HOURS)).isoformat()
+    for r in rows:
+        if _norm_title(r["title"]) != nt:
+            continue
+        if str(r["last_seen_at"] or "") > gone_before:
+            continue                      # still live: a different listing
+        if region and not str(r["source_id"]).startswith(region + ":"):
+            continue
+        try:
+            imgs = json.loads(r["image_urls"] or "[]")
+        except ValueError:
+            imgs = []
+        if first_img and imgs and imgs[0] != first_img:
+            continue
+        return dict(r)
+    return None
 
 
 def store_new(listings: Iterable[NormalizedListing]) -> list[NormalizedListing]:
-    """Insert new listings + queue them for async scoring. Returns the new ones.
+    """Upsert listings; returns the ones that were new. See ingest()."""
+    return ingest(listings)["new"]
 
-    DECOUPLING: this function is FAST — it only inserts rows and enqueues IDs.
-    The scoring (which calls expensive comp APIs) happens in a background
-    worker thread via ensure_scorer_started(). Callers (Poll Now button,
-    daemon ticks) get an immediate response.
-    """
+
+def ingest(listings: Iterable[NormalizedListing]) -> dict:
+    """Upsert a batch of listings in one transaction.
+
+    New listing   → insert, price-history row, relist detection, score job.
+    Seen before   → last_seen_at bumped; a changed asking price is stored
+                    (previous_price, price_changed_at, history row) and the
+                    listing is re-scored — so a $9,000 → $6,500 drop becomes
+                    a price-change opportunity instead of being discarded
+                    as a duplicate.
+    Score jobs are keyed by (listing, price): unchanged re-polls never
+    re-score or re-alert."""
     from scam_detector import score_listing as scam_score_listing
     now = datetime.now(timezone.utc).isoformat()
-    new: list[NormalizedListing] = []
+    batch: dict[str, NormalizedListing] = {}
+    dropped = 0
+    for l in listings:
+        if CONFIG.get("require_price", True) and not l.price:
+            dropped += 1                    # counted, never silently lost
+            continue
+        _normalize_listing(l)
+        batch[l.composite_id()] = l
+    out = {"new": [], "price_changed": [], "seen": 0, "dropped_no_price": dropped}
+    if not batch:
+        return out
     with db() as conn:
-        for l in listings:
-            if CONFIG.get("require_price", True) and not l.price:
+        room = jobqueue.has_capacity(conn, "score")
+        ids = list(batch)
+        existing: dict[str, dict] = {}
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            for r in conn.execute(
+                    f"SELECT composite_id, price, odometer FROM listings "
+                    f"WHERE composite_id IN ({','.join('?' for _ in chunk)})", chunk):
+                existing[r["composite_id"]] = dict(r)
+        touched = []
+        for cid, l in batch.items():
+            prev = existing.get(cid)
+            if prev is None:
+                _insert_listing(conn, l, now, scam_score_listing)
+                out["new"].append(l)
+                if l.year and l.make and l.model and room:
+                    enqueue_score(conn, cid, l.price)
                 continue
-            sc, reasons = scam_score_listing(l.title, l.description, l.price, None)
-            try:
+            out["seen"] += 1
+            if l.price and prev.get("price") and int(l.price) != int(prev["price"]):
                 conn.execute(
-                    """INSERT INTO listings(composite_id, source, source_id, url, title,
-                            price, year, make, model, odometer, location, state,
-                            description, posted_at, first_seen_at, is_dealer,
-                            is_salvage, is_auction, auction_end_at, bid_count,
-                            buy_now_price, is_cash_only, accepts_financing,
-                            scam_score, scam_reasons, image_urls, extras)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (l.composite_id(), l.source, l.source_id, l.url, l.title,
-                     l.price, l.year, l.make, l.model, l.odometer, l.location, l.state,
-                     l.description, l.posted_at, now,
-                     1 if l.is_dealer else 0, 1 if l.is_salvage else 0,
-                     1 if l.is_auction else 0, l.auction_end_at, l.bid_count,
-                     l.buy_now_price,
-                     1 if l.is_cash_only else 0, 1 if l.accepts_financing else 0,
-                     sc, json.dumps(reasons),
-                     json.dumps(getattr(l, 'image_urls', []) or []),
-                     json.dumps(l.extras)),
-                )
-                new.append(l)
-                # Enqueue for async scoring (only if it has the data we need)
-                if l.year and l.make and l.model and not l.is_salvage:
-                    _SCORE_QUEUE.put(l.composite_id())
-                    _SCORE_STATS["pending"] = _SCORE_QUEUE.qsize()
-            except sqlite3.IntegrityError:
-                pass
-    ensure_scorer_started()
+                    "UPDATE listings SET price = ?, previous_price = ?, "
+                    "  price_changed_at = ?, last_seen_at = ?, title = ?, "
+                    "  description = ?, odometer = COALESCE(?, odometer) "
+                    "WHERE composite_id = ?",
+                    (l.price, prev["price"], now, now, l.title, l.description,
+                     l.odometer, cid))
+                conn.execute(
+                    "INSERT INTO listing_prices(composite_id, price, event, observed_at) "
+                    "VALUES (?,?,?,?)", (cid, l.price, "price_change", now))
+                out["price_changed"].append(l)
+                if l.year and l.make and l.model:
+                    enqueue_score(conn, cid, l.price)
+            else:
+                touched.append((now, cid))
+        if touched:
+            conn.executemany("UPDATE listings SET last_seen_at = ? WHERE composite_id = ?",
+                             touched)
+    return out
 
-    # INSTANT SCORING PASS — give every brand-new listing a peer-estimate
-    # score right now (network-free) so the dashboard shows a number the
-    # moment it appears. The background scorer refines this into a verified
-    # sold-comp score shortly after. Wrapped so it can never break ingestion.
-    if new:
+
+def _location(l: NormalizedListing) -> tuple:
+    """(zip, lat, lon, location_source) from STRUCTURED provider fields only.
+    A provider ZIP without coordinates gets its ZIP-centroid (geo.py)."""
+    z = (str(l.zip)[:5] if getattr(l, "zip", None) else None)
+    if z and not z.isdigit():
+        z = None
+    lat, lon = getattr(l, "latitude", None), getattr(l, "longitude", None)
+    if lat is not None and lon is not None:
+        return z, float(lat), float(lon), "provider"
+    if z:
         try:
-            now2 = datetime.now(timezone.utc).isoformat()
-            weights = CONFIG.get("source_weights", {})
-            with db() as conn:
-                for l in new:
-                    try:
-                        if l.is_salvage or not (l.year and l.make and l.model and l.price):
-                            continue
-                        est = instant_estimate(l.year, l.make, l.model,
-                                               l.price, l.odometer, conn=conn)
-                        if not est:
-                            continue
-                        avg = float(est["avg"])
-                        discount = (avg - l.price) / avg if avg else 0.0
-                        weight = weights.get(l.source, 1.0)
-                        fresh = _freshness_factor(l.posted_at)
-                        score = max(0.0, discount) * 100 * weight * fresh
-                        note = (f"[{l.source}] {l.year} {l.make} {l.model}"
-                                + f" listed ${l.price:,} vs est. value ${avg:,.0f}"
-                                + f" (peers={est['n']}, score={score:.1f})")
-                        _record_score(conn, l.composite_id(), avg, est["n"],
-                                      discount * 100, score, "estimate", note, now2)
-                    except Exception as e:
-                        print(f"[instant] {getattr(l,'source','?')}: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"[instant pass] {e}", file=sys.stderr)
-
-    return new
+            import geo
+            c = geo.zip_centroid(z)
+        except Exception:
+            c = None
+        if c:
+            return z, c[0], c[1], "zip_centroid"
+    return z, None, None, None
 
 
-# ---------- Async background scorer --------------------------------------
+def _insert_listing(conn, l: NormalizedListing, now: str, scam_fn) -> None:
+    cid = l.composite_id()
+    sc, reasons = scam_fn(l.title, l.description, l.price, None)
+    vin = find_vin(l.title, l.description)
+    vehicle_key = f"vin:{vin}" if vin else None
+    trim = valuation.parse_trim(l.title, l.model)
+    relist = _find_relist(conn, l, vehicle_key, cid)
+    previous_price = None
+    extras = dict(l.extras or {})
+    if relist:
+        extras["relist_of"] = relist["composite_id"]
+        if relist.get("price") and l.price and l.price < relist["price"]:
+            previous_price = relist["price"]   # relisted cheaper = price drop
+    conn.execute(
+        """INSERT INTO listings(composite_id, source, source_id, url, title,
+                price, year, make, model, odometer, location, state,
+                description, posted_at, first_seen_at, last_seen_at, is_dealer,
+                is_salvage, is_auction, auction_end_at, bid_count,
+                buy_now_price, is_cash_only, accepts_financing,
+                scam_score, scam_reasons, image_urls, extras, vin, vehicle_key,
+                relist_of, trim, needs_work, previous_price, price_changed_at,
+                zip, latitude, longitude, location_source)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(composite_id) DO NOTHING""",
+        (cid, l.source, l.source_id, l.url, l.title,
+         l.price, l.year, l.make, l.model, l.odometer, l.location, l.state,
+         l.description, l.posted_at, now, now,
+         bool(l.is_dealer), bool(l.is_salvage),
+         bool(l.is_auction), to_iso(l.auction_end_at), l.bid_count,
+         l.buy_now_price,
+         bool(l.is_cash_only), bool(l.accepts_financing),
+         sc, json.dumps(reasons),
+         json.dumps(getattr(l, "image_urls", []) or []),
+         json.dumps(extras), vin, vehicle_key,
+         relist["composite_id"] if relist else None, trim,
+         bool(extras.get("needs_work")), previous_price,
+         now if previous_price else None, *_location(l)))
+    conn.execute(
+        "INSERT INTO listing_prices(composite_id, price, event, observed_at) "
+        "VALUES (?,?,?,?)", (cid, l.price, "relist" if relist else "first_seen", now))
+
+
+# ---------- Ingestion normalization ---------------------------------------
+
+def _normalize_listing(l: NormalizedListing) -> None:
+    """Apply the cross-source checks every listing needs, whatever source it
+    came from (feeds, APIs, browser extension, email digests):
+      * posted_at → ISO 8601 UTC or None (RSS gives RFC 822)
+      * branded-title / parts-car wording → is_salvage
+      * runs/drives problems → extras["needs_work"]"""
+    raw_posted = l.posted_at
+    l.posted_at = to_iso(raw_posted)
+    if raw_posted and not l.posted_at:
+        l.extras = {**(l.extras or {}), "posted_raw": str(raw_posted)[:64]}
+    if not l.is_salvage and looks_salvage(l.title, l.description):
+        l.is_salvage = True
+    if not l.is_dealer and looks_like_dealer(l.title, l.description):
+        l.is_dealer = True
+        l.is_cash_only = False
+    if looks_needs_work(l.title, l.description):
+        l.extras = {**(l.extras or {}), "needs_work": True}
+
+
+# ---------- Opportunity assessment ----------------------------------------
+
+BLOCKING_FLAGS = {"scam_signals", "too_good_to_be_true", "branded_title", "needs_work"}
+
+
+def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str, list[str]]:
+    """(trust, flags). 'trusted' = no blocking flag AND medium+ confidence.
+    Risky listings stay visible, labeled; they're just kept out of the
+    default trusted feed and conservative alerts."""
+    from scam_detector import score_listing as scam_score_listing
+    flags = []
+    scam, _ = scam_score_listing(l.get("title"), l.get("description"),
+                                 l.get("price"), v.value_mid)
+    if max(scam, l.get("scam_score") or 0) >= 50:
+        flags.append("scam_signals")
+    if discount > int(CONFIG.get("max_believable_discount_pct", 65)) / 100.0:
+        flags.append("too_good_to_be_true")
+    if l.get("is_salvage"):
+        flags.append("branded_title")
+    if l.get("needs_work"):
+        flags.append("needs_work")
+    seller = valuation.seller_kind(l)
+    if seller == "dealer":
+        flags.append("dealer")
+    elif seller == "unknown":
+        flags.append("seller_type_unknown")     # can't confirm a private seller
+    if not l.get("odometer"):
+        flags.append("mileage_unknown")
+    if l.get("relist_of"):
+        flags.append("relisted")
+    if v.confidence in ("low", "insufficient"):
+        flags.append("low_confidence")
+    trusted = not (set(flags) & BLOCKING_FLAGS) and v.confidence in ("medium", "high")
+    return ("trusted" if trusted else "risk"), flags
+
+
+def _event_for(l: dict) -> str:
+    pp, p = l.get("previous_price"), l.get("price")
+    if pp and p and p < pp:
+        drop = pp - p
+        if drop >= MATERIAL_DROP_USD and 100.0 * drop / pp >= MATERIAL_DROP_PCT:
+            return "price_drop"
+    return "new"
+
+
+def _owner_alert_ok(l: dict, v, discount: float, trust: str) -> bool:
+    if trust != "trusted":
+        return False
+    if not (int(CONFIG.get("min_price", 0)) <= l["price"]
+            <= int(CONFIG.get("max_price", 10**9))):
+        return False
+    thr = CONFIG.get("deal_threshold_pct", 25) / 100.0
+    if v.evidence_class != valuation.CONFIRMED_SALES:
+        if not CONFIG.get("estimate_alerts_enabled", True):
+            return False
+        if v.n < int(CONFIG.get("estimate_alert_min_peers", 8)):
+            return False
+        thr = max(thr, int(CONFIG.get("estimate_alert_threshold_pct", 30)) / 100.0)
+    return discount >= thr
+
+
+def enqueue_score(conn, composite_id: str, price) -> Optional[int]:
+    """One scoring job per (listing, price): a re-poll of an unchanged
+    listing is a no-op, a price change gets re-scored."""
+    return jobqueue.enqueue(conn, "score", f"score:{composite_id}:{price}",
+                            {"composite_id": composite_id}, priority=50,
+                            max_attempts=4)
+
+
+def score_job(job: dict) -> dict:
+    """jobs/worker.py handler for kind='score'."""
+    r = _score_one_listing(job["payload"]["composite_id"])
+    return r or {"skipped": True}
+
+
+def _sold_evidence(l: dict) -> tuple[Optional[dict], Optional[str]]:
+    """Classified completed-sale evidence, or (None, reason)."""
+    try:
+        import comps
+        raw, _ = comps.raw_sold(l["year"], l["make"], l["model"])
+        return valuation.classify_sold_items(raw, l["year"], l["make"], l["model"]), None
+    except Exception as e:
+        return None, f"sold-comp lookup failed ({type(e).__name__})"
+
 
 def _score_one_listing(composite_id: str) -> Optional[dict]:
-    """Refine one listing's score. Tries live VERIFIED sold comps first; if
-    those are unavailable it guarantees an instant peer ESTIMATE is recorded
-    so the listing is never left blank. Called from a background worker —
-    wrapped so it can never raise."""
-    try:
-        from comps import comps_for_listing
-    except Exception:
-        comps_for_listing = None
+    """Value one listing, assess risk, and — in ONE transaction — record the
+    valuation, the owner's alert (if it qualifies) and every subscriber
+    match with their notification jobs. Raises on DB errors so the durable
+    job retries."""
     try:
         _config_mod.reload()
     except Exception:
         pass
-    threshold = CONFIG.get("deal_threshold_pct", 20) / 100.0
-    weights = CONFIG.get("source_weights", {})
-    now = datetime.now(timezone.utc).isoformat()
-
-    try:
-        with db() as conn:
-            row = conn.execute(
-                "SELECT * FROM listings WHERE composite_id=?", (composite_id,)
-            ).fetchone()
-            prior = conn.execute(
-                "SELECT basis FROM near_misses WHERE composite_id=?", (composite_id,)
-            ).fetchone()
-    except Exception as e:
-        print(f"[score] {composite_id} db read failed: {e}", file=sys.stderr)
-        return None
+    with db() as conn:
+        row = conn.execute("SELECT * FROM listings WHERE composite_id = ?",
+                           (composite_id,)).fetchone()
     if not row:
         return None
     l = dict(row)
     if not l.get("price") or not (l.get("year") and l.get("make") and l.get("model")):
         return None
-    if l.get("is_salvage"):
-        return None
 
-    weight = weights.get(l["source"], 1.0)
-    fresh = _freshness_factor(l.get("posted_at"))
+    sold, sold_err = _sold_evidence(l)          # network; outside the txn
+    now = datetime.now(timezone.utc).isoformat()
+    with db() as conn:
+        peers = valuation.load_peers(conn, l)
+        v = valuation.value_listing(l, peers, sold)
+        if sold_err:
+            v.reasons.append(sold_err)
+        if v.evidence_class == valuation.INSUFFICIENT or not v.value_mid:
+            _record_valuation(conn, l, v, None, 0.0, "risk", ["insufficient_data"],
+                              f"[{l['source']}] {l['year']} {l['make']} {l['model']}: "
+                              f"insufficient comparables", now)
+            return {"composite_id": composite_id, "evidence_class": v.evidence_class}
 
-    # --- Tier 1: live VERIFIED sold comps (2025+) ---
-    comp = None
-    if comps_for_listing:
-        try:
-            comp = comps_for_listing(year=l["year"], make=l["make"],
-                                     model=l["model"], odometer=l.get("odometer"))
-        except Exception as e:
-            print(f"[score] {composite_id} comp lookup failed: {e}", file=sys.stderr)
-            comp = None
+        discount = (v.value_mid - l["price"]) / v.value_mid
+        trust, flags = assess_risk(l, v, discount)
+        weight = CONFIG.get("source_weights", {}).get(l["source"], 1.0)
+        score = max(0.0, discount) * 100 * weight * _freshness_factor(l.get("posted_at"))
+        pr = profit_mod.compute(l["price"], v.value_low, v.value_mid, v.value_high,
+                                v.evidence_class, None, scenarios=False,
+                                dealer_share=v.dealer_share)
+        est_profit = pr["scenarios"]["base"]["profit"] if pr else None
+        label = {"confirmed_sales": "sold comps"}.get(v.evidence_class, "asking comps")
+        note = (f"[{l['source']}] {l['year']} {l['make']} {l['model']}"
+                + (f" / {l['odometer']:,} mi" if l.get('odometer') else "")
+                + f" listed ${l['price']:,} vs {label} ${v.value_mid:,.0f}"
+                + f" (n={v.n}, {v.confidence} confidence, score={score:.1f}"
+                + (f", est. profit ${est_profit:,}" if est_profit is not None else "") + ")")
+        _record_valuation(conn, l, v, discount, score, trust, flags, note, now)
 
-    if comp and comp.get("avg"):
-        avg, comp_n, basis = float(comp["avg"]), int(comp.get("n") or 0), "verified"
-        comp_median = comp.get("median")
-    else:
-        # --- Tier 2: instant peer ESTIMATE (network-free fallback) ---
-        est = instant_estimate(l["year"], l["make"], l["model"],
-                               l["price"], l.get("odometer"))
-        if not est:
-            return None  # not enough data anywhere — leave any prior row intact
-        avg, comp_n, basis = float(est["avg"]), int(est["n"]), "estimate"
-        comp_median = None
+        event = _event_for(l)
+        opp = {**l, "discount_pct": round(discount * 100, 2), "value_low": v.value_low,
+               "value_mid": v.value_mid, "value_high": v.value_high,
+               "comp_avg": v.value_mid, "comp_n": v.n, "basis": v.basis,
+               "evidence_class": v.evidence_class, "confidence": v.confidence,
+               "trust": trust, "risk_flags": flags, "score": score,
+               "est_profit": est_profit, "event": event,
+               "dealer_share": v.dealer_share}
 
-    # Never downgrade an already-verified score back to an estimate.
-    if prior and prior["basis"] == "verified" and basis == "estimate":
-        return None
-
-    discount = (avg - l["price"]) / avg if avg else 0.0
-    score = max(0.0, discount) * 100 * weight * fresh
-    est_profit = int(avg - l["price"] - FEES_RECON_AVG)
-    label = "sold-comp" if basis == "verified" else "est. value"
-    note = (f"[{l['source']}] {l['year']} {l['make']} {l['model']}"
-            + (f" / {l['odometer']:,} mi" if l.get('odometer') else "")
-            + f" listed ${l['price']:,} vs {label} ${avg:,.0f}"
-            + f" (n={comp_n}, score={score:.1f}, est. profit ${est_profit:,})")
-
-    new_alert = False
-    try:
-        with db() as conn:
-            _record_score(conn, composite_id, avg, comp_n, discount * 100,
-                          score, basis, note, now)
-            # Alerts (and the text notification) fire ONLY on verified comps —
-            # we never text the user a "deal" based on a rough estimate.
-            if basis == "verified" and discount >= threshold:
-                try:
-                    conn.execute(
-                        """INSERT INTO alerts(composite_id, comp_avg, comp_median,
-                                 comp_n, discount_pct, score, note, created_at, basis)
-                           VALUES(?,?,?,?,?,?,?,?,?)""",
-                        (composite_id, avg, comp_median, comp_n,
-                         discount * 100, score, note, now, basis))
-                    new_alert = True
-                except sqlite3.IntegrityError:
-                    pass
-    except Exception as e:
-        print(f"[score] {composite_id} write failed: {e}", file=sys.stderr)
-        return None
-
-    if new_alert and CONFIG.get("notify_text_enabled") and CONFIG.get("notify_phone"):
-        try:
-            min_score = int(CONFIG.get("notify_min_score", 30))
-            if score < min_score:
-                pass  # below user's alert threshold — silent
-            elif _in_quiet_hours():
-                print(f"[notify] {composite_id} skipped — quiet hours active",
-                      file=sys.stderr)
+        alert_id = None
+        if _owner_alert_ok(l, v, discount, trust):
+            if event == "price_drop":
+                r = conn.execute(
+                    """INSERT INTO alerts(composite_id, comp_avg, comp_median, comp_n,
+                             discount_pct, score, note, created_at, basis)
+                       VALUES(?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(composite_id) DO UPDATE SET
+                         comp_avg=excluded.comp_avg, comp_median=excluded.comp_median,
+                         comp_n=excluded.comp_n, discount_pct=excluded.discount_pct,
+                         score=excluded.score, note=excluded.note, basis=excluded.basis
+                       RETURNING id""",
+                    (composite_id, v.value_mid, v.value_mid, v.n, discount * 100,
+                     score, note, now, v.basis)).fetchone()
+                alert_id = r[0]
+                owner_key = f"{composite_id}:drop:{l['price']}"
             else:
-                from notifications import send_alert_text
-                ok, detail = send_alert_text(
-                    CONFIG["notify_phone"], l["year"], l["make"], l["model"],
-                    l["price"], discount * 100, l["url"])
-                if not ok:
-                    print(f"[notify] {composite_id}: {detail}", file=sys.stderr)
-        except Exception as e:
-            print(f"[notify] {composite_id} crashed: {e}", file=sys.stderr)
+                r = conn.execute(
+                    """INSERT INTO alerts(composite_id, comp_avg, comp_median, comp_n,
+                             discount_pct, score, note, created_at, basis)
+                       VALUES(?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(composite_id) DO NOTHING RETURNING id""",
+                    (composite_id, v.value_mid, v.value_mid, v.n, discount * 100,
+                     score, note, now, v.basis)).fetchone()
+                alert_id = r[0] if r else None
+                owner_key = f"alert{alert_id}"
+            if alert_id and CONFIG.get("notify_text_enabled") \
+                    and score >= int(CONFIG.get("notify_min_score", 30)):
+                import notifications
+                notifications.enqueue_owner(conn, {**opp, "alert_id": alert_id},
+                                            owner_key, phone=CONFIG.get("notify_phone"))
 
-    return {"composite_id": composite_id, "score": score,
-            "discount": discount, "basis": basis}
+        import saved_search_alerts
+        matched = saved_search_alerts.evaluate(conn, opp)
+
+    return {"composite_id": composite_id, "score": score, "discount": discount,
+            "basis": v.basis, "evidence_class": v.evidence_class,
+            "confidence": v.confidence, "trust": trust, "event": event,
+            "alert_id": alert_id, "user_matches": len(matched)}
 
 
-def _scorer_loop():
-    """Background worker — drains the score queue continuously."""
-    while True:
-        try:
-            cid = _SCORE_QUEUE.get(timeout=5)
-        except Empty:
-            _SCORE_STATS["pending"] = 0
-            continue
-        try:
-            _score_one_listing(cid)
-            _SCORE_STATS["scored"] += 1
-            _SCORE_STATS["last_scored_at"] = datetime.now(timezone.utc).isoformat()
-        except Exception as e:
-            _SCORE_STATS["failed"] += 1
-            print(f"[scorer] {cid} failed: {e}", file=sys.stderr)
-        finally:
-            _SCORE_STATS["pending"] = _SCORE_QUEUE.qsize()
-            _SCORE_QUEUE.task_done()
+def _record_valuation(conn, l: dict, v, discount: Optional[float], score: float,
+                      trust: str, flags: list[str], note: str, now: str) -> None:
+    """Upsert the per-listing valuation record (table near_misses)."""
+    conn.execute(
+        """INSERT INTO near_misses(composite_id, discount_pct, score, comp_avg,
+                comp_n, basis, note, refreshed_at, evidence_class, value_low,
+                value_high, confidence, confidence_reasons, evidence, trust,
+                risk_flags, price_at_score)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(composite_id) DO UPDATE SET
+             discount_pct=excluded.discount_pct, score=excluded.score,
+             comp_avg=excluded.comp_avg, comp_n=excluded.comp_n,
+             basis=excluded.basis, note=excluded.note,
+             refreshed_at=excluded.refreshed_at,
+             evidence_class=excluded.evidence_class, value_low=excluded.value_low,
+             value_high=excluded.value_high, confidence=excluded.confidence,
+             confidence_reasons=excluded.confidence_reasons,
+             evidence=excluded.evidence, trust=excluded.trust,
+             risk_flags=excluded.risk_flags, price_at_score=excluded.price_at_score""",
+        (l["composite_id"], None if discount is None else round(discount * 100, 2),
+         score, v.value_mid, v.n, v.basis, note, now, v.evidence_class,
+         v.value_low, v.value_high, v.confidence, json.dumps(v.reasons),
+         valuation.evidence_json(v), trust, json.dumps(flags), l["price"]))
 
 
 def ensure_scorer_started() -> None:
-    """Idempotent — start the background scorer thread on first call."""
-    global _SCORER_STARTED
-    with _SCORER_LOCK:
-        if _SCORER_STARTED:
-            return
-        # Start 6 worker threads — they share the queue. The bottleneck is
-        # network comp fetches, so more workers drains the queue faster.
-        for _ in range(6):
-            t = threading.Thread(target=_scorer_loop, daemon=True, name="scorer")
-            t.start()
-        _SCORER_STARTED = True
+    """Deprecated no-op. Scoring now runs from durable jobs processed by
+    jobs/worker.py; kept so older callers don't break."""
+    return None
 
 
-def backfill_unscored() -> int:
-    """Queue listings that still need a VERIFIED score, AND immediately give
-    any that have no score row at all an instant peer estimate — so the whole
-    dashboard is populated the moment the server starts, then refined to
-    verified sold-comp numbers by the background scorer."""
+def backfill_unscored(limit: int = 2000) -> int:
+    """Queue scoring for listings with no valuation at their current price
+    (e.g. refused earlier by queue backpressure). Returns jobs queued."""
     with db() as conn:
         rows = conn.execute("""
-            SELECT l.composite_id, l.source, l.year, l.make, l.model,
-                   l.price, l.odometer, l.posted_at,
-                   nm.composite_id AS has_nm
-            FROM listings l
+            SELECT l.composite_id, l.price FROM listings l
             LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id
-            WHERE (nm.composite_id IS NULL OR nm.basis IS NULL OR nm.basis='estimate')
+            WHERE (nm.composite_id IS NULL OR nm.price_at_score IS NULL
+                   OR nm.price_at_score <> l.price)
               AND l.year IS NOT NULL AND l.make IS NOT NULL AND l.model IS NOT NULL
-              AND l.is_salvage = 0 AND l.price IS NOT NULL
-            ORDER BY l.first_seen_at DESC LIMIT 500
-        """).fetchall()
-        # INSTANT pass — estimate everything that has no score row at all,
-        # so nothing shows blank while the slow verified scorer catches up.
-        now = datetime.now(timezone.utc).isoformat()
-        weights = CONFIG.get("source_weights", {})
+              AND l.price IS NOT NULL
+            ORDER BY l.first_seen_at DESC LIMIT ?""", (limit,)).fetchall()
+        queued = 0
         for r in rows:
-            try:
-                if r["has_nm"]:
-                    continue  # already carries at least an estimate
-                est = instant_estimate(r["year"], r["make"], r["model"],
-                                       r["price"], r["odometer"], conn=conn)
-                if not est:
-                    continue
-                avg = float(est["avg"])
-                discount = (avg - r["price"]) / avg if avg else 0.0
-                weight = weights.get(r["source"], 1.0)
-                fresh = _freshness_factor(r["posted_at"])
-                score = max(0.0, discount) * 100 * weight * fresh
-                note = (f"[{r['source']}] {r['year']} {r['make']} {r['model']}"
-                        + f" listed ${r['price']:,} vs est. value ${avg:,.0f}"
-                        + f" (peers={est['n']}, score={score:.1f})")
-                _record_score(conn, r["composite_id"], avg, est["n"],
-                              discount * 100, score, "estimate", note, now)
-            except Exception as e:
-                print(f"[backfill instant] {e}", file=sys.stderr)
-    for r in rows:
-        _SCORE_QUEUE.put(r["composite_id"])
-    _SCORE_STATS["pending"] = _SCORE_QUEUE.qsize()
-    ensure_scorer_started()
-    return len(rows)
+            if enqueue_score(conn, r["composite_id"], r["price"]):
+                queued += 1
+    return queued
 
 
 def get_scorer_stats() -> dict:
-    return {**_SCORE_STATS, "pending": _SCORE_QUEUE.qsize()}
+    """Durable queue metrics for the `score` kind (plus totals)."""
+    st = jobqueue.stats()
+    k = st["by_kind"].get("score", {})
+    return {"pending": k.get("pending", 0) + k.get("running", 0),
+            "scored": k.get("done", 0), "failed": k.get("dead", 0),
+            "retried": st["retried"], "queue": st}
 
 
 def _in_quiet_hours() -> bool:
@@ -550,10 +561,11 @@ def _in_quiet_hours() -> bool:
 
 def _freshness_factor(posted_at: Optional[str]) -> float:
     """Newer listings get a bonus. Returns 1.0 (new) → 0.6 (older)."""
-    if not posted_at:
+    iso = to_iso(posted_at)
+    if not iso:
         return 0.85
     try:
-        t = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+        t = datetime.fromisoformat(iso)
         age_h = (datetime.now(timezone.utc) - t).total_seconds() / 3600
         if age_h <= 0.5:   return 1.20
         if age_h <= 2:     return 1.10
@@ -564,277 +576,273 @@ def _freshness_factor(posted_at: Optional[str]) -> float:
         return 0.85
 
 
-def score_and_alert(listings: list[NormalizedListing]) -> list[dict]:
-    """Score listings against sold comps. Always record near-misses (any
-    listing priced below comp avg) so the dashboard never goes empty."""
+# Minimum seconds between polls of each source. A scheduler tick is not a
+# discovery guarantee: a source is only polled when it is due here AND not
+# backing off. Override per source with CONFIG["source_min_interval_s"].
+DEFAULT_MIN_INTERVAL_S = {
+    "craigslist": 60, "marketplace": 30, "email_imap": 120, "ebay": 300,
+    "bat": 300, "hemmings": 600, "govdeals": 600, "marketcheck": 900,
+    # paid per call: 30 min ≈ 1,440 calls/month for one territory
+    "marketcheck_fsbo": 1800,
+}
+BACKOFF_BASE_S, BACKOFF_CAP_S, AUTH_RETRY_S = 60, 3600, 1800
+
+
+def _min_interval(source_id: str) -> int:
+    over = CONFIG.get("source_min_interval_s") or {}
+    return int(over.get(source_id, DEFAULT_MIN_INTERVAL_S.get(source_id, 60)))
+
+
+def _health_rows() -> dict[str, dict]:
     try:
-        from comps import comps_for_listing
-    except ImportError:
-        comps_for_listing = None
-
-    # Re-read overrides every call so live threshold changes apply immediately
-    _config_mod.reload()
-    threshold = CONFIG["deal_threshold_pct"] / 100.0
-    weights = CONFIG.get("source_weights", {})
-    alerts: list[dict] = []
-    now = datetime.now(timezone.utc).isoformat()
-    with db() as conn:
-        for l in listings:
-            if not l.price or l.price < MIN_PRICE or l.price > MAX_PRICE:
-                continue
-            if not (l.year and l.make and l.model):
-                continue
-            if l.is_salvage:
-                continue
-
-            try:
-                comp = comps_for_listing(year=l.year, make=l.make, model=l.model,
-                                         odometer=l.odometer) if comps_for_listing else None
-            except Exception as e:
-                print(f"[comps] {l.composite_id()} failed: {e}", file=sys.stderr)
-                comp = None
-            if not comp or not comp.get("avg"):
-                continue
-
-            avg = float(comp["avg"])
-            discount = (avg - l.price) / avg
-            if discount <= 0:
-                continue  # listing is at or above comp avg — not a deal
-
-            weight = weights.get(l.source, 1.0)
-            fresh = _freshness_factor(l.posted_at)
-            score = discount * 100 * weight * fresh
-            est_profit = int(avg - l.price - FEES_RECON_AVG)
-
-            note = (
-                f"[{l.source}] {l.year} {l.make} {l.model}"
-                + (f" / {l.odometer:,} mi" if l.odometer else "")
-                + f" listed at ${l.price:,} vs sold-comp avg ${avg:,.0f}"
-                + f" (n={comp.get('n', 0)}, score={score:.1f}, est. profit ${est_profit:,})"
-            )
-
-            # Always upsert near-miss snapshot (any positive discount)
-            try:
-                conn.execute(
-                    """INSERT INTO near_misses(composite_id, discount_pct, score,
-                            comp_avg, note, refreshed_at)
-                       VALUES(?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(composite_id) DO UPDATE SET
-                         discount_pct=excluded.discount_pct, score=excluded.score,
-                         comp_avg=excluded.comp_avg, note=excluded.note,
-                         refreshed_at=excluded.refreshed_at""",
-                    (l.composite_id(), discount * 100, score, avg, note, now),
-                )
-            except sqlite3.Error:
-                pass
-
-            # Only promote to "alert" if threshold is hit
-            if discount < threshold:
-                continue
-
-            try:
-                conn.execute(
-                    """INSERT INTO alerts(composite_id, comp_avg, comp_median, comp_n,
-                                          discount_pct, score, note, created_at)
-                       VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (l.composite_id(), avg, comp.get("median"), comp.get("n"),
-                     discount * 100, score, note, now),
-                )
-                alerts.append({"listing": l.to_dict(), "comp": comp,
-                               "discount_pct": discount * 100, "score": score,
-                               "est_profit": est_profit, "note": note})
-            except sqlite3.IntegrityError:
-                pass
-    return alerts
+        with db() as conn:
+            return {r["source_id"]: dict(r) for r in
+                    conn.execute("SELECT * FROM source_health").fetchall()}
+    except Exception as e:
+        print(f"[health] read failed: {e}", file=sys.stderr)
+        return {}
 
 
-_TICK_COUNTER = 0
+def _due(source_id: str, row: Optional[dict], now: datetime,
+         force_all: bool) -> tuple[bool, str]:
+    """(due?, reason-if-not). Backoff is honoured even for manual polls."""
+    row = row or {}
+    nxt = row.get("next_poll_after")
+    if nxt and str(nxt) > now.isoformat():
+        return False, f"backing off until {nxt} ({row.get('status')})"
+    if force_all:
+        return True, ""
+    last = row.get("last_attempt_at")
+    if last:
+        try:
+            age = (now - datetime.fromisoformat(str(last))).total_seconds()
+            if age < _min_interval(source_id):
+                return False, "not due (min interval)"
+        except ValueError:
+            pass
+    return True, ""
 
 
-def _should_poll_source(source_id: str) -> bool:
-    """Tiered polling so Craigslist runs every tick, salvage every 4."""
-    global _TICK_COUNTER
-    if source_id == "craigslist":
-        return _TICK_COUNTER % CONFIG.get("craigslist_every_n_ticks", 1) == 0
-    if source_id in ("copart_live", "iaa_live"):
-        return _TICK_COUNTER % CONFIG.get("salvage_every_n_ticks", 4) == 0
-    if source_id in ("bat", "carsandbids", "hemmings", "govdeals", "gsa", "publicsurplus"):
-        return _TICK_COUNTER % CONFIG.get("auction_sites_every_n_ticks", 2) == 0
-    return True
+def _backoff_after(status: str, failures: int, retry_after: Optional[float]) -> Optional[float]:
+    import random
+    if status in (health.S_BLOCKED, health.S_RATE_LIMITED, health.S_TIMEOUT):
+        delay = min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2 ** max(0, failures - 1))
+        delay *= random.uniform(0.8, 1.2)
+        return max(delay, retry_after or 0)
+    if status == health.AUTH_CONFIG:
+        return AUTH_RETRY_S
+    return None
+
+
+def _ingest_latency(new: list[NormalizedListing], now: datetime) -> Optional[float]:
+    vals = []
+    for l in new:
+        try:
+            if l.posted_at:
+                d = (now - datetime.fromisoformat(l.posted_at)).total_seconds()
+                if 0 <= d < 7 * 86400:
+                    vals.append(d)
+        except ValueError:
+            continue
+    if not vals:
+        return None
+    vals.sort()
+    return round(vals[len(vals) // 2], 1)
 
 
 def poll_once(verbose: bool = True, only_sources: list[str] | None = None,
               force_all: bool = False) -> dict:
-    """Poll all enabled sources IN PARALLEL via ThreadPoolExecutor.
+    """Poll every due source in parallel, ingest new listings, and record an
+    honest health status per source (see sources/health.py).
 
-    force_all=True ignores the polling-tier schedule (used by the dashboard's
-    'Poll all sources now' button so every source fires immediately).
+    force_all=True ignores minimum intervals (dashboard "Poll now") but still
+    respects backoff after blocks / rate limits.
     """
-    global _TICK_COUNTER
-    _TICK_COUNTER += 1
-
     _config_mod.reload()
-    enabled = sources.iter_sources(CONFIG)
-    if only_sources is not None:
-        enabled = [s for s in enabled if s.SOURCE_ID in only_sources]
-    if not force_all:
-        enabled = [s for s in enabled if _should_poll_source(s.SOURCE_ID)]
+    now = datetime.now(timezone.utc)
+    rows = _health_rows()
+    enabled_ids = {s.SOURCE_ID for s in sources.iter_sources(CONFIG)}
+    candidates = [s for s in sources.all_sources()
+                  if only_sources is None or s.SOURCE_ID in only_sources]
+
+    to_poll, statuses = [], {}
+    for s in candidates:
+        sid = s.SOURCE_ID
+        issue = getattr(s, "config_issue", lambda cfg: None)(CONFIG)
+        blocked = sources.licensing_block(s, CONFIG)
+        if blocked:
+            statuses[sid] = {"status": health.DISABLED, "reason": blocked, "polled": False}
+        elif sid not in enabled_ids:
+            statuses[sid] = {"status": health.DISABLED, "reason": "disabled in settings",
+                             "polled": False}
+        elif issue:
+            statuses[sid] = {"status": health.AUTH_CONFIG, "reason": issue, "polled": False}
+        else:
+            due, why = _due(sid, rows.get(sid), now, force_all)
+            if due:
+                to_poll.append(s)
+            else:
+                statuses[sid] = {"status": (rows.get(sid) or {}).get("status")
+                                 or health.UNVERIFIED, "reason": why, "polled": False,
+                                 "skipped": True}
 
     by_source: dict[str, list[NormalizedListing]] = {}
+    reports: dict[str, health.PollReport] = {}
+    errors: dict[str, str] = {}
+    elapsed: dict[str, float] = {}
     t0 = time.time()
 
     def _poll_one(s):
+        rep = health.begin(s.SOURCE_ID)
+        t = time.time()
         try:
-            t = time.time()
             items = list(s.poll(CONFIG))
-            elapsed = round(time.time() - t, 2)
-            SOURCE_DIAG[s.SOURCE_ID] = {
-                "count": len(items),
-                "elapsed_s": elapsed,
-                "error": None,
-                "regions": getattr(s, "LAST_RESULTS", None),
-                "polled_at": datetime.now(timezone.utc).isoformat(),
-            }
-            return s.SOURCE_ID, items
+            err = None
         except Exception as e:
-            err = f"{type(e).__name__}: {e}"
+            items, err = [], f"{type(e).__name__}: {e}"
             print(f"[{s.SOURCE_ID}] poll failed: {err}", file=sys.stderr)
-            SOURCE_DIAG[s.SOURCE_ID] = {
-                "count": 0, "elapsed_s": None, "error": err,
-                "polled_at": datetime.now(timezone.utc).isoformat(),
-            }
-            return s.SOURCE_ID, []
+        return s.SOURCE_ID, items, rep, err, round(time.time() - t, 2)
 
-    # Parallel HTTP — hard wall-clock cap of 12s. Use wait() instead of
-    # as_completed(timeout=) so we never raise TimeoutError on slow sources;
-    # they're just recorded as "exceeded poll budget" in diagnostics.
-    POLL_BUDGET_S = 12
+    POLL_BUDGET_S = 20
     ex = ThreadPoolExecutor(max_workers=12)
     try:
-        futs = {ex.submit(_poll_one, s): s for s in enabled}
+        futs = {ex.submit(_poll_one, s): s for s in to_poll}
         done, not_done = wait(list(futs.keys()), timeout=POLL_BUDGET_S)
-
         for fut in done:
-            try:
-                src_id, listings = fut.result(timeout=0.5)
-                by_source[src_id] = listings
-            except Exception as e:
-                src = futs[fut]
-                SOURCE_DIAG[src.SOURCE_ID] = {
-                    "count": 0, "elapsed_s": None,
-                    "error": f"{type(e).__name__}: {str(e)[:80]}",
-                    "polled_at": datetime.now(timezone.utc).isoformat(),
-                }
-                by_source[src.SOURCE_ID] = []
+            sid, items, rep, err, el = fut.result()
+            by_source[sid], reports[sid], elapsed[sid] = items, rep, el
+            if err:
+                errors[sid] = err
         for fut in not_done:
             fut.cancel()
-            src = futs[fut]
-            SOURCE_DIAG[src.SOURCE_ID] = {
-                "count": 0, "elapsed_s": POLL_BUDGET_S,
-                "error": "exceeded poll budget (12s)",
-                "polled_at": datetime.now(timezone.utc).isoformat(),
-            }
-            by_source[src.SOURCE_ID] = []
+            sid = futs[fut].SOURCE_ID
+            rep = health.report(sid)
+            rep.record("poll", health.TIMEOUT, detail=f"exceeded {POLL_BUDGET_S}s budget")
+            by_source[sid], reports[sid], elapsed[sid] = [], rep, POLL_BUDGET_S
     finally:
-        # Don't block on shutdown — cancelled futures will release their threads
         ex.shutdown(wait=False)
-
     poll_secs = round(time.time() - t0, 2)
 
     total_fetched = sum(len(v) for v in by_source.values())
     total_new = 0
     per_source: dict[str, dict] = {}
-
-    # FAST PATH: ingest only. Scoring is queued + happens in background.
-    for src_id, listings in by_source.items():
-        new = store_new(listings)
-        per_source[src_id] = {"fetched": len(listings), "new": len(new)}
+    for sid, listings in by_source.items():
+        res = ingest(listings)
+        new = res["new"]
         total_new += len(new)
+        prev = rows.get(sid) or {}
+        empty_streak = 0 if listings else int(prev.get("consecutive_empty") or 0) + 1
+        ever = bool(prev.get("last_genuine_success_at")) or bool(listings)
+        status, reason = health.classify(reports.get(sid), len(listings),
+                                         error=errors.get(sid),
+                                         consecutive_empty=empty_streak,
+                                         ever_succeeded=ever)
+        if res["dropped_no_price"]:
+            reason += f"; {res['dropped_no_price']} listing(s) without a price skipped"
+        attempted, ok = health.request_counts(reports.get(sid))
+        statuses[sid] = {"status": status, "reason": reason, "polled": True,
+                         "requests_attempted": attempted, "requests_ok": ok,
+                         "listings_discovered": len(listings), "listings_new": len(new),
+                         "listings_dropped_no_price": res["dropped_no_price"],
+                         "consecutive_empty": empty_streak,
+                         "elapsed_s": elapsed.get(sid),
+                         "ingest_latency_s": _ingest_latency(new, now),
+                         "retry_after_s": getattr(reports.get(sid), "retry_after_s", None),
+                         "attempts": (reports.get(sid).attempts[:20]
+                                      if reports.get(sid) else [])}
+        per_source[sid] = {"fetched": len(listings), "new": len(new),
+                           "status": status}
+        SOURCE_DIAG[sid] = {"count": len(listings), "elapsed_s": elapsed.get(sid),
+                            "error": None if status == health.HEALTHY else reason,
+                            "status": status,
+                            "regions": getattr(sys.modules.get(f"sources.{sid}"),
+                                               "LAST_RESULTS", None),
+                            "polled_at": now.isoformat()}
         if verbose:
-            print(f"  [{src_id:14s}] fetched={len(listings):4d}  new={len(new):3d}")
+            print(f"  [{sid:14s}] {status:12s} fetched={len(listings):4d} "
+                  f"new={len(new):3d}  {reason}")
 
-    # Persist per-source health + scheduler tick for the admin source-health
-    # endpoint. Wrapped so a DB hiccup never breaks the poll itself.
     try:
-        _persist_source_health(by_source, poll_secs, enabled)
+        _persist_source_health(statuses, rows, poll_secs,
+                               [s for s in candidates if s.SOURCE_ID in enabled_ids], now)
     except Exception as e:
         print(f"[health] persist failed: {e}", file=sys.stderr)
 
     if verbose:
         print(f"  TOTAL: fetched={total_fetched} new={total_new} in {poll_secs}s "
-              f"(scoring queued: {_SCORE_QUEUE.qsize()})")
+              f"(scoring pending: {get_scorer_stats()['pending']})")
     return {"fetched": total_fetched, "new": total_new,
-            "scoring_pending": _SCORE_QUEUE.qsize(),
-            "poll_secs": poll_secs, "per_source": per_source}
+            "scoring_pending": get_scorer_stats()["pending"],
+            "poll_secs": poll_secs, "per_source": per_source,
+            "source_status": {k: {kk: vv for kk, vv in v.items() if kk != "attempts"}
+                              for k, v in statuses.items()}}
 
 
-def _persist_source_health(by_source: dict, poll_secs: float,
-                            enabled: list) -> None:
-    """Upsert one source_health row per source attempted this tick, and bump
-    the single scheduler_state row. Uses db.py (works for SQLite & Postgres
-    interchangeably) — kept separate from the legacy sqlite3 connect path
-    so the SaaS deployment can point at Postgres without rewriting poll_once."""
-    import db as _db
-    now = _db.now_utc_iso()
-    enabled_ids = [s.SOURCE_ID for s in enabled]
-    with _db.transaction() as conn:
-        cur = conn.cursor()
-        ph = _db.placeholder()
-        # listings_total per source
-        if _db.IS_PG:
-            cur.execute("SELECT source, COUNT(*) AS n FROM listings GROUP BY source")
-            totals = {r["source"]: int(r["n"]) for r in cur.fetchall()}
-        else:
-            totals = {r[0]: r[1] for r in cur.execute(
-                "SELECT source, COUNT(*) FROM listings GROUP BY source").fetchall()}
-        for src_id in {*by_source.keys(), *(SOURCE_DIAG.keys())}:
-            d = SOURCE_DIAG.get(src_id, {}) or {}
-            err = d.get("error")
-            count = d.get("count")
-            elapsed = d.get("elapsed_s")
-            ltot = int(totals.get(src_id, 0))
-            # Compute last_success_at: bump only if this tick succeeded (no err).
-            if _db.IS_PG:
-                cur.execute(
-                    "INSERT INTO source_health(source_id, last_attempt_at, "
-                    "  last_success_at, last_error, last_count, last_elapsed_s, "
-                    "  listings_total, updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
-                    "ON CONFLICT(source_id) DO UPDATE SET "
-                    "  last_attempt_at=excluded.last_attempt_at, "
-                    "  last_success_at=COALESCE(excluded.last_success_at, source_health.last_success_at), "
-                    "  last_error=excluded.last_error, "
-                    "  last_count=excluded.last_count, "
-                    "  last_elapsed_s=excluded.last_elapsed_s, "
-                    "  listings_total=excluded.listings_total, "
-                    "  updated_at=excluded.updated_at",
-                    (src_id, now, (now if not err else None), err, count, elapsed, ltot, now))
-            else:
-                cur.execute(
-                    "INSERT INTO source_health(source_id, last_attempt_at, "
-                    "  last_success_at, last_error, last_count, last_elapsed_s, "
-                    "  listings_total, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(source_id) DO UPDATE SET "
-                    "  last_attempt_at=excluded.last_attempt_at, "
-                    "  last_success_at=COALESCE(excluded.last_success_at, source_health.last_success_at), "
-                    "  last_error=excluded.last_error, "
-                    "  last_count=excluded.last_count, "
-                    "  last_elapsed_s=excluded.last_elapsed_s, "
-                    "  listings_total=excluded.listings_total, "
-                    "  updated_at=excluded.updated_at",
-                    (src_id, now, (now if not err else None), err, count, elapsed, ltot, now))
-        # Scheduler tick
-        if _db.IS_PG:
-            cur.execute(
-                "UPDATE scheduler_state SET last_tick_at=%s, last_tick_secs=%s, "
-                "  tick_counter=tick_counter+1, enabled_sources=%s WHERE id=1",
-                (now, poll_secs, ",".join(enabled_ids)))
-        else:
-            cur.execute(
-                "UPDATE scheduler_state SET last_tick_at=?, last_tick_secs=?, "
-                "  tick_counter=tick_counter+1, enabled_sources=? WHERE id=1",
-                (now, poll_secs, ",".join(enabled_ids)))
+def _persist_source_health(statuses: dict, prev_rows: dict, poll_secs: float,
+                           enabled: list, now: datetime) -> None:
+    """Upsert one source_health row per known source and bump the single
+    scheduler_state row."""
+    now_iso = now.isoformat()
+    with db() as conn:
+        totals = {r[0]: int(r[1]) for r in conn.execute(
+            "SELECT source, COUNT(*) FROM listings GROUP BY source").fetchall()}
+        for sid, st in statuses.items():
+            prev = prev_rows.get(sid) or {}
+            if not st.get("polled"):
+                # Not polled this tick: only refresh disabled/config state.
+                if st.get("skipped"):
+                    continue
+                conn.execute(
+                    "INSERT INTO source_health(source_id, status, status_reason, "
+                    "  listings_total, updated_at) VALUES (?,?,?,?,?) "
+                    "ON CONFLICT(source_id) DO UPDATE SET status=excluded.status, "
+                    "  status_reason=excluded.status_reason, "
+                    "  listings_total=excluded.listings_total, updated_at=excluded.updated_at",
+                    (sid, st["status"], st["reason"], totals.get(sid, 0), now_iso))
+                continue
+            status = st["status"]
+            failing = status in (health.S_BLOCKED, health.S_RATE_LIMITED,
+                                 health.S_TIMEOUT, health.AUTH_CONFIG)
+            failures = int(prev.get("consecutive_failures") or 0) + 1 if failing else 0
+            delay = _backoff_after(status, failures, st.get("retry_after_s"))
+            next_after = (now + timedelta(seconds=delay)).isoformat() if delay else None
+            success = st["requests_ok"] > 0 or (st["requests_attempted"] == 0
+                                                and status == health.HEALTHY)
+            genuine = st["listings_discovered"] > 0
+            conn.execute(
+                "INSERT INTO source_health(source_id, last_attempt_at, last_success_at, "
+                "  last_error, last_count, last_elapsed_s, listings_total, updated_at, "
+                "  status, status_reason, requests_attempted, requests_ok, listings_new, "
+                "  consecutive_empty, consecutive_failures, last_genuine_success_at, "
+                "  next_poll_after, ingest_latency_s) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(source_id) DO UPDATE SET "
+                "  last_attempt_at=excluded.last_attempt_at, "
+                "  last_success_at=COALESCE(excluded.last_success_at, source_health.last_success_at), "
+                "  last_error=excluded.last_error, last_count=excluded.last_count, "
+                "  last_elapsed_s=excluded.last_elapsed_s, "
+                "  listings_total=excluded.listings_total, updated_at=excluded.updated_at, "
+                "  status=excluded.status, status_reason=excluded.status_reason, "
+                "  requests_attempted=excluded.requests_attempted, "
+                "  requests_ok=excluded.requests_ok, listings_new=excluded.listings_new, "
+                "  consecutive_empty=excluded.consecutive_empty, "
+                "  consecutive_failures=excluded.consecutive_failures, "
+                "  last_genuine_success_at=COALESCE(excluded.last_genuine_success_at, "
+                "    source_health.last_genuine_success_at), "
+                "  next_poll_after=excluded.next_poll_after, "
+                "  ingest_latency_s=COALESCE(excluded.ingest_latency_s, "
+                "    source_health.ingest_latency_s)",
+                (sid, now_iso, now_iso if success else None,
+                 None if status == health.HEALTHY else st["reason"],
+                 st["listings_discovered"], st.get("elapsed_s"), totals.get(sid, 0),
+                 now_iso, status, st["reason"], st["requests_attempted"],
+                 st["requests_ok"], st["listings_new"], st["consecutive_empty"],
+                 failures, now_iso if genuine else None, next_after,
+                 st.get("ingest_latency_s")))
+        conn.execute(
+            "UPDATE scheduler_state SET last_tick_at=?, last_tick_secs=?, "
+            "  tick_counter=tick_counter+1, enabled_sources=? WHERE id=1",
+            (now_iso, poll_secs, ",".join(s.SOURCE_ID for s in enabled)))
 
 
 def daemon(interval: int = DEFAULT_POLL_SEC) -> None:
@@ -872,7 +880,8 @@ def cmd_recent(n: int) -> None:
 def cmd_stats() -> None:
     with db() as conn:
         rows = conn.execute(
-            "SELECT source, COUNT(*) c, SUM(is_auction) a, SUM(is_cash_only) cash "
+            "SELECT source, COUNT(*) c, SUM(CASE WHEN is_auction THEN 1 ELSE 0 END) a, "
+            "SUM(CASE WHEN is_cash_only THEN 1 ELSE 0 END) cash "
             "FROM listings GROUP BY source ORDER BY c DESC").fetchall()
         n_alerts = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
         last = conn.execute("SELECT MAX(first_seen_at) FROM listings").fetchone()[0]
@@ -894,11 +903,27 @@ def cmd_sources() -> None:
 
 
 def cmd_reset() -> None:
+    import db as _db
+    if _db.IS_PG:
+        print("reset only supports the local SQLite file; drop/recreate the "
+              "Postgres database and run `python -m migrations.runner`.")
+        return
     if input(f"Wipe {DB_PATH}? [y/N] ").strip().lower() != "y":
         print("aborted"); return
     DB_PATH.unlink(missing_ok=True)
-    db().close()
+    _ensure_migrated()
     print("DB reset.")
+
+
+def _ensure_migrated() -> None:
+    """CLI convenience: apply pending migrations explicitly (never at
+    connection time). Local SQLite only — production runs migrations as a
+    deploy step."""
+    import db as _db
+    from migrations import runner
+    if _db.IS_PG:
+        return
+    runner.run_pending(verbose=False)
 
 
 def main() -> None:
@@ -909,6 +934,7 @@ def main() -> None:
     r = sub.add_parser("recent"); r.add_argument("n", type=int, nargs="?", default=25)
     sub.add_parser("stats"); sub.add_parser("sources"); sub.add_parser("reset")
     args = p.parse_args()
+    _ensure_migrated()
     if args.cmd == "poll": poll_once()
     elif args.cmd == "daemon": daemon(args.interval)
     elif args.cmd == "recent": cmd_recent(args.n)

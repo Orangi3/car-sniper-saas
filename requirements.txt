@@ -7,4 +7,5 @@ itsdangerous>=2.1           # Flask already depends on it; pin for clarity
 pytest>=8.0                 # tests/
 # --- Phase 2A: Stripe billing (TEST MODE) ---
 stripe>=8.0                 # Checkout sessions + webhook signature verify
-# psycopg2-binary>=2.9      # uncomment when deploying with DATABASE_URL=postgres://...
+psycopg2-binary>=2.9       # Postgres driver (production DATABASE_URL + PG test suite)
+gunicorn>=22.0              # production web server (deploy/systemd/sniper-web.service)

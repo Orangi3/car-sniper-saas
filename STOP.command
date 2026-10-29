@@ -9,6 +9,7 @@ cd "$(dirname "$0")" || exit 1
 # Belt-and-suspenders: kill anything still matching
 pkill -f "sniper.py daemon" 2>/dev/null   # legacy entry, retired
 pkill -f "jobs.scheduler"   2>/dev/null
+pkill -f "jobs.worker"      2>/dev/null
 pkill -f "server.py"        2>/dev/null
 
 osascript -e 'display notification "Stopped." with title "Car Sniper" sound name "Pop"'
