@@ -24,7 +24,12 @@ Contact verification (mailer.py): a single-use token, stored only as a
 SHA-256 hash, expiring after TOKEN_TTL_H, bound to the account AND the
 address; changing the address revokes earlier verification and tokens;
 sends and failed attempts are rate-limited. Without SMTP configured, nothing
-is published — the owner may hand-deliver a link (`issue-link` CLI).
+is published. The `issue-link` CLI (hand-delivered link) exists for isolated
+development/testing only: it refuses to run in commercial mode or without
+SNIPER_ALLOW_MANUAL_VERIFY_LINKS=1, every issue is audited
+(usage_events 'seller_manual_verify_link', units = token id) and a
+verification through such a link is audited separately
+('seller_verified_manual_link'), never passed off as an emailed one.
 
 Verification proves control of the email address only. It does NOT
 verify ownership of the vehicle or any detail the seller entered.
@@ -303,6 +308,12 @@ def verify(user, token: str) -> dict:
                      (now.isoformat(), row["id"]))
         conn.execute("UPDATE seller_contacts SET verified_at = ?, updated_at = ? WHERE user_id = ?",
                      (now.isoformat(), now.isoformat(), user.id))
+        if conn.execute("SELECT 1 FROM usage_events WHERE user_id = ? AND kind = "
+                        "'seller_manual_verify_link' AND units = ?",
+                        (user.id, row["id"])).fetchone():
+            conn.execute("INSERT INTO usage_events(user_id, kind, units, cost_cents, created_at) "
+                         "VALUES (?, 'seller_verified_manual_link', ?, 0, ?)",
+                         (user.id, row["id"], now.isoformat()))
     published = _publish_pending(user.id)
     return {"email": c["email"], "verified": True, "published": published}
 
@@ -505,10 +516,21 @@ def contact_for(conn, composite_id: str, viewer_plan: str) -> dict | None:
     return {"available": True, "email": r[0], "verified_email": True} if r and r[0] else None
 
 
+def manual_links_allowed() -> tuple[bool, str]:
+    """Hand-delivered links bypass email delivery, so they are a dev/test
+    tool only: never in commercial mode, and only when explicitly enabled."""
+    from config import CONFIG
+    if CONFIG.get("commercial_mode"):
+        return False, "refused: manual verification links are disabled in commercial mode"
+    if os.environ.get("SNIPER_ALLOW_MANUAL_VERIFY_LINKS", "").lower() not in ("1", "true", "yes"):
+        return False, ("refused: set SNIPER_ALLOW_MANUAL_VERIFY_LINKS=1 (isolated "
+                       "development/testing only)")
+    return True, ""
+
+
 def _main(argv=None) -> int:
-    """Owner CLI: hand-deliver a verification link when SMTP isn't set up.
-    Send it yourself to that address; it proves control of the address only
-    if it reaches the person through that address."""
+    """Dev/test CLI: issue a verification link by hand when SMTP isn't set up.
+    Audited; refused in commercial mode (see manual_links_allowed)."""
     import argparse
     import auth
     import db as _db
@@ -516,11 +538,16 @@ def _main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     il = sub.add_parser("issue-link")
     il.add_argument("--account", required=True, help="the seller's account email")
+    il.add_argument("--operator", required=True, help="who is issuing this link (audit)")
     il.add_argument("--origin", default=os.environ.get("BILLING_ORIGIN", ""))
     a = ap.parse_args(argv)
+    ok, why = manual_links_allowed()
+    if not ok:
+        print(why)
+        return 2
     u = auth.get_user_by_email(a.account)
-    if not u or not a.origin:
-        print("unknown account, or no --origin/BILLING_ORIGIN")
+    if not u or not a.origin or not a.operator.strip():
+        print("unknown account, empty --operator, or no --origin/BILLING_ORIGIN")
         return 1
     with _db.session() as conn:
         c = contact(conn, u)
@@ -528,7 +555,17 @@ def _main(argv=None) -> int:
             conn.execute("INSERT INTO seller_contacts(user_id, email, verified_at, updated_at) "
                          "VALUES (?, ?, NULL, ?)", (u.id, c["email"], _now().isoformat()))
         token = _issue_token(conn, u.id, c["email"])
-    print(f"send this link to {c['email']} yourself (single use, {TOKEN_TTL_H} h):")
+        tid = conn.execute("SELECT id FROM contact_verifications WHERE token_hash = ?",
+                           (_hash(token),)).fetchone()[0]
+        conn.execute("INSERT INTO usage_events(user_id, kind, units, cost_cents, created_at) "
+                     "VALUES (?, 'seller_manual_verify_link', ?, 0, ?)",
+                     (u.id, tid, _now().isoformat()))
+    import logging
+    logging.getLogger("sniper").warning("manual seller verification link issued for user %s "
+                                        "by %s", u.id, a.operator.strip())
+    print(f"manual link (dev/test; audited as issued by {a.operator.strip()}). It proves "
+          f"control of {c['email']} only if you deliver it to that address. "
+          f"Single use, {TOKEN_TTL_H} h:")
     print(link_for(a.origin, token))
     return 0
 

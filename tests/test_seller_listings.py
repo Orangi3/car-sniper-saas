@@ -387,3 +387,42 @@ def test_smtp_outage_is_a_clean_503_and_costs_no_send_quota(client, world, monke
         assert r.status_code == 503 and "try again" in r.get_json()["error"]
         assert "Errno" not in r.get_data(as_text=True)
     assert not q("SELECT 1 FROM contact_verifications")
+
+
+# ---------- manual (hand-delivered) verification links --------------------
+
+def test_manual_link_cli_refused_in_commercial_mode_and_without_opt_in(client, world, monkeypatch, capsys):
+    import seller_listings
+    from config import CONFIG
+    register(client, "m@example.com")
+    monkeypatch.setenv("BILLING_ORIGIN", "https://staging.example.test")
+    argv = ["issue-link", "--account", "m@example.com", "--operator", "owner"]
+    monkeypatch.delenv("SNIPER_ALLOW_MANUAL_VERIFY_LINKS", raising=False)
+    assert seller_listings._main(argv) == 2 and "refused" in capsys.readouterr().out
+    monkeypatch.setenv("SNIPER_ALLOW_MANUAL_VERIFY_LINKS", "1")
+    monkeypatch.setitem(CONFIG, "commercial_mode", True)
+    assert seller_listings._main(argv) == 2 and "commercial mode" in capsys.readouterr().out
+    assert not q("SELECT 1 FROM contact_verifications")
+    with pytest.raises(SystemExit):                   # operator is mandatory
+        seller_listings._main(["issue-link", "--account", "m@example.com"])
+
+
+def test_manual_link_is_audited_and_its_use_is_recorded_as_manual(client, world, monkeypatch, capsys):
+    import seller_listings
+    from config import CONFIG
+    monkeypatch.setenv("SNIPER_SELLER_SUBMISSIONS", "1")
+    monkeypatch.setenv("SNIPER_ALLOW_MANUAL_VERIFY_LINKS", "1")
+    monkeypatch.setitem(CONFIG, "commercial_mode", False)
+    monkeypatch.setenv("BILLING_ORIGIN", "https://staging.example.test")
+    register(client, "m@example.com"); login(client, "m@example.com")
+    assert seller_listings._main(["issue-link", "--account", "m@example.com",
+                                  "--operator", "qa-tester"]) == 0
+    out = capsys.readouterr().out
+    assert "qa-tester" in out and "audited" in out
+    tid = q("SELECT id FROM contact_verifications")[0]["id"]
+    assert [r["units"] for r in q("SELECT units FROM usage_events WHERE "
+                                  "kind = 'seller_manual_verify_link'")] == [tid]
+    token = re.search(r"#verify=([A-Za-z0-9_\-]+)", out).group(1)
+    assert client.post("/api/seller/contact/verify", json={"token": token}).status_code == 200
+    assert [r["units"] for r in q("SELECT units FROM usage_events WHERE "
+                                  "kind = 'seller_verified_manual_link'")] == [tid]
