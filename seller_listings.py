@@ -253,10 +253,20 @@ def send_verification(user, origin: str) -> dict:
         if c["verified"]:
             return {"email": c["email"], "verified": True, "sent": False}
         token = _issue_token(conn, user.id, c["email"])
-    mailer.send(c["email"], "Confirm your email to publish your car on Car Sniper",
-                "Open this link while signed in to Car Sniper to confirm this address and "
-                f"publish your listing:\n\n{link_for(origin, token)}\n\nThe link works once and "
-                f"expires in {TOKEN_TTL_H} hours. If you didn't ask for this, ignore it.")
+    try:
+        mailer.send(c["email"], "Confirm your email to publish your car on Car Sniper",
+                    "Open this link while signed in to Car Sniper to confirm this address and "
+                    f"publish your listing:\n\n{link_for(origin, token)}\n\nThe link works once "
+                    f"and expires in {TOKEN_TTL_H} hours. If you didn't ask for this, ignore it.")
+    except mailer.MailerError as e:
+        # not delivered: withdraw the token so it neither works nor counts
+        # against the seller's send limits, and say so plainly
+        with _db.session() as conn:
+            conn.execute("DELETE FROM contact_verifications WHERE token_hash = ?", (_hash(token),))
+        import logging
+        logging.getLogger("sniper").warning("seller verification email not sent: %s", e)
+        raise SubmissionError(["we couldn't send the email right now — please try again "
+                               "in a few minutes"], 503) from None
     return {"email": c["email"], "verified": False, "sent": True}
 
 

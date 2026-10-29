@@ -371,3 +371,19 @@ def test_concurrent_submissions_cannot_beat_limits_or_duplicate_vin(app, world, 
     [t.start() for t in ts]; [t.join() for t in ts]
     assert sum(1 for r in results if isinstance(r, dict)) == 1      # one live listing per VIN
     assert all(r == 409 or isinstance(r, dict) for r in results), results
+
+
+def test_smtp_outage_is_a_clean_503_and_costs_no_send_quota(client, world, monkeypatch):
+    import mailer
+    monkeypatch.setenv("SNIPER_SELLER_SUBMISSIONS", "1")
+    monkeypatch.setattr(mailer, "configured", lambda: True)
+
+    def down(*a, **k):
+        raise mailer.MailerError("email server unavailable")
+    monkeypatch.setattr(mailer, "send", down)
+    register(client, "s@example.com"); login(client, "s@example.com")
+    for _ in range(3):                       # no 60 s / daily quota consumed by failures
+        r = client.post("/api/seller/contact", json={})
+        assert r.status_code == 503 and "try again" in r.get_json()["error"]
+        assert "Errno" not in r.get_data(as_text=True)
+    assert not q("SELECT 1 FROM contact_verifications")
