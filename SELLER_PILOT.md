@@ -14,7 +14,7 @@ Sniper has no seller partnerships yet — don't imply otherwise.
 - [ ] Short seller terms + privacy notice published (yours to write/approve):
       who sees the contact email (signed-in paid buyers), that listings
       hide after 30 days without confirmation, how to remove a listing,
-      that Car Sniper doesn't verify the car
+      that FlipFirst doesn't verify the car
 - [ ] `SNIPER_SELLER_SUBMISSIONS=1`, registration invite-only
       (`ALLOW_REGISTRATION=0`, accounts created for invited people)
 
@@ -37,7 +37,7 @@ car get an instant alert with your asking price and a market estimate."
 
 ## Invitation (send yourself; edit freely)
 
-> Hi {name} — I'm piloting Car Sniper, a tool that alerts local buyers
+> Hi {name} — I'm piloting FlipFirst, a tool that alerts local buyers
 > when a car they're looking for comes up for sale. I saw you're selling
 > your {car}. Would you like to list it there for free? It takes about two
 > minutes: create an account at {link}, confirm your email, and fill in the
@@ -64,7 +64,8 @@ revoke <id>` cancels an unused one. Each person picks their own password.
 ## Seller onboarding (what they do)
 
 1. Create account with the invitation link you send them → sign in at `/m`
-2. Setup → "Selling a car?" → fill the form, tick the three confirmations
+2. Sell → "List a car" → five short steps (vehicle, condition & title, price & location,
+   contact, review) and the three confirmations
 3. "Email me a confirmation link" → click the link → listing goes live
 4. Every few weeks: "Still for sale" if it hasn't sold; "Remove" when sold
 
@@ -84,7 +85,7 @@ revoke <id>` cancels an unused one. Each person picks their own password.
 | Contact | yes | verified email; shown only to paid buyers |
 | Listing time | automatic | |
 
-Everything the seller enters is shown as **seller-reported**. Car Sniper
+Everything the seller enters is shown as **seller-reported**. FlipFirst
 verifies the seller controls the email address — not the car, its title, or
 its condition.
 
@@ -109,7 +110,7 @@ python -m evaluation cohort --source direct --n 100 --snapshot --sheet review.cs
 
 Open `review.csv` in a spreadsheet. For each car:
 
-1. Look at the listing on Car Sniper and the estimated value/confidence.
+1. Look at the listing on FlipFirst and the estimated value/confidence.
 2. In `outcome_label`, write one of: `genuine_opportunity`,
    `weak_opportunity`, `bad_comparison`, `mechanical_condition_problem`,
    `suspicious_listing`, `duplicate`, `listing_unavailable`,
@@ -139,7 +140,7 @@ Don't charge yet. Invite buyers who actually buy cars in the territory.
 | Deals reviewed | evaluation cohort |
 | Usefulness, willingness to pay | a short conversation with each buyer at 2 and 4 weeks |
 
-Stop and reassess if: a seller's details are used outside Car Sniper, a
+Stop and reassess if: a seller's details are used outside FlipFirst, a
 listing turns out fraudulent, or buyers report the estimates as
 misleading.
 

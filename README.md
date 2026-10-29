@@ -1,4 +1,7 @@
-# Car Sniper
+# FlipFirst
+
+*Find it first. Flip it better.* — consumer brand of this codebase (`car-sniper-saas`;
+internal names, environment variables and service units keep the `sniper` prefix).
 
 Finds underpriced used cars, explains what each one is worth and why, estimates
 realistic flip profit, and alerts each subscriber when a listing meets **their**
