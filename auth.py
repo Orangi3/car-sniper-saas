@@ -51,15 +51,6 @@ SESSION_TTL_DAYS = 30
 # lock down to admin-created users only.
 ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "1") != "0"
 
-
-def invite_ok(code) -> bool:
-    """With registration closed, people holding the owner's invite link
-    (/login#invite=<SNIPER_INVITE_CODE>) can still create their own
-    account and choose their own password. Unset or short = no invites."""
-    expected = os.environ.get("SNIPER_INVITE_CODE", "").strip()
-    return (len(expected) >= 16 and isinstance(code, str)
-            and secrets.compare_digest(code.strip().encode(), expected.encode()))
-
 # Cookies set Secure when the request arrived via HTTPS (real prod) but not
 # when reaching the dev server over http://127.0.0.1. SameSite=Lax keeps
 # cookies on top-level navigations while blocking the common CSRF flows.
@@ -171,7 +162,11 @@ def get_user_by_id(uid: int) -> Optional[User]:
 
 
 def create_user(email: str, password: str, *, role: str = "user",
-                plan: str = "free") -> User:
+                plan: str = "free", invite: Optional[str] = None,
+                require_invite: bool = False) -> User:
+    """`require_invite`: the account is created only together with claiming
+    `invite` (invites.claim) in the same transaction — a failed claim
+    creates no account, a failed insert leaves the invitation unused."""
     email = (email or "").strip().lower()
     if not EMAIL_RE.match(email):
         raise ValueError("invalid email")
@@ -199,6 +194,9 @@ def create_user(email: str, password: str, *, role: str = "user",
         except Exception as e:
             # Unique constraint on email is the only expected failure here.
             raise ValueError("email already registered") from e
+        if require_invite:
+            import invites
+            invites.claim(conn, invite, int(uid))   # raises InviteError → rollback
     return User(id=int(uid), email=email, role=role, plan=plan)
 
 

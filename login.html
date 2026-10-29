@@ -109,7 +109,7 @@
         credentials: "same-origin",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(mode === "register" && invite
-                             ? {email, password, invite_code: invite}
+                             ? {email, password, invite}
                              : {email, password}),
       });
       const data = await r.json().catch(() => ({}));

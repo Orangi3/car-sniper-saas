@@ -46,9 +46,24 @@ car get an instant alert with your asking price and a market estimate."
 > hides automatically after 30 days unless you confirm it's still for sale.
 > No obligation, and I won't share your details anywhere else.
 
+## Invitation links (you, on the server)
+
+Registration stays closed; each person needs their own single-use link
+(expires in 14 days, works once, can be revoked). Issue them as root:
+
+```
+systemd-run --pipe --wait --quiet --collect --uid=sniper -p EnvironmentFile=/etc/sniper/env \
+    -p WorkingDirectory=/opt/sniper/current \
+    /opt/sniper/.venv/bin/python3 -m invites issue --count 1 --note "Pat (seller)"
+```
+
+The link is printed once and never stored (only its hash is). Send it to
+that one person. `... -m invites list` shows who used which; `... -m invites
+revoke <id>` cancels an unused one. Each person picks their own password.
+
 ## Seller onboarding (what they do)
 
-1. Create account (you send the invite link) → sign in at `/m`
+1. Create account with the invitation link you send them → sign in at `/m`
 2. Setup → "Selling a car?" → fill the form, tick the three confirmations
 3. "Email me a confirmation link" → click the link → listing goes live
 4. Every few weeks: "Still for sale" if it hasn't sold; "Remove" when sold
