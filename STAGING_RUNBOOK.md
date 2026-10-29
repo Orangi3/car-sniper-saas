@@ -109,6 +109,8 @@ for you. ~3 minutes.
 2. Location: **Ashburn, VA (ash)**
 3. Image: **Ubuntu 24.04**
 4. Type: **CCX13** (Dedicated vCPU · 2 cores · 8 GB · 80 GB NVMe)
+   (More than the pilot needs: the measured stack fits a 2 GB shared-vCPU
+   server — see `FIRST_DEPLOY.md`.)
 5. SSH key: Hetzner will offer "Add new SSH key" — paste your `~/.ssh/id_ed25519.pub` (it's the `.pub` file, non-secret)
 6. Name: `sniper-staging`
 7. Networking: leave IPv4 + IPv6 on; **no firewall yet** (we'll configure ufw inside the box)
@@ -201,7 +203,7 @@ On your Mac (install Tailscale once if you haven't):
 # https://tailscale.com/download/macos -- one-click installer
 tailscale status
 # Should now list "sniper-staging" with an IP like 100.x.y.z
-ssh sniper@sniper-staging
+ssh root@sniper-staging
 # Tailscale SSH auths via your tailnet identity. NO password prompt.
 ```
 
@@ -265,7 +267,7 @@ flips:
 ### 5b. Prove --delete scope (run before each deploy)
 
 ```bash
-bash deploy/sync.sh --verify-delete-scope sniper@sniper-staging
+bash deploy/sync.sh --verify-delete-scope root@sniper-staging
 ```
 
 This runs `rsync --dry-run --delete --itemize-changes` against the new
@@ -281,8 +283,8 @@ appears in the deletion plan. Exits 6 if any of those would be touched.
 ```bash
 cd ~/Desktop/sniper
 bash deploy/sync.sh                                   # dry-run preview
-bash deploy/sync.sh --verify-delete-scope sniper@sniper-staging
-bash deploy/sync.sh --apply sniper@sniper-staging
+bash deploy/sync.sh --verify-delete-scope root@sniper-staging
+bash deploy/sync.sh --apply root@sniper-staging
 ```
 
 The `--apply` path does, in order:
@@ -308,15 +310,15 @@ attached.
 ### 5d. Verify
 
 ```bash
-bash deploy/sync.sh --status sniper@sniper-staging
-ssh sniper@sniper-staging "curl -fsS http://127.0.0.1:8765/health"
+bash deploy/sync.sh --status root@sniper-staging
+ssh root@sniper-staging "curl -fsS http://127.0.0.1:8765/health"
 # expect: {"port":8765,"service":"sniper","status":"ok"}
 ```
 
 ### 5e. Rollback
 
 ```bash
-bash deploy/sync.sh --rollback sniper@sniper-staging
+bash deploy/sync.sh --rollback root@sniper-staging
 ```
 
 Flips the symlink back to whatever `previous_revision` holds, swaps
@@ -350,20 +352,15 @@ another minute and retry.
 ## 7. Bootstrap the admin account
 
 ```bash
-ssh sniper@sniper-staging
-cd /opt/sniper/current
-sudo -u sniper /opt/sniper/.venv/bin/python3 -c "
-import os, sys, types
-fk=types.ModuleType('flask'); fk.g=type('G',(),)(); fk.jsonify=lambda *a,**k:None
-class _R: headers={}; remote_addr=''; cookies={}; is_secure=False
-fk.request=_R()
-sys.modules['flask']=fk
-import auth
-import getpass
+ssh root@sniper-staging
+# runs as the app user with the production env (DATABASE_URL), like the services
+systemd-run --pty --quiet --collect --uid=sniper --gid=sniper \
+    -p EnvironmentFile=/etc/sniper/env -p WorkingDirectory=/opt/sniper/current \
+    /opt/sniper/.venv/bin/python3 -c "
+import getpass, auth
 email = input('admin email: ').strip().lower()
-pw    = getpass.getpass('admin password (won't echo): ')
-u = auth.create_user(email, pw, role='admin', plan='pro')
-print('created:', u)
+pw = getpass.getpass('admin password (not echoed): ')
+print('created:', auth.create_user(email, pw, role='admin', plan='pro'))
 "
 ```
 
@@ -383,7 +380,7 @@ the dashboard side: create the two TEST-mode prices, copy the
 Then on the VPS:
 
 ```bash
-ssh sniper@sniper-staging
+ssh root@sniper-staging
 sudo -e /etc/sniper/env
 # fill in:
 #   STRIPE_SECRET_KEY=sk_test_…
@@ -474,7 +471,7 @@ grep -E "^# public key:" ~/.config/sniper-staging.age.key | awk '{print $NF}'
 ### 9b. On the VPS — wire encryption + B2 credentials (PUBLIC RECIPIENT ONLY)
 
 ```bash
-ssh sniper@sniper-staging
+ssh root@sniper-staging
 sudo -e /etc/sniper/env
 # Fill in (PUBLIC recipient only — no private key, ever):
 #   AGE_RECIPIENT=age1…
@@ -627,11 +624,11 @@ sudo -u postgres journalctl -u postgresql -n 50
 
 # Deploy
 bash deploy/sync.sh                                # dry-run
-bash deploy/sync.sh --apply sniper@sniper-staging  # deploy
-bash deploy/sync.sh --status sniper@sniper-staging # current revision + service state
+bash deploy/sync.sh --apply root@sniper-staging  # deploy
+bash deploy/sync.sh --status root@sniper-staging # current revision + service state
 
 # Rollback to previous release (atomic symlink flip)
-bash deploy/sync.sh --rollback sniper@sniper-staging
+bash deploy/sync.sh --rollback root@sniper-staging
 
 # Restart services after manual env edit
 sudo systemctl restart sniper-web.service
@@ -643,7 +640,7 @@ sudo systemctl disable --now sniper-scheduler.service   # turn off again
 
 # Trigger ad-hoc reconcile / dry-run reconcile
 sudo systemctl start sniper-reconcile.service
-sudo -u sniper /opt/sniper/.venv/bin/python3 -m jobs.reconcile_billing --dry-run
+systemd-run --pipe --wait --quiet --collect --uid=sniper -p EnvironmentFile=/etc/sniper/env -p WorkingDirectory=/opt/sniper/current /opt/sniper/.venv/bin/python3 -m jobs.reconcile_billing --dry-run
 
 # Inspect job-lock state
 sudo -u postgres psql -d sniper -c \

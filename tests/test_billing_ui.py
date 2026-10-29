@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.conftest import register, login, logout
+from tests.conftest import register, login, logout, make_admin
 from tests.test_billing import _set_stripe_env, _stub_stripe_sdk
 
 
@@ -102,6 +102,7 @@ def test_index_redirect_preserves_billing_return_param(client, monkeypatch):
     cache-bust redirect; the billing_return flag must survive."""
     _set_stripe_env(monkeypatch)
     register(client, "alice@example.com")
+    make_admin("alice@example.com")
     r = client.get("/?billing_return=success&session=cs_test_99",
                    follow_redirects=False)
     assert r.status_code == 302
@@ -114,6 +115,7 @@ def test_index_redirect_preserves_billing_return_param(client, monkeypatch):
 def test_index_redirect_drops_unknown_billing_return(client, monkeypatch):
     _set_stripe_env(monkeypatch)
     register(client, "alice@example.com")
+    make_admin("alice@example.com")
     r = client.get("/?billing_return=NOT_A_REAL_OUTCOME",
                    follow_redirects=False)
     assert r.status_code == 302
@@ -130,6 +132,7 @@ def test_dashboard_html_contains_billing_card_placeholder(client, monkeypatch):
     just confirm the static contract the JS expects."""
     _set_stripe_env(monkeypatch)
     register(client, "alice@example.com")
+    make_admin("alice@example.com")
     r = client.get("/?v=1")
     assert r.status_code == 200
     page = r.get_data(as_text=True)

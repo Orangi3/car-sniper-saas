@@ -88,6 +88,10 @@ class PollReport:
                 self.record(label, BLOCKED, 200, "challenge / bot-check page")
                 return None
             return r
+        # Keep the provider's own error text (JSON/plain only, trimmed): it is
+        # the difference between "blocked" and "your keyset lacks access".
+        ctype = r.headers.get("Content-Type") or ""
+        body = "" if "html" in ctype else (getattr(r, "text", "") or "")[:200]
         if s == 429:
             ra = r.headers.get("Retry-After")
             try:
@@ -98,12 +102,19 @@ class PollReport:
             # "rate limit exceeded" need different backoff
             self.record(label, RATE_LIMITED, s, (getattr(r, "text", "") or "")[:160])
         elif s in (401, 407):
-            self.record(label, AUTH, s)
+            self.record(label, AUTH, s, body)
         elif s == 403:
-            self.record(label, BLOCKED, s)
+            self.record(label, BLOCKED, s, body)
         else:
-            self.record(label, HTTP_ERROR, s)
+            self.record(label, HTTP_ERROR, s, body)
         return None
+
+    def reclassify_last(self, outcome: str, detail: str) -> None:
+        """A source that understands its provider's error body can correct
+        the generic classification of its last request."""
+        with self._lock:
+            if self.attempts:
+                self.attempts[-1].update(outcome=outcome, detail=detail[:200])
 
 
 _REPORTS: dict[str, PollReport] = {}

@@ -184,3 +184,19 @@ def test_diagnostics_api_reads_persisted_status(client, router):
     diag = {d["id"]: d for d in client.get("/api/diagnostics").get_json()}
     assert diag["craigslist"]["status"] == "blocked"
     assert diag["craigslist"]["requests_ok"] == 0
+
+
+def test_diagnostics_hide_provider_error_text_from_customers(client, router):
+    from tests.conftest import register, login, logout, make_admin
+    router.append((lambda u: True, FakeResp(403, b"", "text/html")))
+    _poll("craigslist")
+    register(client, "cust@example.com")
+    login(client, "cust@example.com")
+    row = {d["id"]: d for d in client.get("/api/diagnostics").get_json()}["craigslist"]
+    assert row["status"] == "blocked" and row["reason"] is None and row["error"] is None
+    logout(client)
+    register(client, "admin@example.com")
+    make_admin("admin@example.com")
+    login(client, "admin@example.com")
+    row = {d["id"]: d for d in client.get("/api/diagnostics").get_json()}["craigslist"]
+    assert row["reason"]

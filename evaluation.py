@@ -25,6 +25,13 @@ CLI:
     python -m evaluation label <source> <listing_id> <outcome> [--action contacted] ...
     python -m evaluation import <file.csv> [--fixture]
     python -m evaluation report [--include-fixtures] [--json]
+    python -m evaluation cohort [--source ebay] [--n 100] [--snapshot] [--sheet review.csv]
+
+`cohort` is the first-real-listings experiment: it measures the first N
+listings a source delivered (validity, completeness, duplicates, comparable
+coverage, potential-deal rate, estimated-profit distribution, reviewed
+precision) and can write a review sheet a person fills in and imports back
+with `import`. Estimated profit is never realized profit.
 """
 from __future__ import annotations
 
@@ -318,6 +325,97 @@ def coverage(rows: list[dict]) -> dict:
     return out
 
 
+COHORT_FIELDS = ("price", "year", "make", "model", "odometer", "trim", "zip", "posted_at", "vin")
+
+
+def _q(vals: list[float]) -> Optional[dict]:
+    vals = sorted(vals)
+    if not vals:
+        return None
+    pick = lambda f: vals[min(len(vals) - 1, int(round(f * (len(vals) - 1))))]
+    return {"n": len(vals), "p10": round(pick(0.1)), "median": round(pick(0.5)),
+            "p90": round(pick(0.9))}
+
+
+def cohort(source: Optional[str] = None, n: int = 100, *, snapshot_rows: bool = False,
+           sheet: Optional[str] = None) -> dict:
+    """The first `n` listings (by first_seen_at) from `source` (or all)."""
+    import db as _db
+    import profit as profit_mod
+    from valuation import cross_post_key
+    where, args = ("WHERE l.source = ?", [source]) if source else ("", [])
+    with _db.session() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT l.*, n.evidence_class, n.confidence, n.trust, n.comp_n, n.comp_avg, "
+            "  n.value_low, n.value_high, n.evidence AS ev_json, n.risk_flags, "
+            "  o.outcome_label "
+            "FROM listings l LEFT JOIN near_misses n ON n.composite_id = l.composite_id "
+            "LEFT JOIN eval_observations o ON o.composite_id = l.composite_id "
+            f"  AND o.is_fixture = FALSE {where} ORDER BY l.first_seen_at, l.composite_id "
+            "LIMIT ?", (*args, n))]
+    total = len(rows)
+    if not total:
+        return {"listings": 0, "why": "no listings from this source yet"}
+    pct = lambda k: round(100 * k / total, 1)
+    valid = [r for r in rows if r["price"] and r["year"] and r["make"] and r["model"]]
+    keys = {}
+    for r in rows:
+        keys.setdefault(cross_post_key(r), []).append(r["composite_id"])
+    valued = [r for r in rows if r.get("evidence_class") and r["evidence_class"] != "insufficient"]
+    potential, cons, sheet_rows = [], [], []
+    for r in rows:
+        prof = None
+        if r in valued and r.get("comp_avg"):
+            ev = json.loads(r.get("ev_json") or "{}")
+            pr = profit_mod.compute(r["price"], r["value_low"], r["comp_avg"], r["value_high"],
+                                    r["evidence_class"], None,
+                                    dealer_share=ev.get("dealer_share") or 0)
+            prof = pr["scenarios"]["conservative"]["profit"] if pr else None
+            if prof is not None:
+                cons.append(prof)
+                if r["trust"] == "trusted" and prof > 0:
+                    potential.append(r)
+        extras = json.loads(r.get("extras") or "{}")
+        sheet_rows.append({
+            "source": r["source"], "source_listing_id": r["source_id"],
+            "url": r["url"], "first_seen_at": r["first_seen_at"], "year": r["year"],
+            "make": r["make"], "model": r["model"], "trim": r.get("trim") or "",
+            "mileage": r["odometer"], "asking_price": r["price"],
+            "seller_type": extras.get("seller_type") or ("dealer" if r["is_dealer"] else ""),
+            "zip": r.get("zip") or "", "comparables": r.get("comp_n") or 0,
+            "est_value": r.get("comp_avg") or "", "confidence": r.get("confidence") or "",
+            # not named est_profit: re-importing the sheet must not overwrite
+            # the base-case estimate recorded by snapshot()
+            "est_profit_conservative": prof if prof is not None else "",
+            "est_profit_basis": "estimate, default repair/holding assumptions",
+            "outcome_label": r.get("outcome_label") or "", "labeled_by": "", "notes": ""})
+    reviewed = [r for r in potential if r.get("outcome_label") in POSITIVE | NEGATIVE]
+    out = {
+        "source": source or "all", "listings": total,
+        "valid_pct": pct(len(valid)),
+        "field_completeness_pct": {f: pct(sum(1 for r in rows if r.get(f))) for f in COHORT_FIELDS},
+        "duplicate_rate_pct": pct(total - len(keys)),
+        "comparable_coverage_pct": pct(len(valued)),
+        "confidence": {c: sum(1 for r in rows if r.get("confidence") == c)
+                       for c in ("high", "medium", "low", "insufficient")},
+        "potential_deal_rate_pct": pct(len(potential)),
+        "conservative_profit_estimate": _q(cons),
+        "reviewed_potential_deals": len(reviewed),
+        "precision_of_potential_deals": _ratio(
+            sum(1 for r in reviewed if r["outcome_label"] in POSITIVE), len(reviewed)),
+        "note": "estimates from asking-price comparables; not realized profit",
+    }
+    if snapshot_rows:
+        out["snapshotted"] = sum(1 for r in rows if snapshot(r["composite_id"]))
+    if sheet:
+        with open(sheet, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(sheet_rows[0]))
+            w.writeheader()
+            w.writerows(sheet_rows)
+        out["sheet"] = sheet
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m evaluation")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -332,6 +430,11 @@ def main(argv=None) -> int:
     im = sub.add_parser("import"); im.add_argument("path"); im.add_argument("--fixture", action="store_true")
     rp = sub.add_parser("report"); rp.add_argument("--include-fixtures", action="store_true")
     rp.add_argument("--json", action="store_true")
+    co = sub.add_parser("cohort")
+    co.add_argument("--source"); co.add_argument("--n", type=int, default=100)
+    co.add_argument("--snapshot", action="store_true",
+                    help="record each listing in eval_observations for manual review")
+    co.add_argument("--sheet", help="write a review CSV (fill outcome_label, then `import` it)")
     a = ap.parse_args(argv)
     if a.cmd == "snapshot":
         for cid in a.ids:
@@ -340,6 +443,9 @@ def main(argv=None) -> int:
         label(a.source, a.listing_id, a.outcome, buyer_action=a.action,
               realized_profit=a.realized_profit, sale_amount=a.sale_amount,
               seller_contacted=a.contacted or None, labeled_by=a.by, notes=a.notes)
+    elif a.cmd == "cohort":
+        print(json.dumps(cohort(a.source, a.n, snapshot_rows=a.snapshot, sheet=a.sheet),
+                         indent=2, default=str))
     elif a.cmd == "import":
         print(import_csv(a.path, fixture=a.fixture), "rows")
     else:

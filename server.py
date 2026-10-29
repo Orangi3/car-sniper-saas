@@ -123,7 +123,9 @@ if _os.environ.get("SNIPER_SKIP_MIGRATION_CHECK", "0") != "1":
 # ---------- Structured request logging + global error handling ----------
 _logger = logging.getLogger("sniper")
 if not _logger.handlers:
-    _h = logging.FileHandler(ROOT / "sniper-requests.log")
+    # SNIPER_LOG_DIR: deployed hosts set /var/log/sniper (release dirs are
+    # read-only to the app user and replaced on every deploy)
+    _h = logging.FileHandler(Path(_os.environ.get("SNIPER_LOG_DIR") or ROOT) / "sniper-requests.log")
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     _logger.addHandler(_h)
     _logger.setLevel(logging.INFO)
@@ -345,8 +347,17 @@ def index():
     # We still ALLOW the dashboard HTML to load so its JS can call /api/me
     # and decide for itself, but unauthenticated requests are redirected to
     # /login as the visible entry point.
-    if not auth.current_user():
+    u = auth.current_user()
+    if not u:
         return redirect("/login", code=302)
+    if not u.is_admin:
+        # Customers use the mobile-first app (/m): its deal cards show the
+        # full profit model, evidence and confidence. The legacy desktop
+        # dashboard is the owner console — its "est. profit" is the gross
+        # gap to the comp average, before costs, which overstates profit.
+        rv = (request.args.get("billing_return") or "").strip().lower()
+        return redirect("/m" + (f"?billing_return={rv}" if rv in ("success", "cancel") else ""),
+                        code=302)
     # Cache-buster redirect: every fresh hit goes to /?v=<file mtime> so the
     # browser must fetch the latest dashboard.html and can NEVER keep running
     # an outdated cached JS bundle — even when Safari ignores Cache-Control.
@@ -758,6 +769,12 @@ def api_diagnostics():
             "next_poll_after": h.get("next_poll_after"),
             "ingest_latency_s": h.get("ingest_latency_s"),
         })
+    u = auth.current_user()
+    if not (u and u.is_admin):
+        # Reasons can quote provider error text (credentials, plan, quota):
+        # operator detail, not for customers. Status stays visible.
+        for row in out:
+            row["reason"] = row["error"] = None
     return jsonify(out)
 
 
@@ -2161,6 +2178,34 @@ def _deal_row(r: dict, psettings: dict, plan: Optional[str],
     return d
 
 
+def _display_limits() -> dict:
+    """source -> max hours since last confirmed by a poll, for sources whose
+    terms limit how stale displayed data may be (eBay: 6 h); plus the set of
+    seller listings that are currently discoverable (seller_listings)."""
+    import seller_listings as sl
+    out: dict = {m.SOURCE_ID: m.DISPLAY_MAX_AGE_HOURS for m in sources.all_sources()
+                 if getattr(m, "DISPLAY_MAX_AGE_HOURS", None)}
+    with sniper.db() as conn:
+        out["__direct__"] = sl.discoverable_ids(conn)
+    return out
+
+
+def _displayable(d: dict, limits: dict) -> bool:
+    if d.get("source") == "direct":
+        return d.get("composite_id") in limits.get("__direct__", set())
+    hrs = limits.get(d.get("source"))
+    if not hrs:
+        return True
+    from datetime import datetime, timedelta, timezone
+    seen = d.get("last_seen_at") or d.get("first_seen_at")
+    try:
+        t = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
+        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) - t <= timedelta(hours=hrs)
+
+
 def _rank(rows: list[dict]) -> list[dict]:
     """Highest risk-adjusted profit first; unvalued last."""
     return sorted(rows, key=lambda d: -(d["opportunity"]["risk_adjusted_profit"]
@@ -2234,7 +2279,9 @@ def api_deals():
                     break
         else:
             return jsonify({"error": "feed must be mine|trusted|risk|search"}), 400
-    out = [_deal_row(dict(r), psettings, plan, home_zip) for r in rows]
+    limits = _display_limits()
+    out = [_deal_row(dict(r), psettings, plan, home_zip) for r in rows
+           if _displayable(dict(r), limits)]
     if feed in ("trusted", "risk") and home_zip and home_radius:
         # shared feeds respect the user's territory too
         out = [d for d in out if d["distance_mi"] is not None
@@ -2257,6 +2304,9 @@ def api_deal_detail(cid: str):
             "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
             "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
             "WHERE l.composite_id = ?", (u.id, cid)).fetchone()
+        if r and not _displayable(dict(r), _display_limits()):
+            return jsonify({"error": "this listing hasn't been re-confirmed by its source "
+                                     "recently and may no longer be available"}), 410
         if not r:
             return jsonify({"error": "not found"}), 404
         hist = [dict(h) for h in conn.execute(
@@ -2278,6 +2328,13 @@ def api_deal_detail(cid: str):
         scenarios=plans.limits(plan)["profit_scenarios"],
         distance_mi=d["distance_mi"], dealer_share=d["dealer_share"])
     d["plan"] = {"plan": plan, "name": plans.display_name(plan), **plans.limits(plan)}
+    if d.get("source") == "direct":
+        import seller_listings as sl
+        with sniper.db() as conn:
+            d["seller_contact"] = sl.contact_for(conn, d["composite_id"], plan)
+        d["provenance"] = ("Listed on Car Sniper by the seller. The seller's email address is "
+                           "verified; the vehicle details are seller-reported and not "
+                           "independently verified.")
     return jsonify(d)
 
 
@@ -2436,6 +2493,101 @@ def api_admin_eval_report():
     synthetic demo rows and labels the report accordingly."""
     import evaluation
     return jsonify(evaluation.report(include_fixtures=request.args.get("fixtures") == "1"))
+
+
+# ---- Seller-submitted listings (seller_listings.py; off by default) -------
+
+def _seller_err(e):
+    return jsonify({"error": e.errors[0], "errors": e.errors}), e.status
+
+
+@app.get("/api/seller/listings")
+@auth.login_required
+def api_seller_mine():
+    import seller_listings as sl
+    return jsonify({"enabled": sl.enabled(), "listings": sl.mine(auth.current_user()) if sl.enabled() else [],
+                    "limits": {"active": sl.MAX_ACTIVE_PER_USER,
+                               "per_day": sl.MAX_NEW_PER_USER_PER_DAY,
+                               "confirm_days": sl.CONFIRM_DAYS}})
+
+
+@app.post("/api/seller/listings")
+@auth.login_required
+def api_seller_create():
+    import seller_listings as sl
+    try:
+        return jsonify(sl.create(auth.current_user(), request.get_json(silent=True) or {})), 201
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+def _origin() -> str:
+    return (os.environ.get("BILLING_ORIGIN") or request.host_url).rstrip("/")
+
+
+@app.get("/api/seller/contact")
+@auth.login_required
+def api_seller_contact():
+    import mailer
+    import seller_listings as sl
+    with sniper.db() as conn:
+        c = sl.contact(conn, auth.current_user())
+    return jsonify({**c, "email_delivery": mailer.configured()})
+
+
+@app.post("/api/seller/contact")
+@auth.login_required
+def api_seller_contact_set():
+    """Set (or keep) the contact address and email a verification link."""
+    import seller_listings as sl
+    u = auth.current_user()
+    try:
+        sl.set_contact(u, (request.get_json(silent=True) or {}).get("email"))
+        return jsonify(sl.send_verification(u, _origin()))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.post("/api/seller/contact/verify")
+@auth.login_required
+def api_seller_contact_verify():
+    import seller_listings as sl
+    try:
+        return jsonify(sl.verify(auth.current_user(),
+                                 (request.get_json(silent=True) or {}).get("token")))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.post("/api/seller/listings/<int:sid>/renew")
+@auth.login_required
+def api_seller_renew(sid: int):
+    import seller_listings as sl
+    try:
+        return jsonify(sl.renew(auth.current_user(), sid))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.patch("/api/seller/listings/<int:sid>")
+@auth.login_required
+def api_seller_update(sid: int):
+    import seller_listings as sl
+    try:
+        return jsonify(sl.update_price(auth.current_user(), sid,
+                                       (request.get_json(silent=True) or {}).get("price")))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
+
+
+@app.delete("/api/seller/listings/<int:sid>")
+@auth.login_required
+def api_seller_remove(sid: int):
+    import seller_listings as sl
+    try:
+        return jsonify(sl.remove(auth.current_user(), sid))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
 
 
 @app.get("/api/admin/ops")

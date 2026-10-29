@@ -65,6 +65,10 @@ PAGE_LIMIT = 200               # documented max per search call
 # A further page is fetched only when the newest page is full and entirely
 # new to us; bounded to keep within the daily call quota.
 MAX_PAGES = int(os.environ.get("EBAY_MAX_PAGES", "2"))
+# eBay API License Agreement: displayed listing data may be at most 6 hours
+# older than eBay's site. Listings not re-confirmed by a poll within this
+# window are hidden from customer views (server._displayable).
+DISPLAY_MAX_AGE_HOURS = 6
 
 # Token cache (in-memory)
 _TOKEN: dict = {"value": None, "expires_at": 0}
@@ -137,7 +141,10 @@ def normalize(it: dict, radius: float | None = None) -> Optional[NormalizedListi
     """One Browse item summary -> NormalizedListing (None if unusable or
     beyond `radius` by eBay's own distance)."""
     title = it.get("title") or ""
-    url = it.get("itemWebUrl") or ""
+    # eBay Partner Network tracking (a Buy API requirement): when a campaign
+    # id is configured eBay returns itemAffiliateWebUrl — link to that.
+    url = ((it.get("itemAffiliateWebUrl") if os.environ.get("EBAY_EPN_CAMPAIGN_ID") else None)
+           or it.get("itemWebUrl") or "")
     if not it.get("itemId") or not url:
         return None
     loc = it.get("itemLocation", {}) or {}
@@ -192,6 +199,15 @@ def normalize(it: dict, radius: float | None = None) -> Optional[NormalizedListi
     )
 
 
+def _enduser_ctx(zip_code: str) -> str:
+    parts = []
+    camp = (os.environ.get("EBAY_EPN_CAMPAIGN_ID") or "").strip()
+    if camp.isdigit():                      # EPN campaign ids are numeric
+        parts.append(f"affiliateCampaignId={camp}")
+    parts.append("contextualLocation=" + quote(f"country=US,zip={zip_code}", safe=""))
+    return ",".join(parts)
+
+
 def _known_ids(ids: list[str]) -> set[str]:
     import db as _db
     if not ids:
@@ -239,7 +255,7 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         # Documented value; a Motors-specific marketplace id was not confirmed.
         "X-EBAY-C-MARKETPLACE-ID": os.environ.get("EBAY_MARKETPLACE_ID", "EBAY_US"),
         # documented as URL-encoded: contextualLocation=country%3DUS%2Czip%3D...
-        "X-EBAY-C-ENDUSERCTX": "contextualLocation=" + quote(f"country=US,zip={zip_code}", safe=""),
+        "X-EBAY-C-ENDUSERCTX": _enduser_ctx(zip_code),
         "Accept": "application/json",
     }
     out: list[NormalizedListing] = []
@@ -250,8 +266,18 @@ def poll(cfg: dict) -> list[NormalizedListing]:
         r = rep.fetch(label, BROWSE_URL, params={**params, "offset": page * PAGE_LIMIT},
                       headers=headers, timeout=20)
         if r is None:
-            if rep.attempts and rep.attempts[-1]["status"] == 401:
+            last = rep.attempts[-1] if rep.attempts else {}
+            if last.get("status") == 401:
                 _drop_token()             # expired/revoked: fetch a new one next poll
+            elif last.get("status") == 403 and (
+                    "1100" in last.get("detail", "") or
+                    "Insufficient permissions" in last.get("detail", "")):
+                # eBay errorId 1100: the keyset has no Buy API (Browse) access.
+                # Production Buy APIs are limited release (eBay Partner Network
+                # application + growth check) — a permission problem, not a block.
+                rep.reclassify_last(health.AUTH, "eBay keyset lacks Browse API access "
+                                    "(errorId 1100): production Buy APIs need eBay "
+                                    "Partner Network approval; Sandbox keys work for tests")
             break
         try:
             data = r.json()

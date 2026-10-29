@@ -30,7 +30,7 @@ import time
 
 import pytest
 
-from tests.conftest import register, login, logout
+from tests.conftest import register, login, logout, make_admin
 
 
 # ---------- Web import is side-effect free ---------------------------
@@ -199,6 +199,7 @@ def test_dashboard_html_does_not_leak_billing_internals(client, monkeypatch):
     'available: []' that the server returns for misconfigured billing.
     Operators see those in logs; end users see the calm fallback only."""
     register(client, "alice@example.com")
+    make_admin("alice@example.com")
     r = client.get("/?v=1")
     assert r.status_code == 200
     page = r.get_data(as_text=True)
