@@ -57,6 +57,12 @@ jobs:
           python tests/browser/seed_demo.py
           nohup python server.py > /tmp/server.log 2>&1 &
           for i in $(seq 1 40); do curl -sf http://127.0.0.1:8765/health && break; sleep 0.5; done
+      - name: Start an invite-only server (seller listings on) on the same DB
+        env: { SNIPER_DB_PATH: /tmp/smoke.db, ALLOW_REGISTRATION: "0", SNIPER_SELLER_SUBMISSIONS: "1",
+               BILLING_ORIGIN: "http://127.0.0.1:8766", SNIPER_LOG_DIR: /tmp }
+        run: |
+          nohup gunicorn server:app --workers 2 --bind 127.0.0.1:8766 > /tmp/server-invite.log 2>&1 &
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8766/health && break; sleep 0.5; done
       - name: Mobile UI smoke test
         env:
           BASE: http://127.0.0.1:8765
@@ -65,8 +71,19 @@ jobs:
             SNIPER_DB_PATH=/tmp/smoke.db python -c "import auth;
             auth.set_plan(auth.get_user_by_email('{email}').id, 'starter')"
         run: node tests/browser/smoke_mobile.js
+      - name: Critical UI flows (invites, seller wizard, account, ops, layout)
+        env:
+          BASE: http://127.0.0.1:8766
+          SHOTS: /tmp
+          INVITE_CMD: SNIPER_DB_PATH=/tmp/smoke.db BILLING_ORIGIN=http://127.0.0.1:8766 python -m invites issue --note ci
+          ADMIN_CMD: >-
+            SNIPER_DB_PATH=/tmp/smoke.db python -c "import auth;
+            auth.set_role(auth.get_user_by_email('{email}').id, 'admin')"
+        run: node tests/browser/ui_flows.js
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: smoke-screenshots
-          path: /tmp/m-*.png
+          path: |
+            /tmp/m-*.png
+            /tmp/flow-*.png
