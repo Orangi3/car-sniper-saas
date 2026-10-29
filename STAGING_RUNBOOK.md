@@ -355,17 +355,10 @@ ssh root@sniper-staging
 systemd-run --pty --quiet --collect --uid=sniper --gid=sniper \
     -p EnvironmentFile=/etc/sniper/env -p WorkingDirectory=/opt/sniper/current \
     /opt/sniper/.venv/bin/python3 -c "
-import os, sys, types
-fk=types.ModuleType('flask'); fk.g=type('G',(),)(); fk.jsonify=lambda *a,**k:None
-class _R: headers={}; remote_addr=''; cookies={}; is_secure=False
-fk.request=_R()
-sys.modules['flask']=fk
-import auth
-import getpass
+import getpass, auth
 email = input('admin email: ').strip().lower()
-pw    = getpass.getpass('admin password (not echoed): ')
-u = auth.create_user(email, pw, role='admin', plan='pro')
-print('created:', u)
+pw = getpass.getpass('admin password (not echoed): ')
+print('created:', auth.create_user(email, pw, role='admin', plan='pro'))
 "
 ```
 
