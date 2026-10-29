@@ -80,6 +80,12 @@ jobs:
             SNIPER_DB_PATH=/tmp/smoke.db python -c "import auth;
             auth.set_role(auth.get_user_by_email('{email}').id, 'admin')"
         run: node tests/browser/ui_flows.js
+      - name: Server exceptions as annotations
+        if: failure()
+        run: |
+          for f in /tmp/server.log /tmp/server-invite.log; do
+            grep -E "^(Traceback|[A-Za-z_.]*(Error|Exception)\b)" "$f" | tail -n 5 | sed "s|^|::error title=$(basename "$f")::|" || true
+          done
       - if: always()
         uses: actions/upload-artifact@v4
         with:

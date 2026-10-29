@@ -8,7 +8,13 @@ const { chromium } = require("playwright");
 const { execSync } = require("child_process");
 const BASE = process.env.BASE || "http://127.0.0.1:8766";
 const SHOTS = process.env.SHOTS || ".";
-const fail = msg => { console.error("FAIL: " + msg); process.exitCode = 1; };
+// in GitHub Actions a failure is also an ::error annotation, so the reason shows
+// on the pull request without opening the job log
+const fail = msg => {
+  console.error(process.env.GITHUB_ACTIONS ? "::error title=ui_flows::" + msg.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")
+                                         : "FAIL: " + msg);
+  process.exitCode = 1;
+};
 const ok = msg => console.log("ok   " + msg);
 
 (async () => {
@@ -152,4 +158,4 @@ const ok = msg => console.log("ok   " + msg);
   if (errs.length) fail("console errors: " + JSON.stringify([...new Set(errs)]));
   console.log(process.exitCode ? "UI FLOWS FAILED" : "UI FLOWS OK");
   await b.close();
-})();
+})().catch(e => { fail("stopped: " + String(e && e.message || e).split("\n").slice(0, 4).join("\n")); process.exit(1); });

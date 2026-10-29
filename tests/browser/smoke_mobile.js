@@ -4,6 +4,13 @@
 const { chromium } = require("playwright");
 const BASE = process.env.BASE || "http://127.0.0.1:8765";
 const SHOTS = process.env.SHOTS || ".";
+// in GitHub Actions a failure is also an ::error annotation, so the reason shows
+// on the pull request without opening the job log
+const fail = msg => {
+  console.error(process.env.GITHUB_ACTIONS ? "::error title=smoke_mobile::" + msg.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")
+                                         : "FAIL: " + msg);
+  process.exitCode = 1;
+};
 
 (async () => {
   const b = await chromium.launch();
@@ -12,7 +19,6 @@ const SHOTS = process.env.SHOTS || ".";
   const errs = [];
   page.on("pageerror", e => errs.push("pageerror: " + e.message));
   page.on("console", m => { if (m.type() === "error") errs.push(m.text()); });
-  const fail = msg => { console.error("FAIL: " + msg); process.exitCode = 1; };
   const text = async sel => (await page.textContent(sel)) || "";
 
   const email = `smoke${Date.now()}@example.com`;
@@ -72,4 +78,4 @@ const SHOTS = process.env.SHOTS || ".";
   if (errs.length) fail("console errors: " + JSON.stringify(errs));
   console.log(process.exitCode ? "SMOKE FAILED" : "SMOKE OK");
   await b.close();
-})();
+})().catch(e => { fail("stopped: " + String(e && e.message || e).split("\n").slice(0, 4).join("\n")); process.exit(1); });
