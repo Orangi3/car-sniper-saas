@@ -176,6 +176,9 @@ jobs/scheduler.py       polling process      jobs/worker.py   job process
 notifications.py        alert channels       safe_http.py     SSRF-safe webhooks
 server.py               Flask API + pages    mobile.html      /m mobile app
 benchmarks/             labeled edge cases + run_benchmark.py
+verify_sources.py       one-request live probe of the licensed API sources
+validate_deals.py       isolated real-data deal validation runs (EVALUATION.md)
+evaluation.py           human-labeled outcomes, precision and error metrics
 tests/                  pytest suite (SQLite or Postgres) + browser/ smoke test
 SOURCES.md              data coverage + licensing audit
 LAUNCH_CHECKLIST.md     paid-beta deployment checklist
