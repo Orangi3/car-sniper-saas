@@ -162,7 +162,13 @@ def get_user_by_id(uid: int) -> Optional[User]:
 
 
 def create_user(email: str, password: str, *, role: str = "user",
-                plan: str = "free") -> User:
+                plan: str = "free", invite: Optional[str] = None,
+                require_invite: bool = False) -> User:
+    """`require_invite`: the account is created only together with claiming
+    `invite` (invites.claim) in the same transaction — a failed claim
+    creates no account, a failed insert leaves the invitation unused. A
+    token that can't be claimed is refused before the password is hashed,
+    so made-up tokens can't be used to make the server burn CPU on bcrypt."""
     email = (email or "").strip().lower()
     if not EMAIL_RE.match(email):
         raise ValueError("invalid email")
@@ -170,6 +176,10 @@ def create_user(email: str, password: str, *, role: str = "user",
         raise ValueError(f"role must be one of {VALID_ROLES}")
     if plan not in PLAN_TIERS:
         raise ValueError(f"plan must be one of {PLAN_TIERS}")
+    if require_invite:
+        import invites
+        if not invites.is_claimable(invite):
+            raise invites.InviteError()
     pw_hash = hash_password(password)
     now = db.now_utc_iso()
     with db.transaction() as conn:
@@ -190,6 +200,8 @@ def create_user(email: str, password: str, *, role: str = "user",
         except Exception as e:
             # Unique constraint on email is the only expected failure here.
             raise ValueError("email already registered") from e
+        if require_invite:
+            invites.claim(conn, invite, int(uid))   # raises InviteError → rollback
     return User(id=int(uid), email=email, role=role, plan=plan)
 
 
