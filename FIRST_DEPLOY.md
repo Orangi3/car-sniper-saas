@@ -77,7 +77,24 @@ the app under a 20-client load used ~220 MB. 2 GB leaves headroom; add a
 
 Rollback at any time: `bash deploy/sync.sh --rollback root@sniper-staging`
 (proven; older code runs on the newer schema because migrations are
-additive).
+additive). Rolling back to a release from before session hashing
+(migration 0018) signs everyone out once; they sign in again.
+
+## Sign-in security (nothing to set up, two things to know)
+
+- `/etc/sniper/env` comes with `SNIPER_TRUSTED_PROXIES=127.0.0.1,::1`.
+  Behind Caddy it makes the sign-in limit (10 failed attempts per visitor
+  per 5 minutes) count each visitor separately; without it every visitor
+  would share one budget. `python -m preflight` and the Operations page
+  show a failed "client addresses" check if it's missing.
+- Sign someone out everywhere (lost phone, suspected break-in), as root:
+  ```
+  systemd-run --pipe --wait --quiet --collect --uid=sniper -p EnvironmentFile=/etc/sniper/env \
+      -p WorkingDirectory=/opt/sniper/current /opt/sniper/.venv/bin/python3 -c \
+      "import auth; print(auth.revoke_sessions(auth.get_user_by_email('pat@example.com').id))"
+  ```
+  It prints how many sessions ended. The database stores only hashes of
+  session tokens, so a copy of it can't be used to sign in.
 
 ## Email setup (Resend, ~15 min, $0)
 
