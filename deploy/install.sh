@@ -66,7 +66,7 @@ apt-get update -q
 apt-get -y upgrade
 apt-get -y install \
     curl wget gnupg ca-certificates lsb-release software-properties-common \
-    rsync ufw fail2ban age zstd jq sqlite3 git \
+    rsync ufw fail2ban age zstd jq sqlite3 git logrotate \
     build-essential libpq-dev pkg-config \
     python3.12 python3.12-venv python3.12-dev \
     postgresql-16 postgresql-contrib-16
@@ -186,6 +186,9 @@ systemctl reload caddy || true
 # ----------------------------------------------------------------------
 # 8. systemd units
 # ----------------------------------------------------------------------
+echo "▸ Installing log rotation (app logs kept 14 days)"
+install -m 0644 "$HERE/logrotate/sniper" /etc/logrotate.d/sniper
+
 echo "▸ Installing systemd units"
 install -m 0644 "$HERE/systemd/sniper-migrate.service"     /etc/systemd/system/
 install -m 0644 "$HERE/systemd/sniper-web.service"         /etc/systemd/system/

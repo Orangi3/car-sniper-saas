@@ -103,6 +103,18 @@ def test_deploy_runs_app_steps_as_the_app_user_with_the_production_env():
     assert "nologin" in install          # the reason root is the deploy user
 
 
+def test_app_logs_are_rotated_and_kept_14_days():
+    """The request log records the signed-in user's email and client
+    addresses: it must not be kept forever (privacy policy) or fill the
+    disk. install.sh installs the rotation policy and the tool."""
+    conf = (DEPLOY / "logrotate" / "sniper").read_text()
+    assert "/var/log/sniper/*.log" in conf and re.search(r"^\s*rotate 14$", conf, re.M)
+    assert "copytruncate" in conf and "su sniper sniper" in conf
+    install = (DEPLOY / "install.sh").read_text()
+    assert 'install -m 0644 "$HERE/logrotate/sniper" /etc/logrotate.d/sniper' in install
+    assert re.search(r"apt-get -y install[^#]*\blogrotate\b", install, re.S)
+
+
 def test_web_writes_logs_outside_the_read_only_release_dir():
     unit = (DEPLOY / "systemd" / "sniper-web.service").read_text()
     assert "Environment=SNIPER_LOG_DIR=/var/log/sniper" in unit

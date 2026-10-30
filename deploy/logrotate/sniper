@@ -1,0 +1,14 @@
+# /etc/logrotate.d/sniper — installed by deploy/install.sh.
+# App logs record request paths, client addresses and the signed-in
+# user's email: keep 14 days, then delete. copytruncate because gunicorn
+# and the app keep their log files open.
+/var/log/sniper/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su sniper sniper
+}
