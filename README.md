@@ -181,6 +181,9 @@ validate_deals.py       isolated real-data deal validation runs (EVALUATION.md)
 evaluation.py           human-labeled outcomes, precision and error metrics
 tests/                  pytest suite (SQLite or Postgres) + browser/ smoke test
 SOURCES.md              data coverage + licensing audit
+EBAY_SETUP.md           eBay application package (price-estimate permission)
+FIRST_LIVE_TEST.md      first real-data run, step by step
+COMPLIANCE.md           provider and privacy obligations, status, open questions
 LAUNCH_CHECKLIST.md     paid-beta deployment checklist
 RELEASE_READINESS.md    audit, results and GO / NO-GO
 ```

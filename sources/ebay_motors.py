@@ -6,8 +6,11 @@ Access (owner steps: EBAY_SETUP.md):
   * Production use of the Buy APIs (Browse included) is for eBay partners:
     apply through the eBay Partner Network, get eBay's approval and sign its
     contracts; approval is not guaranteed (eBay "Buy APIs requirements",
-    read via search 2026-10-30). Until the owner records that approval in
-    EBAY_COMMERCIAL_AGREEMENT, commercial mode keeps this source off.
+    read via search 2026-10-30). The API License Agreement also bars using
+    eBay content to model prices of eBay items without written permission,
+    which FlipFirst's valuation does. Until the owner records written
+    approval of both in EBAY_COMMERCIAL_AGREEMENT, commercial mode keeps
+    this source off.
   * Credentials: EBAY_CLIENT_ID / EBAY_CLIENT_SECRET in the server env file.
 
 Default limit 5,000 Browse calls/day (Application Growth Check for more);

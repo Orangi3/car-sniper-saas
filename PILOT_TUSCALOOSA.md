@@ -23,20 +23,22 @@ charges round-trip transport by distance.
 
 | Source | Pilot role | Status | Before the pilot |
 |---|---|---|---|
-| eBay Motors (Browse API) | the only realistic licensed source in the pilot window | REQUIRES COMMERCIAL AUTHORIZATION — production approval pending | `EBAY_SETUP.md` steps 1–9 |
+| eBay Motors (Browse API) | listings, if eBay grants production access **and** written permission for price estimates | REQUIRES COMMERCIAL AUTHORIZATION — its licence bars modeling prices of eBay items | `EBAY_SETUP.md` steps 1–9 |
 | FlipFirst seller listings | real local cars testers and their contacts post | IMPLEMENTED — NOT LIVE-VERIFIED | email setup; `SNIPER_SELLER_SUBMISSIONS=1` (`SELLER_PILOT.md`) |
-| MarketCheck private sellers | fallback if eBay declines or stalls | REQUIRES COMMERCIAL AUTHORIZATION + ≥ $299/mo (unverified) | written agreement and quote; a lower tier may cap the radius at 100 mi, so 150 mi could need two queries (e.g. 35401 and Birmingham) |
+| MarketCheck private sellers (+ Price API for values) | most likely licensed source of both listings and values | REQUIRES COMMERCIAL AUTHORIZATION + ≥ $299/mo list price (no quote yet) | written agreement and quote; the Free tier caps the radius at 100 mi, so 150 mi could need a paid plan or two queries (e.g. 35401 and Birmingham) |
 | Craigslist, Facebook Marketplace, OfferUp | none | not licensed | stay off |
 
 ## Likely volume
 
-**Unknown, and not estimated here.** eBay does not publish local inventory
-counts, and no request with real credentials has ever been made. Week 0
+**Unknown, and not estimated here.** Neither eBay nor MarketCheck publishes
+local inventory counts (ask MarketCheck — inquiry question 5), and no request
+with real credentials has ever been made. Week 0
 measures it: the first real `validate_deals` run reports in-band listings,
 how many could be valued, and how many became trusted candidates. Decide the
 go/no-go from those counts against the targets in `EVALUATION.md` (≥ 5
-trusted candidates a week for 10 testers). If eBay alone falls short, the
-choices are: widen the band, add MarketCheck (cost), or grow seller listings.
+trusted candidates a week for 10 testers). If the first source falls short,
+the choices are: widen the band or radius, add the other source, or grow
+seller listings.
 
 ## Missing data (and what it does to the pilot)
 
@@ -69,8 +71,9 @@ choices are: widen the band, add MarketCheck (cost), or grow seller listings.
 
 ## Must work before inviting testers
 
-- [ ] eBay production approval recorded; a real `validate_deals` run exits 0
-      on the server (Gate 0)
+- [ ] A licensed source approved in writing (MarketCheck agreement, or eBay
+      production access + price-estimate permission); a real
+      `validate_deals` run exits 0 (Gate 0, `FIRST_LIVE_TEST.md`)
 - [ ] Gate 1 in `EVALUATION.md`: 7 days of healthy polling, trusted
       candidates reviewed with precision lower bound ≥ 40%
 - [ ] Deployment per `FIRST_DEPLOY.md`: HTTPS, `ALLOW_REGISTRATION=0`,
@@ -80,11 +83,11 @@ choices are: widen the band, add MarketCheck (cost), or grow seller listings.
 - [ ] Each tester's home ZIP and radius set at onboarding; deal feed shows
       only their territory
 - [ ] Customer alerts stay **off** until Gate 2; testers browse the feed.
-      Invited accounts start on Free, which has no alerts
-      (`plans.py`: `alerts_per_day` 0), so this holds by construction.
-      Turning alerts on at Gate 2 needs a way to grant testers an alerting
-      plan without a Stripe subscription — **not built**: billing
-      reconciliation resets a hand-set plan to Free
+      Invited accounts start on Free, which cannot create saved searches or
+      alert channels, so this holds by construction. At Gate 2, set each
+      tester to Lite by hand (`COMPLIANCE.md` → C11); with no Stripe
+      subscription behind it, billing reconciliation leaves it alone
+      (`tests/test_pilot_access.py`)
 - [ ] A short pilot note for testers: free, estimates not promises, values
       come from asking prices, always inspect the car and title, how to
       give feedback, how to leave

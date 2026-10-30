@@ -10,7 +10,8 @@ customer-facing).
 `run` does, in order:
   1. refuses every source that is not licensed for a paid product
      (sources.licensing_block in commercial mode; for eBay that means the
-     owner recorded eBay's Buy API approval) or has no credentials. eBay
+     owner recorded eBay's written approval of production access and price
+     estimates, EBAY_SETUP.md) or has no credentials. eBay
      Sandbox / stand-in runs need no licence: they carry no real data
   2. polls each permitted source a bounded number of times, at least the
      source's minimum interval apart, for one territory and price band
