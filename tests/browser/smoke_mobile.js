@@ -89,12 +89,12 @@ const fail = msg => {
   await page.waitForSelector("#o-notes");
   await page.fill("#o-notes", "Tires at 4/32; no codes; title in hand");
   await page.click("#o-notes-save");
-  await page.waitForFunction(() => document.querySelector("#o-notes-msg").textContent === "Saved.");
+  await page.waitForSelector("#o-notes-msg:text-is('Saved.')");     // no waitForFunction: the CSP forbids eval
   await page.fill("#o-purchase_price", "7300"); await page.fill("#o-purchased_on", "2026-10-01");
   await page.fill("#o-sale_price", "9400"); await page.fill("#o-sold_on", "2026-10-21");
   await page.selectOption("#o-stage", "sold");
   await page.click("#o-out-save");
-  await page.waitForFunction(() => document.querySelector("#main").textContent.includes("Realized profit"));
+  await page.waitForSelector("#main :text('Realized profit')");
   await page.screenshot({ path: SHOTS + "/m-workspace-deal.png", fullPage: true });
 
   // a car FlipFirst has no comparables for: no value is invented
