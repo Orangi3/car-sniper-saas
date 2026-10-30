@@ -177,16 +177,22 @@ def test_legacy_poll_endpoints_are_dropped(client):
 # `test_admin_can_trigger_poll` retired in Phase 2C.1 — see note above.
 
 
-# ---------- Normal cached-listing access (free plan can browse) ---------
+# ---------- Raw listing cache: owner console only ------------------------
 
-def test_free_plan_can_browse_listings(client):
+def test_raw_listing_cache_is_for_the_owner_console_only(client):
+    """Customers browse through /api/deals, which applies eBay's display age,
+    seller-listing visibility and their plan; the raw cache skips all three."""
     insert_listing("test:carA", "2020 Subaru Outback", 14500)
     register(client, "freeuser@example.com")
-    # Default plan is "free" — should still be able to read the cache
+    assert client.get("/api/listings?limit=50").status_code == 403
+    assert client.get("/api/deals?feed=trusted").status_code == 200
+    logout(client)
+    register(client, "owner@example.com")
+    make_admin("owner@example.com")
+    login(client, "owner@example.com")
     r = client.get("/api/listings?limit=50")
     assert r.status_code == 200
-    titles = [x["title"] for x in r.get_json()]
-    assert "2020 Subaru Outback" in titles
+    assert "2020 Subaru Outback" in [x["title"] for x in r.get_json()]
 
 
 def test_anonymous_cannot_browse_listings(client):

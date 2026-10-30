@@ -6,9 +6,11 @@ Replaces the legacy owner-by-IP + shared-password gate.
 
 Design choices:
   * passwords      → bcrypt (12 rounds), never stored or logged in plaintext
-  * sessions       → opaque random token (32B from secrets) stored in `sessions`
-                     table; only the token rides in the cookie (HttpOnly,
-                     Secure when behind HTTPS, SameSite=Lax). 30-day TTL.
+  * sessions       → opaque random token (32B from secrets); the cookie
+                     carries the token, the `sessions` table only its
+                     SHA-256 (HttpOnly, Secure when behind HTTPS,
+                     SameSite=Lax). 30-day TTL; revoke_sessions() signs a
+                     user out everywhere.
   * server-side    → every decision uses values read fresh from the DB on the
                      current request. Client cookies / JSON / query strings
                      NEVER carry user_id, role, or plan — those are looked up.
@@ -17,16 +19,21 @@ Design choices:
   * Flask wiring   → g.user holds the authenticated User; current_user()
                      returns it or None.
 
-Rate-limited login: 10 failed attempts per IP per 5 minutes triggers 429.
+Rate-limited login: 10 failed attempts per visitor address per 5 minutes
+triggers 429, counted in the database (shared by all web workers). Behind
+Caddy the address comes from X-Forwarded-For, trusted only from
+SNIPER_TRUSTED_PROXIES (client_ip()).
 Registration is open by default; flip ALLOW_REGISTRATION env to "0" to lock it.
 """
 from __future__ import annotations
 
+import hashlib
+import ipaddress
+import logging
 import os
 import re
 import secrets
 import time
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -51,14 +58,17 @@ SESSION_TTL_DAYS = 30
 # lock down to admin-created users only.
 ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "1") != "0"
 
-# Cookies set Secure when the request arrived via HTTPS (real prod) but not
-# when reaching the dev server over http://127.0.0.1. SameSite=Lax keeps
-# cookies on top-level navigations while blocking the common CSRF flows.
+# Cookies set Secure when the request arrived via HTTPS, or the configured
+# public origin is https (deployed behind Caddy, even if the proxy's scheme
+# header were lost), but not on the dev server over http://127.0.0.1.
+# SameSite=Lax keeps cookies on top-level navigations while blocking the
+# common CSRF flows.
 def _cookie_kwargs() -> dict:
     return {
         "httponly": True,
         "samesite": "Lax",
-        "secure": request.is_secure,
+        "secure": request.is_secure
+                  or (os.environ.get("BILLING_ORIGIN") or "").startswith("https://"),
         "max_age": SESSION_TTL_DAYS * 86400,
         "path": "/",
     }
@@ -116,6 +126,23 @@ def verify_password(plain: str, stored_hash: str) -> bool:
                               stored_hash.encode("ascii"))
     except (ValueError, AttributeError):
         return False
+
+
+_DUMMY_HASH: Optional[str] = None
+
+
+def password_matches(plain: str, stored_hash: Optional[str]) -> bool:
+    """verify_password for sign-in. An unknown account (no stored hash)
+    still costs one bcrypt check, so the response time doesn't reveal which
+    email addresses have accounts."""
+    global _DUMMY_HASH
+    if not stored_hash:
+        if _DUMMY_HASH is None:
+            _DUMMY_HASH = bcrypt.hashpw(secrets.token_hex(16).encode(),
+                                        bcrypt.gensalt(rounds=BCRYPT_ROUNDS)).decode("ascii")
+        verify_password(plain, _DUMMY_HASH)
+        return False
+    return verify_password(plain, stored_hash)
 
 
 # ---------- DB access (raw SQL — keeps the layer thin) ----------------
@@ -228,21 +255,32 @@ def _new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _token_hash(token: str) -> str:
+    """What sessions.token stores: the SHA-256 of the cookie value (migration
+    0018), so a copy of the database can't be replayed as a session. The
+    token is 256 random bits, so a plain hash is enough (no salt or slow
+    hash), and the lookup is an indexed equality on the hash."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def create_session(user: User) -> str:
+    """New random session for `user`; returns the cookie value. Expired
+    sessions are deleted here, so the table doesn't grow without bound."""
     token = _new_token()
+    now = db.now_utc_iso()
     expires = (datetime.now(timezone.utc)
                + timedelta(days=SESSION_TTL_DAYS)).isoformat()
     ua = (request.headers.get("User-Agent") or "")[:300]
-    ip = (request.headers.get("X-Forwarded-For") or
-          request.remote_addr or "")[:64]
+    ip = client_ip()[:64]
     with db.transaction() as conn:
+        _exec(conn, f"DELETE FROM sessions WHERE expires_at <= {_PH()}", (now,))
         _exec(conn,
               f"INSERT INTO sessions(token, user_id, expires_at, user_agent, ip) "
               f"VALUES ({_PH()},{_PH()},{_PH()},{_PH()},{_PH()})",
-              (token, user.id, expires, ua, ip))
+              (_token_hash(token), user.id, expires, ua, ip))
         _exec(conn,
               f"UPDATE users SET last_login_at={_PH()} WHERE id={_PH()}",
-              (db.now_utc_iso(), user.id))
+              (now, user.id))
     return token
 
 
@@ -250,11 +288,20 @@ def destroy_session(token: str) -> None:
     if not token:
         return
     with db.transaction() as conn:
-        _exec(conn, f"DELETE FROM sessions WHERE token={_PH()}", (token,))
+        _exec(conn, f"DELETE FROM sessions WHERE token={_PH()}", (_token_hash(token),))
+
+
+def revoke_sessions(user_id: int) -> int:
+    """Sign a user out everywhere (lost device, suspected compromise):
+        python -c "import auth; print(auth.revoke_sessions(auth.get_user_by_email('pat@example.com').id))"
+    Returns how many sessions were removed."""
+    with db.transaction() as conn:
+        return _exec(conn, f"DELETE FROM sessions WHERE user_id={_PH()}",
+                     (int(user_id),)).rowcount
 
 
 def _user_for_token(token: str) -> Optional[User]:
-    if not token:
+    if not token or len(token) > 256:
         return None
     now = db.now_utc_iso()
     with db.transaction() as conn:
@@ -262,7 +309,7 @@ def _user_for_token(token: str) -> Optional[User]:
             f"SELECT u.id, u.email, u.role, u.plan "
             f"FROM sessions s JOIN users u ON u.id = s.user_id "
             f"WHERE s.token={_PH()} AND s.expires_at > {_PH()}",
-            (token, now))
+            (_token_hash(token), now))
         row = cur.fetchone()
         return _row_to_user(row) if row else None
 
@@ -325,32 +372,121 @@ def admin_required(fn: Callable) -> Callable:
     return wrapper
 
 
-# ---------- Login throttle (in-memory, per-IP) ------------------------
+# ---------- Client address (behind the Caddy reverse proxy) -----------
+#
+# Behind Caddy every connection reaches gunicorn from loopback, so the
+# socket address is the proxy, not the visitor. The visitor's address is
+# read from X-Forwarded-For, but only when the connecting peer is listed in
+# SNIPER_TRUSTED_PROXIES (IPs or CIDRs; deploy sets 127.0.0.1,::1). The
+# header is walked from the right, skipping trusted hops, so a value a
+# client wrote itself can't be used to pose as someone else. With nothing
+# listed, the header is ignored and the socket address is used.
 
-_LOGIN_FAILS: dict[str, list[float]] = {}
-_LOGIN_LOCK = threading.Lock()
+_log = logging.getLogger("sniper.auth")
+
+
+def _parse_proxies(spec: str) -> tuple:
+    nets = []
+    for part in re.split(r"[,\s]+", spec or ""):
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            _log.warning("SNIPER_TRUSTED_PROXIES: ignoring %r (not an IP or CIDR)", part)
+    return tuple(nets)
+
+
+TRUSTED_PROXIES = _parse_proxies(os.environ.get("SNIPER_TRUSTED_PROXIES", ""))
+_misconfig_warned = False
+
+
+def _ip(value):
+    """An IP address from a socket address or one X-Forwarded-For hop
+    ('1.2.3.4', '1.2.3.4:5678', '2001:db8::1', '[2001:db8::1]:443'), or None."""
+    v = (value or "").strip()
+    if v.startswith("["):
+        v = v[1:].split("]", 1)[0]
+    elif v.count(":") == 1:
+        v = v.split(":", 1)[0]
+    try:
+        ip = ipaddress.ip_address(v)
+    except ValueError:
+        return None
+    return ip.ipv4_mapped if ip.version == 6 and ip.ipv4_mapped else ip
+
+
+def _trusted(ip) -> bool:
+    return any(ip in net for net in TRUSTED_PROXIES)
+
+
+def client_ip() -> str:
+    """The address of the person making the current request."""
+    global _misconfig_warned
+    peer = _ip(request.remote_addr)
+    if peer is None:
+        return request.remote_addr or "unknown"
+    hops = [h for h in ",".join(request.headers.getlist("X-Forwarded-For")).split(",") if h.strip()]
+    if not _trusted(peer):
+        if hops and peer.is_loopback and not TRUSTED_PROXIES and not _misconfig_warned:
+            _misconfig_warned = True
+            _log.warning("requests arrive through a local proxy but SNIPER_TRUSTED_PROXIES "
+                         "is not set: every visitor looks like %s, so they share one "
+                         "login-attempt budget", peer)
+        return str(peer)
+    for hop in reversed(hops):
+        ip = _ip(hop)
+        if ip is None:
+            return str(peer)        # a hop we can't read: trust nothing further left
+        if not _trusted(ip):
+            return str(ip)
+    return str(peer)
+
+
+def proxy_misconfigured() -> bool:
+    """True when this request came through a local proxy whose forwarded
+    address is being ignored (SNIPER_TRUSTED_PROXIES unset or wrong)."""
+    peer = _ip(request.remote_addr)
+    return bool(peer is not None and peer.is_loopback and not _trusted(peer)
+                and request.headers.get("X-Forwarded-For"))
+
+
+def rate_key(ip: str) -> str:
+    """Throttle bucket for an address. An IPv6 visitor normally controls a
+    whole /64, so addresses in one /64 share a bucket."""
+    a = _ip(ip)
+    if a is not None and a.version == 6:
+        return str(ipaddress.ip_network(f"{a}/64", strict=False))
+    return ip
+
+
+# ---------- Login throttle (per visitor, shared by every web worker) ----
+# In the database (migration 0017) so all gunicorn workers count against
+# one budget and a restart doesn't reset it.
+
 LOGIN_WINDOW_S = 300        # 5 minutes
 LOGIN_MAX_FAILS = 10
 
 
 def login_throttled() -> bool:
-    """Returns True if the current IP is over the failure budget. Call this
-    BEFORE checking the password so we don't reveal hit/miss timing."""
-    ip = request.remote_addr or "unknown"
-    now = time.time()
-    with _LOGIN_LOCK:
-        bucket = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < LOGIN_WINDOW_S]
-        _LOGIN_FAILS[ip] = bucket
-        return len(bucket) >= LOGIN_MAX_FAILS
+    """Returns True if the current visitor is over the failure budget. Call
+    this BEFORE checking the password so we don't reveal hit/miss timing."""
+    with db.transaction() as conn:
+        row = _exec(conn, f"SELECT COUNT(*) AS n FROM login_failures "
+                          f"WHERE rate_key = {_PH()} AND at > {_PH()}",
+                    (rate_key(client_ip()), time.time() - LOGIN_WINDOW_S)).fetchone()
+    return int(row["n"]) >= LOGIN_MAX_FAILS
 
 
 def record_login_failure() -> None:
-    ip = request.remote_addr or "unknown"
-    with _LOGIN_LOCK:
-        _LOGIN_FAILS.setdefault(ip, []).append(time.time())
+    now = time.time()
+    with db.transaction() as conn:
+        _exec(conn, f"INSERT INTO login_failures(rate_key, at) VALUES ({_PH()},{_PH()})",
+              (rate_key(client_ip()), now))
+        _exec(conn, f"DELETE FROM login_failures WHERE at < {_PH()}", (now - LOGIN_WINDOW_S,))
 
 
 def clear_login_failures() -> None:
-    ip = request.remote_addr or "unknown"
-    with _LOGIN_LOCK:
-        _LOGIN_FAILS.pop(ip, None)
+    with db.transaction() as conn:
+        _exec(conn, f"DELETE FROM login_failures WHERE rate_key = {_PH()}",
+              (rate_key(client_ip()),))

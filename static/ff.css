@@ -348,7 +348,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent-strong); }
 @media (min-width: 768px) { .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
 /* data list & table */
-.dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0; }
+/* labels keep at least their longest word; a long value wraps instead of
+   squeezing its label into the next column (e.g. "Evidence" on phones) */
+.dl { display: grid; grid-template-columns: minmax(min-content, 1fr) minmax(0, max-content); gap: 0; }
 .dl > dt, .dl > dd { padding: 10px 0; border-bottom: 1px solid var(--line); margin: 0; font-size: var(--fs-sm); }
 .dl > dt { color: var(--ink-2); }
 .dl > dd { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
@@ -502,11 +504,14 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .deal__actions .btn { position: relative; z-index: 2; }
 .deal.is-leaving { opacity: 0; transform: scale(.98); transition: opacity var(--t-med) var(--ease), transform var(--t-med) var(--ease); }
 .deal-skel { height: 196px; border-radius: var(--r-lg); }
-/* card-width aware: compact money and labels when the CARD is narrow (2-up grids, phones) */
+/* card-width aware: compact money and labels when the CARD (or the deal page's
+   metrics box, e.g. the narrow main column at 1024px) is narrow */
+.metrics-box { container-type: inline-size; }
 @container (max-width: 460px) {
-  .deal .full { display: none; } .deal .compact { display: inline; } .deal .hide-narrow { display: none; }
+  .deal .full, .metrics-box .full { display: none; }
+  .deal .compact, .metrics-box .compact { display: inline; } .deal .hide-narrow { display: none; }
   .deal .deal__metrics { grid-template-columns: .95fr 1.4fr .8fr; }
-  .deal .deal__metrics .metric__value { font-size: 15px; }
+  .deal .deal__metrics .metric__value, .metrics-box .deal__metrics .metric__value { font-size: 15px; }
 }
 
 /* price-vs-market bar */

@@ -238,15 +238,6 @@ def _read_public_url():
         return None
 
 
-# Headers that any reverse proxy / tunnel inserts. Their presence proves the
-# request came in via a tunnel even though remote_addr will still be 127.0.0.1
-# (ssh -R, cloudflared, ngrok, lhr.life all terminate locally).
-_PROXY_HEADERS = (
-    "X-Forwarded-For", "X-Real-IP", "Forwarded",
-    "CF-Connecting-IP", "X-Forwarded-Host", "X-Original-Forwarded-For",
-)
-
-
 # Endpoints reachable without a session (the bare minimum for the login flow,
 # health probes, and the dashboard shell which JS will then gate on /api/me).
 #
@@ -285,6 +276,28 @@ def _load_user():
         f"user={(u.email if u else 'anon')} "
         f"role={(u.role if u else '-')} plan={(u.plan if u else '-')}"
     )
+
+
+# Called by Stripe, not a browser; the signature is its check.
+_CROSS_SITE_OK = frozenset({"/api/billing/webhook"})
+
+
+@app.before_request
+def _refuse_cross_site_writes():
+    """Browsers send Origin with every POST/PUT/PATCH/DELETE; one naming
+    another site (or "null") is refused. Defense in depth on top of the
+    SameSite=Lax session cookie and JSON request bodies. Requests without
+    Origin (curl, server-to-server) fall back to the SameSite cookie rule."""
+    if request.method in ("GET", "HEAD", "OPTIONS") or request.path in _CROSS_SITE_OK:
+        return None
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if not origin:
+        return None
+    allowed = {request.host_url.rstrip("/"), (os.environ.get("BILLING_ORIGIN") or "").rstrip("/")}
+    if origin in allowed:
+        return None
+    _logger.info(f"CROSS_SITE_REFUSED path={request.path} origin={origin[:80]}")
+    return jsonify({"error": "cross-site request refused"}), 403
 
 
 # Backwards-compatible shim — a handful of legacy handlers (e.g. /debug/status,
@@ -812,10 +825,10 @@ def api_diagnostics():
         })
     u = auth.current_user()
     if not (u and u.is_admin):
-        # Reasons can quote provider error text (credentials, plan, quota):
-        # operator detail, not for customers. Status stays visible.
-        for row in out:
-            row["reason"] = row["error"] = None
+        # Customers see which sources work (the app's "N sources healthy"
+        # note), nothing else: reasons can quote provider error text
+        # (credentials, plan, quota) and the counts are operator detail.
+        out = [{"id": r["id"], "name": r["name"], "status": r["status"]} for r in out]
     return jsonify(out)
 
 
@@ -1262,6 +1275,9 @@ _RATE_LOCK = threading.Lock()
 def _rate_ok(key: str, max_per_min: int) -> bool:
     now = time.time()
     with _RATE_LOCK:
+        if len(_RATE) > 10_000:             # drop finished windows before growing further
+            for k in [k for k, (s, _) in _RATE.items() if now - s > 60]:
+                del _RATE[k]
         start, n = _RATE.get(key, (now, 0))
         if now - start > 60:
             start, n = now, 0
@@ -1275,9 +1291,9 @@ def _rl_or_fail(name: str, max_per_min: int):
     requests are not rate-limited (it's just you on your own Mac)."""
     if _is_owner_request():
         return None
-    key = f"{name}:{(request.remote_addr or 'unknown')}"
-    if not _rate_ok(key, max_per_min):
-        _logger.info(f"RATE_LIMIT name={name} ip={request.remote_addr}")
+    ip = auth.client_ip()
+    if not _rate_ok(f"{name}:{auth.rate_key(ip)}", max_per_min):
+        _logger.info(f"RATE_LIMIT name={name} ip={ip}")
         return (jsonify({"error": f"rate limited — max {max_per_min}/min"}),
                 429)
     return None
@@ -1486,7 +1502,8 @@ def api_login():
                 (user.id,))
             row = cur.fetchone()
             pw_hash = (row["password_hash"] if row else None)
-    if not (user and pw_hash and auth.verify_password(password, pw_hash)):
+    ok = auth.password_matches(password, pw_hash)   # costs a bcrypt check even with no account
+    if not (user and ok):
         auth.record_login_failure()
         return jsonify({"error": "invalid email or password"}), 401
     auth.clear_login_failures()
@@ -1793,6 +1810,17 @@ _LOGIN_REQUIRED_READ_PREFIXES = (
     "/api/saved", "/api/saved_searches", "/api/me",
 )
 
+# Owner-console data, used only by the classic console at / (admin-only).
+# These return every listing, the owner's alert log, settings and pipeline
+# internals, without the rules /api/deals applies (eBay's display age, which
+# seller listings are visible, the caller's plan), so customers use
+# /api/deals and these are refused to anyone but an admin.
+_ADMIN_ONLY = frozenset({
+    "/api/alerts", "/api/fresh_listings", "/api/near_misses", "/api/listings",
+    "/api/listings/closing_soon", "/api/stats", "/api/facets", "/api/score_progress",
+    "/api/sources", "/api/share_settings",
+})
+
 _PLAN_REQUIRED = {
     # Comp + VIN lookups consume third-party API quota → 'starter'+
     "/api/comps":            "starter",
@@ -1822,6 +1850,8 @@ def _enforce_route_policy():
     if p.startswith("/api/"):
         if not auth.current_user():
             return jsonify({"error": "authentication required"}), 401
+        if p in _ADMIN_ONLY and not auth.current_user().is_admin:
+            return jsonify({"error": "admin only"}), 403
         for prefix, min_plan in _PLAN_REQUIRED.items():
             if p == prefix or p.startswith(prefix + "/"):
                 if not auth.current_user().has_plan(min_plan):
@@ -2660,7 +2690,14 @@ def api_admin_ops():
         hours = max(1, min(168, int(request.args.get("hours", 24))))
     except ValueError:
         hours = 24
-    return jsonify(ops.snapshot(hours))
+    snap = ops.snapshot(hours)
+    if auth.proxy_misconfigured():          # seen on this very request
+        snap.get("system_health", {}).setdefault("checks", []).append({
+            "category": "infrastructure", "check": "client addresses (this request)",
+            "status": "fail", "blocks": "controlled_free_beta",
+            "detail": "this page came through a local proxy whose forwarded address is "
+                      "ignored — set SNIPER_TRUSTED_PROXIES=127.0.0.1,::1 and restart"})
+    return jsonify(snap)
 
 
 @app.get("/admin/ops")
