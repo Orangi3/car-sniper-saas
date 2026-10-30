@@ -17,16 +17,20 @@ Design choices:
   * Flask wiring   → g.user holds the authenticated User; current_user()
                      returns it or None.
 
-Rate-limited login: 10 failed attempts per IP per 5 minutes triggers 429.
+Rate-limited login: 10 failed attempts per visitor address per 5 minutes
+triggers 429, counted in the database (shared by all web workers). Behind
+Caddy the address comes from X-Forwarded-For, trusted only from
+SNIPER_TRUSTED_PROXIES (client_ip()).
 Registration is open by default; flip ALLOW_REGISTRATION env to "0" to lock it.
 """
 from __future__ import annotations
 
+import ipaddress
+import logging
 import os
 import re
 import secrets
 import time
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -233,8 +237,7 @@ def create_session(user: User) -> str:
     expires = (datetime.now(timezone.utc)
                + timedelta(days=SESSION_TTL_DAYS)).isoformat()
     ua = (request.headers.get("User-Agent") or "")[:300]
-    ip = (request.headers.get("X-Forwarded-For") or
-          request.remote_addr or "")[:64]
+    ip = client_ip()[:64]
     with db.transaction() as conn:
         _exec(conn,
               f"INSERT INTO sessions(token, user_id, expires_at, user_agent, ip) "
@@ -325,32 +328,121 @@ def admin_required(fn: Callable) -> Callable:
     return wrapper
 
 
-# ---------- Login throttle (in-memory, per-IP) ------------------------
+# ---------- Client address (behind the Caddy reverse proxy) -----------
+#
+# Behind Caddy every connection reaches gunicorn from loopback, so the
+# socket address is the proxy, not the visitor. The visitor's address is
+# read from X-Forwarded-For, but only when the connecting peer is listed in
+# SNIPER_TRUSTED_PROXIES (IPs or CIDRs; deploy sets 127.0.0.1,::1). The
+# header is walked from the right, skipping trusted hops, so a value a
+# client wrote itself can't be used to pose as someone else. With nothing
+# listed, the header is ignored and the socket address is used.
 
-_LOGIN_FAILS: dict[str, list[float]] = {}
-_LOGIN_LOCK = threading.Lock()
+_log = logging.getLogger("sniper.auth")
+
+
+def _parse_proxies(spec: str) -> tuple:
+    nets = []
+    for part in re.split(r"[,\s]+", spec or ""):
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            _log.warning("SNIPER_TRUSTED_PROXIES: ignoring %r (not an IP or CIDR)", part)
+    return tuple(nets)
+
+
+TRUSTED_PROXIES = _parse_proxies(os.environ.get("SNIPER_TRUSTED_PROXIES", ""))
+_misconfig_warned = False
+
+
+def _ip(value):
+    """An IP address from a socket address or one X-Forwarded-For hop
+    ('1.2.3.4', '1.2.3.4:5678', '2001:db8::1', '[2001:db8::1]:443'), or None."""
+    v = (value or "").strip()
+    if v.startswith("["):
+        v = v[1:].split("]", 1)[0]
+    elif v.count(":") == 1:
+        v = v.split(":", 1)[0]
+    try:
+        ip = ipaddress.ip_address(v)
+    except ValueError:
+        return None
+    return ip.ipv4_mapped if ip.version == 6 and ip.ipv4_mapped else ip
+
+
+def _trusted(ip) -> bool:
+    return any(ip in net for net in TRUSTED_PROXIES)
+
+
+def client_ip() -> str:
+    """The address of the person making the current request."""
+    global _misconfig_warned
+    peer = _ip(request.remote_addr)
+    if peer is None:
+        return request.remote_addr or "unknown"
+    hops = [h for h in ",".join(request.headers.getlist("X-Forwarded-For")).split(",") if h.strip()]
+    if not _trusted(peer):
+        if hops and peer.is_loopback and not TRUSTED_PROXIES and not _misconfig_warned:
+            _misconfig_warned = True
+            _log.warning("requests arrive through a local proxy but SNIPER_TRUSTED_PROXIES "
+                         "is not set: every visitor looks like %s, so they share one "
+                         "login-attempt budget", peer)
+        return str(peer)
+    for hop in reversed(hops):
+        ip = _ip(hop)
+        if ip is None:
+            return str(peer)        # a hop we can't read: trust nothing further left
+        if not _trusted(ip):
+            return str(ip)
+    return str(peer)
+
+
+def proxy_misconfigured() -> bool:
+    """True when this request came through a local proxy whose forwarded
+    address is being ignored (SNIPER_TRUSTED_PROXIES unset or wrong)."""
+    peer = _ip(request.remote_addr)
+    return bool(peer is not None and peer.is_loopback and not _trusted(peer)
+                and request.headers.get("X-Forwarded-For"))
+
+
+def rate_key(ip: str) -> str:
+    """Throttle bucket for an address. An IPv6 visitor normally controls a
+    whole /64, so addresses in one /64 share a bucket."""
+    a = _ip(ip)
+    if a is not None and a.version == 6:
+        return str(ipaddress.ip_network(f"{a}/64", strict=False))
+    return ip
+
+
+# ---------- Login throttle (per visitor, shared by every web worker) ----
+# In the database (migration 0017) so all gunicorn workers count against
+# one budget and a restart doesn't reset it.
+
 LOGIN_WINDOW_S = 300        # 5 minutes
 LOGIN_MAX_FAILS = 10
 
 
 def login_throttled() -> bool:
-    """Returns True if the current IP is over the failure budget. Call this
-    BEFORE checking the password so we don't reveal hit/miss timing."""
-    ip = request.remote_addr or "unknown"
-    now = time.time()
-    with _LOGIN_LOCK:
-        bucket = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < LOGIN_WINDOW_S]
-        _LOGIN_FAILS[ip] = bucket
-        return len(bucket) >= LOGIN_MAX_FAILS
+    """Returns True if the current visitor is over the failure budget. Call
+    this BEFORE checking the password so we don't reveal hit/miss timing."""
+    with db.transaction() as conn:
+        row = _exec(conn, f"SELECT COUNT(*) AS n FROM login_failures "
+                          f"WHERE rate_key = {_PH()} AND at > {_PH()}",
+                    (rate_key(client_ip()), time.time() - LOGIN_WINDOW_S)).fetchone()
+    return int(row["n"]) >= LOGIN_MAX_FAILS
 
 
 def record_login_failure() -> None:
-    ip = request.remote_addr or "unknown"
-    with _LOGIN_LOCK:
-        _LOGIN_FAILS.setdefault(ip, []).append(time.time())
+    now = time.time()
+    with db.transaction() as conn:
+        _exec(conn, f"INSERT INTO login_failures(rate_key, at) VALUES ({_PH()},{_PH()})",
+              (rate_key(client_ip()), now))
+        _exec(conn, f"DELETE FROM login_failures WHERE at < {_PH()}", (now - LOGIN_WINDOW_S,))
 
 
 def clear_login_failures() -> None:
-    ip = request.remote_addr or "unknown"
-    with _LOGIN_LOCK:
-        _LOGIN_FAILS.pop(ip, None)
+    with db.transaction() as conn:
+        _exec(conn, f"DELETE FROM login_failures WHERE rate_key = {_PH()}",
+              (rate_key(client_ip()),))

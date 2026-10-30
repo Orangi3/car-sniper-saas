@@ -155,6 +155,12 @@ if [[ ! -f /etc/sniper/env ]]; then
     echo "  STRIPE_*, B2_*, HEALTHCHECK_* — never via chat, never via git."
 else
     echo "▸ /etc/sniper/env already exists, leaving as-is."
+    # Env files from before SNIPER_TRUSTED_PROXIES existed: without it every
+    # visitor behind Caddy shares one login-attempt budget.
+    if ! grep -q '^SNIPER_TRUSTED_PROXIES=' /etc/sniper/env; then
+        printf '\n# Caddy connects from loopback; trust its X-Forwarded-For\nSNIPER_TRUSTED_PROXIES=127.0.0.1,::1\n' >> /etc/sniper/env
+        echo "▸ added SNIPER_TRUSTED_PROXIES=127.0.0.1,::1 to /etc/sniper/env"
+    fi
 fi
 
 # ----------------------------------------------------------------------

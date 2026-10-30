@@ -8,7 +8,8 @@ import pytest
 KEYS = ("SNIPER_COMMERCIAL_MODE", "BILLING_ORIGIN", "STRIPE_SECRET_KEY",
         "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_STARTER", "STRIPE_PRICE_PRO",
         "B2_BUCKET", "B2_KEY_ID", "B2_APPLICATION_KEY", "AGE_RECIPIENT",
-        "EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "MARKETCHECK_COMMERCIAL_AGREEMENT")
+        "EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "MARKETCHECK_COMMERCIAL_AGREEMENT",
+        "SNIPER_TRUSTED_PROXIES")
 
 
 @pytest.fixture()
@@ -68,11 +69,23 @@ def test_licensed_fresh_source_unlocks_free_beta_but_not_paid(pf, monkeypatch):
     _tick(); _healthy("ebay")
     monkeypatch.setitem(CONFIG, "commercial_mode", True)
     monkeypatch.setenv("BILLING_ORIGIN", "https://beta.example.com")
+    monkeypatch.setenv("SNIPER_TRUSTED_PROXIES", "127.0.0.1,::1")
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_abc123secretvalue")
     r = preflight.run()
     assert r["ready_for"] == "controlled_free_beta"
     paid = " ".join(r["blockers"]["controlled_paid_beta"])
     assert "TEST key" in paid and "STRIPE_PRICE_PRO" in paid
+
+
+def test_behind_the_proxy_without_trusted_proxies_is_not_a_free_beta(pf, monkeypatch):
+    """Every visitor would share one login-attempt budget (auth.client_ip)."""
+    preflight, CONFIG = pf
+    _tick(); _healthy("ebay")
+    monkeypatch.setitem(CONFIG, "commercial_mode", True)
+    monkeypatch.setenv("BILLING_ORIGIN", "https://beta.example.com")
+    r = preflight.run()
+    assert r["ready_for"] == "private_internal_testing"
+    assert any("SNIPER_TRUSTED_PROXIES" in b for b in r["blockers"]["controlled_free_beta"])
 
 
 def test_stale_source_is_unverified(pf, monkeypatch):
@@ -115,6 +128,7 @@ def test_paid_beta_reachable_only_with_everything(pf, monkeypatch):
     _tick(); _healthy("ebay")
     monkeypatch.setitem(CONFIG, "commercial_mode", True)
     for k, v in {"BILLING_ORIGIN": "https://beta.example.com",
+                 "SNIPER_TRUSTED_PROXIES": "127.0.0.1,::1",
                  "STRIPE_SECRET_KEY": "sk_live_x", "STRIPE_WEBHOOK_SECRET": "whsec_x",
                  "STRIPE_PRICE_STARTER": "price_a", "STRIPE_PRICE_PRO": "price_b",
                  "B2_BUCKET": "b", "B2_KEY_ID": "k", "B2_APPLICATION_KEY": "s",

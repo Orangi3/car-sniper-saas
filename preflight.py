@@ -136,6 +136,17 @@ def run() -> dict:
         "encrypted B2 backups configured" if backups else
         "B2_* / AGE_RECIPIENT not set (deploy/backup.sh)",
         None if backups else "controlled_paid_beta")
+    # behind Caddy (an https origin) every connection comes from loopback
+    proxies = _env("SNIPER_TRUSTED_PROXIES")
+    if origin.startswith("https://") and not proxies:
+        add("infrastructure", "client addresses", FAIL,
+            "SNIPER_TRUSTED_PROXIES not set: behind the proxy every visitor looks like "
+            "127.0.0.1 and shares one login-attempt budget (deploy sets 127.0.0.1,::1)",
+            "controlled_free_beta")
+    else:
+        add("infrastructure", "client addresses", OK,
+            f"forwarded addresses trusted from {proxies}" if proxies
+            else "direct connections, no proxy configured")
 
     # ---- 3/4/5. providers, licensing, data -------------------------------
     import sources

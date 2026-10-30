@@ -5,6 +5,10 @@
 #
 # Caddy fetches a Let's Encrypt certificate automatically on first
 # request after the A record resolves to this host.
+#
+# X-Forwarded-For is SET (not appended) to the address that connected to
+# Caddy, so a value a visitor sends is discarded. The app trusts it only
+# because the connection comes from loopback (SNIPER_TRUSTED_PROXIES).
 
 __STAGING_HOSTNAME__ {
     encode zstd gzip
@@ -16,7 +20,9 @@ __STAGING_HOSTNAME__ {
     # Health probe (Healthchecks.io and Stripe sanity hits) — uncached.
     @health path /health
     handle @health {
-        reverse_proxy 127.0.0.1:8765
+        reverse_proxy 127.0.0.1:8765 {
+            header_up X-Forwarded-For {remote_host}
+        }
     }
 
     # Stripe webhook MUST never be cached or redirected; pass the raw
@@ -25,6 +31,7 @@ __STAGING_HOSTNAME__ {
     handle @webhook {
         reverse_proxy 127.0.0.1:8765 {
             header_up X-Forwarded-Proto https
+            header_up X-Forwarded-For {remote_host}
         }
     }
 
@@ -32,6 +39,7 @@ __STAGING_HOSTNAME__ {
     handle {
         reverse_proxy 127.0.0.1:8765 {
             header_up X-Forwarded-Proto https
+            header_up X-Forwarded-For {remote_host}
         }
     }
 

@@ -238,15 +238,6 @@ def _read_public_url():
         return None
 
 
-# Headers that any reverse proxy / tunnel inserts. Their presence proves the
-# request came in via a tunnel even though remote_addr will still be 127.0.0.1
-# (ssh -R, cloudflared, ngrok, lhr.life all terminate locally).
-_PROXY_HEADERS = (
-    "X-Forwarded-For", "X-Real-IP", "Forwarded",
-    "CF-Connecting-IP", "X-Forwarded-Host", "X-Original-Forwarded-For",
-)
-
-
 # Endpoints reachable without a session (the bare minimum for the login flow,
 # health probes, and the dashboard shell which JS will then gate on /api/me).
 #
@@ -1262,6 +1253,9 @@ _RATE_LOCK = threading.Lock()
 def _rate_ok(key: str, max_per_min: int) -> bool:
     now = time.time()
     with _RATE_LOCK:
+        if len(_RATE) > 10_000:             # drop finished windows before growing further
+            for k in [k for k, (s, _) in _RATE.items() if now - s > 60]:
+                del _RATE[k]
         start, n = _RATE.get(key, (now, 0))
         if now - start > 60:
             start, n = now, 0
@@ -1275,9 +1269,9 @@ def _rl_or_fail(name: str, max_per_min: int):
     requests are not rate-limited (it's just you on your own Mac)."""
     if _is_owner_request():
         return None
-    key = f"{name}:{(request.remote_addr or 'unknown')}"
-    if not _rate_ok(key, max_per_min):
-        _logger.info(f"RATE_LIMIT name={name} ip={request.remote_addr}")
+    ip = auth.client_ip()
+    if not _rate_ok(f"{name}:{auth.rate_key(ip)}", max_per_min):
+        _logger.info(f"RATE_LIMIT name={name} ip={ip}")
         return (jsonify({"error": f"rate limited — max {max_per_min}/min"}),
                 429)
     return None
@@ -2660,7 +2654,14 @@ def api_admin_ops():
         hours = max(1, min(168, int(request.args.get("hours", 24))))
     except ValueError:
         hours = 24
-    return jsonify(ops.snapshot(hours))
+    snap = ops.snapshot(hours)
+    if auth.proxy_misconfigured():          # seen on this very request
+        snap.get("system_health", {}).setdefault("checks", []).append({
+            "category": "infrastructure", "check": "client addresses (this request)",
+            "status": "fail", "blocks": "controlled_free_beta",
+            "detail": "this page came through a local proxy whose forwarded address is "
+                      "ignored — set SNIPER_TRUSTED_PROXIES=127.0.0.1,::1 and restart"})
+    return jsonify(snap)
 
 
 @app.get("/admin/ops")
