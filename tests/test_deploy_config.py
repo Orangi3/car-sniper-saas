@@ -63,6 +63,31 @@ def test_proxy_sends_hsts():
     assert 'Strict-Transport-Security "max-age=' in (DEPLOY / "Caddyfile.staging").read_text()
 
 
+def test_proxy_sets_the_visitor_address_and_the_app_trusts_only_this_host(tmp_path):
+    """Every reverse_proxy block SETS X-Forwarded-For to the connecting
+    address (a visitor's own header is discarded), and the app trusts it
+    only from loopback (auth.client_ip); install.sh adds the setting to an
+    env file that predates it."""
+    caddy = (DEPLOY / "Caddyfile.staging").read_text()
+    blocks = re.findall(r"reverse_proxy 127\.0\.0\.1:8765 \{(.*?)\n\s*\}", caddy, re.S)
+    assert len(blocks) == caddy.count("reverse_proxy") == 3
+    assert all("header_up X-Forwarded-For {remote_host}" in b for b in blocks)
+    env = systemd_env((DEPLOY / "env.staging.example").read_text())
+    assert env["SNIPER_TRUSTED_PROXIES"] == "127.0.0.1,::1"
+    install = (DEPLOY / "install.sh").read_text()
+    snippet = re.search(r"(    if ! grep -q '\^SNIPER_TRUSTED_PROXIES=' /etc/sniper/env; then.*?\n    fi)\n",
+                        install, re.S).group(1)
+    old_env = tmp_path / "env"
+    old_env.write_text("ALLOW_REGISTRATION=0\nBILLING_ORIGIN=https://app.example.test\n")
+    import subprocess
+    for _ in range(2):                                  # second run: already there, no duplicate
+        subprocess.run(["bash", "-c", snippet.replace("/etc/sniper/env", str(old_env))], check=True,
+                       capture_output=True)
+    added = systemd_env(old_env.read_text())
+    assert added["SNIPER_TRUSTED_PROXIES"] == "127.0.0.1,::1" and added["ALLOW_REGISTRATION"] == "0"
+    assert old_env.read_text().count("SNIPER_TRUSTED_PROXIES=") == 1
+
+
 def test_deploy_runs_app_steps_as_the_app_user_with_the_production_env():
     """Deploys go in as root (the sniper account has no shell); the canary
     and pre-flip migration must see /etc/sniper/env, or they silently test
