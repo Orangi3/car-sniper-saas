@@ -182,6 +182,7 @@ def test_review_labels_become_false_positive_metrics_and_survive_reruns(stand, t
         w.writerows(rows)
     rep = vd.build_report(tmp_path / "run")
     assert rep["review"]["trusted"]["genuine"] == 1 and rep["review"]["trusted"]["precision"] == 1.0
+    assert rep["review"]["trusted"]["precision_lower_95"] == 0.207     # 1 of 1 proves little
     assert "20 needed" in rep["review"]["trusted"]["sample_note"]
     assert rep["review"]["risk"]["false_positive_reasons"] == {"mechanical_condition_problem": 1}
     run(tmp_path)                                             # a second run keeps the labels
@@ -205,6 +206,14 @@ def test_purge_removes_listing_content_but_keeps_labels(stand, tmp_path):
                                     for c in rep["candidates"])
     text = (d / "report.json").read_text() + (d / "review.csv").read_text()
     assert "ebay.test" not in text and "Camry" not in text
+
+
+def test_wilson_lower_bound():
+    import validate_deals as vd
+    assert vd.wilson_lower(0, 0) is None
+    assert vd.wilson_lower(14, 20) == 0.481          # 70% of 20: can't claim 50%
+    assert vd.wilson_lower(28, 40) == 0.546          # 70% of 40: can
+    assert vd.wilson_lower(20, 20) == 0.839
 
 
 # ---------- the CLI, as the owner runs it ------------------------------------

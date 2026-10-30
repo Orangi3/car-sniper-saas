@@ -226,6 +226,16 @@ def _read_review(path: Path) -> dict:
         return {(r.get("source"), r.get("source_listing_id")): r for r in csv.DictReader(f)}
 
 
+def wilson_lower(k: int, n: int, z: float = 1.96) -> Optional[float]:
+    """Lower end of the 95% Wilson interval for k successes in n: what
+    precision can be claimed from a small sample."""
+    if not n:
+        return None
+    p = k / n
+    return round((p + z * z / (2 * n) - z * ((p * (1 - p) + z * z / (4 * n)) / n) ** 0.5)
+                 / (1 + z * z / n), 3)
+
+
 def review_metrics(rows: list[dict]) -> dict:
     """False-positive tracking from human labels. Unlabeled rows count as
     unreviewed; listing_unavailable / insufficient_evidence are not
@@ -246,6 +256,7 @@ def review_metrics(rows: list[dict]) -> dict:
             "insufficient_evidence": sum(1 for r in lab
                                          if r["outcome_label"] == "insufficient_evidence"),
             "precision": round(pos / judged, 3) if judged else None,
+            "precision_lower_95": wilson_lower(pos, judged),
             "sample_note": (None if judged >= MIN_REVIEWED else
                             f"only {judged} judged; at least {MIN_REVIEWED} needed to conclude")}
     return out
@@ -465,7 +476,8 @@ def _print(rep: dict) -> None:
           f"{iso['notify_jobs']}, owner alert rows (not sent) {iso['owner_alert_rows']}")
     for t, m in rep["review"].items():
         print(f"  review {t}: labeled {m['labeled']}/{m['candidates']}, precision "
-              f"{m['precision']}" + (f" ({m['sample_note']})" if m["sample_note"] else ""))
+              f"{m['precision']} (95% lower bound {m['precision_lower_95']})"
+              + (f" ({m['sample_note']})" if m["sample_note"] else ""))
 
 
 def main(argv=None) -> int:
