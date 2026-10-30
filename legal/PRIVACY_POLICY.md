@@ -18,13 +18,17 @@ estimated market value. During the pilot, access is by invitation only.
 | Your buying area (ZIP code and radius) | showing cars near you | until you change it or delete your account |
 | Saved searches, saved or dismissed cars and their stage (contacted, going to see, bought…), your notes, matches and alert history | the features you use | until you delete them or your account |
 | Your cost assumptions for profit estimates | your estimates | until you change them or delete your account |
+| Cars you analyze and save in your workspace: the vehicle details, VIN and prices you enter, the analysis, your inspection notes, the deal's stage, and any purchase, repair, fee and sale figures you record | showing you your analyses, comparisons and track record | until you delete the deal or your account; private to you, never shown to other users or used in aggregate **[LEGAL REVIEW: any future aggregate use needs a separate opt-in]** |
+| A count of analyses you run each day | enforcing plan limits | with your account |
 | Alert settings: push topic, webhook address, and — only if you turn on text alerts — your phone number | sending your alerts | until you remove them or delete your account |
 | If you list a car: vehicle details, VIN, price, ZIP, condition notes, description, a verified contact email, and your three confirmations (authorized to sell, details accurate, contact may be shown) with their time | publishing your listing and showing buyers how to reach you | until you remove the listing; removal deletes it and everything derived from it, keeping only a record that a listing existed |
 | Server logs: pages requested, IP address, browser, and the signed-in account's email | security and troubleshooting | 14 days for app logs; web-server logs are replaced as they reach a size limit **[owner: confirm]** |
 | Encrypted database backups | recovery | 30 days |
 
-We do not use advertising or analytics trackers, and the app stores no data
-in your browser besides the sign-in cookie.
+We do not use advertising or analytics trackers. Besides the sign-in cookie,
+the app keeps your light/dark display choice in your browser's local storage,
+and — only until you close the tab — unfinished form drafts and list
+preferences in its session storage. None of it is sent to anyone.
 
 ## Cookies
 
@@ -42,6 +46,7 @@ us:
 | Backblaze B2 | encrypted backups (we hold the decryption key, not the server) | nightly |
 | Resend | the email address and message for seller email confirmation | when you list a car |
 | ntfy (ntfy.sh, unless we run our own) | alert text (car, price, link) sent to your push topic | when you turn on push alerts |
+| NHTSA vPIC (U.S. Department of Transportation's public VIN decoder) | the VIN only — no name, email or account | when you decode or analyze a car with a VIN |
 | Twilio | your phone number and alert text | only if text alerts are enabled — **not used in the pilot** |
 | Stripe | payment details (FlipFirst never sees card numbers) | only once paid plans exist — **not used in the pilot** |
 

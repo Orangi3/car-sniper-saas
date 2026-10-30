@@ -26,6 +26,8 @@ DISPLAY_NAMES = {"free": "Free", "starter": "Lite", "pro": "Pro"}
 
 _DEFAULTS: dict[str, dict] = {
     "free": {
+        "analyses_per_day": 20,
+        "opportunities": 10,
         "saved_searches": 0,
         "alerts_per_day": 0,
         "price_drop_alerts": False,
@@ -36,6 +38,8 @@ _DEFAULTS: dict[str, dict] = {
         "webhook": False,
     },
     "starter": {   # Lite
+        "analyses_per_day": 60,
+        "opportunities": 100,
         "saved_searches": 3,
         "alerts_per_day": 25,
         "price_drop_alerts": False,
@@ -46,6 +50,8 @@ _DEFAULTS: dict[str, dict] = {
         "webhook": True,
     },
     "pro": {
+        "analyses_per_day": 200,
+        "opportunities": 1000,
         "saved_searches": 15,
         "alerts_per_day": 100,
         "price_drop_alerts": True,

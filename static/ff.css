@@ -430,7 +430,7 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .page__head h1 { font-size: var(--fs-2xl); }
 .page__head p { margin-top: 4px; color: var(--muted); font-size: var(--fs-sm); }
 
-.tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: grid; grid-template-columns: repeat(5, 1fr);
+.tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: grid; grid-template-columns: repeat(6, 1fr);
           height: calc(var(--tabbar-h) + var(--safe-b)); padding-bottom: var(--safe-b);
           background: color-mix(in srgb, var(--surface) 92%, transparent);
           -webkit-backdrop-filter: saturate(160%) blur(14px); backdrop-filter: saturate(160%) blur(14px);
@@ -562,6 +562,11 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .only-lg { display: none; }
 .only-mobile-pad { height: 64px; }
 @media (min-width: 1024px) { .only-lg { display: block; } .only-mobile-pad { display: none; } }
+@media (min-width: 1024px) { .only-mobile { display: none; } }
+.decision__label { font-size: var(--fs-lg); }
+.table.compare { font-size: var(--fs-sm); }
+.table.compare th[scope="row"] { text-align: left; width: 6.5rem; color: var(--muted); font-weight: 600; }
+.table.compare td, .table.compare thead th { min-width: 6.5rem; vertical-align: top; white-space: normal; }
 .hide-mobile { display: none; }
 .compact { display: none; }
 @media (max-width: 479px) { .full { display: none; } .compact { display: inline; } .hide-xs { display: none; } }

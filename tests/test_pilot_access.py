@@ -49,7 +49,11 @@ def test_pilot_report_counts_without_personal_data(client, world, capsys):
     score_all()
     login(client, "tester@example.com")
     client.post("/api/deals/craigslist:deal/action", json={"action": "contacted"})
+    assert client.post("/api/opportunities", json={"input": {
+        "year": 2015, "make": "Toyota", "model": "Camry", "asking_price": 7000}}).status_code == 201
     r = pilot_report.report(7)
+    assert r["analyze"] == {"analyses": 1, "testers_analyzing": 1, "deals_saved": 1,
+                            "deals_by_stage": {"analyzing": 1}, "outcomes_recorded": 0}
     assert r["testers"]["accounts"] == 1 and r["testers"]["signed_in"] == 1
     from tests.conftest import logout
     logout(client)                                             # sign-out keeps the count

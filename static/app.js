@@ -30,6 +30,16 @@ const FLAGS = {
   relisted: ["Relisted", "warn", "This car was listed before — ask why it didn't sell."],
   low_confidence: ["Low confidence", "warn", "Few or loosely matched comparables. Treat the value as rough."],
   insufficient_data: ["Not enough data", "warn", "Fewer than 3 usable comparables — no reliable value."],
+  flood_damage: ["Flood damage", "danger", "Flood or water damage is mentioned. Electrical and corrosion problems tend to show up later, and many buyers won't touch it."],
+  structural_damage: ["Frame or structural damage", "danger", "Frame, unibody or airbag damage is mentioned. Proper repairs are expensive and resale value drops sharply."],
+  title_missing: ["No title", "danger", "Without a title in the seller's name you may not be able to register or resell the car."],
+  title_lien: ["Lien on the title", "warn", "A lender still has a claim. The seller must pay it off and release the title before you pay."],
+  not_running: ["Doesn't run", "danger", "A car that doesn't run can hide expensive problems — price it as a project."],
+  repairs_not_estimated: ["No repair estimate", "danger", "It needs work, but no repair cost was entered, and the usual allowance can't price a real repair. Get a quote or enter your estimate."],
+  priced_above_market: ["Priced above market", "warn", "The asking price is above the comparable range. Negotiate or pass."],
+  vin_invalid: ["VIN fails validation", "danger", "The VIN's check digit doesn't work out — a typo, or a VIN that was altered. Read it off the car and the title."],
+  vin_mismatch: ["VIN doesn't match", "danger", "The VIN decodes to a different year, make or model than described — a typo or a cloned VIN. Verify before going further."],
+  description_missing: ["No seller description", "warn", "Paste the listing text so title and damage wording can be checked."],
 };
 // A running auction's price is its current bid, never an asking price
 const priceWord = d => (d.is_auction ? "Current bid" : "Asking");
@@ -107,6 +117,10 @@ const ROUTES = [
   [/^#\/discover(?:\/(mine|trusted|risk))?$/, viewDiscover],
   [/^#\/deal\/(.+)$/, viewDeal],
   [/^#\/saved$/, viewSaved],
+  [/^#\/analyze$/, viewAnalyze],
+  [/^#\/deals\/(\d+)$/, viewOpportunity],
+  [/^#\/deals\/(\d+)\/edit$/, viewEditOpportunity],
+  [/^#\/compare\/([\d,]+)$/, viewCompare],
   [/^#\/alerts$/, viewAlerts],
   [/^#\/alerts\/new$/, viewSearchWizard],
   [/^#\/alerts\/search\/(\d+)$/, viewSearchMatches],
@@ -351,6 +365,7 @@ async function viewDeal(m, tok) {
     throw e;
   }
   if (!alive(tok)) return;
+  S.currentDeal = d;
   render(dealDetail(d));
   window.scrollTo(0, 0);
 }
@@ -406,6 +421,7 @@ function dealDetail(d) {
         <div class="card__body"><table class="table">${d.price_history.map(h => html`<tr><td>${String(h.event || "").replace(/_/g, " ")}<span class="sub">${new Date(h.observed_at).toLocaleString()}</span></td><td class="r"><b>${money(h.price)}</b></td></tr>`)}</table></div></section>` : ""}
       <section class="card"><div class="card__head"><h2>${icon("file")}Listing description</h2><span class="xsmall muted">${d.source === "direct" ? "seller-reported" : "from the listing"}</span></div>
         <div class="card__body"><p class="small" style="white-space:pre-line;color:var(--ink-2)">${d.description || "No description provided."}</p></div></section>
+      <button class="btn btn--block only-mobile" type="button" data-analyze>${icon("chart")}Analyze with my numbers</button>
       ${p ? html`<section class="card"><div class="card__head"><h2>${icon("info")}Assumptions &amp; limitations</h2></div>
         <div class="card__body small stack"><ul style="margin:0;padding-left:18px;color:var(--ink-2)">${p.explanation.map(x => html`<li>${x}</li>`)}</ul>
         <p class="muted">${p.disclaimer} FlipFirst doesn't inspect cars or verify titles, ownership or vehicle history.</p>
@@ -422,6 +438,7 @@ function dealDetail(d) {
         <div>${meter(d.confidence, compsLabel(d))}</div>
         <hr class="sep" style="margin:var(--s2) 0">
         ${actions}
+        <button class="btn btn--block" type="button" data-analyze style="margin-top:var(--s2)">${icon("chart")}Analyze with my numbers</button>
         <p class="xsmall muted">Estimates, not guarantees. Inspect the car and check the title before you buy.</p>
       </div>
     </aside>
@@ -469,7 +486,9 @@ function marketSection(d) {
     </div></section>`;
 }
 
-function profitSection(d, p) {
+const SCENARIO_NAME = {conservative: "Low case", base: "Expected", optimistic: "High case"};
+function profitSection(d, p, o) {
+  o = o || {};
   if (!p) return html`<section class="card"><div class="card__head"><h2>${icon("dollar")}Estimated profit</h2></div>
     <div class="card__body"><p class="small muted">No valuation, so no profit estimate.</p></div></section>`;
   const scen = p.scenarios || {};
@@ -488,22 +507,22 @@ function profitSection(d, p) {
   const haircut = mid && base ? Math.round((1 - base.resale / mid) * 1000) / 10 : null;
   const opp = d.opportunity || {};
   return html`<section class="card" aria-labelledby="sec-profit">
-    <div class="card__head"><h2 id="sec-profit">${icon("dollar")}Estimated profit</h2><a class="small" href="#/account/assumptions">Edit assumptions</a></div>
+    <div class="card__head"><h2 id="sec-profit">${icon("dollar")}Estimated profit</h2><a class="small" href="${o.editHref || "#/account/assumptions"}">Edit assumptions</a></div>
     <div class="card__body stack-lg">
       ${keys.length > 1 ? html`<div class="scenarios">${keys.map(k => html`<div class="scenario${k === "base" ? " is-base" : ""}">
-          <div class="scenario__name">${k[0].toUpperCase() + k.slice(1)}</div>
+          <div class="scenario__name">${SCENARIO_NAME[k] || k}</div>
           <div class="scenario__value ${scen[k].profit > 0 ? "pos" : "neg"}">${money(scen[k].profit)}</div>
           <div class="scenario__sub">${scen[k].roi_pct != null ? scen[k].roi_pct + "% ROI" : ""}${scen[k].days_to_sell ? ` · ~${Math.round(scen[k].days_to_sell)} days` : ""}</div></div>`)}</div>`
-        : html`<div class="notice">${icon("info")}<div>Showing the base case. <a href="#/account/plan">Pro</a> adds conservative and optimistic scenarios.</div></div>`}
+        : html`<div class="notice">${icon("info")}<div>Showing the expected case. <a href="#/account/plan">Pro</a> adds low and high cases.</div></div>`}
       <div>
-        <div class="eyebrow" style="margin-bottom:var(--s2)">Base case breakdown</div>
+        <div class="eyebrow" style="margin-bottom:var(--s2)">Expected case breakdown</div>
         <dl class="dl">
-          <dt>Purchase price<small>${d.is_auction ? "at the current bid; the final price will be higher" : n(assum.negotiation_pct) ? `${assum.negotiation_pct}% under asking` : "at asking price"}</small></dt><dd>${money(base.purchase)}</dd>
+          <dt>Purchase price<small>${o.purchaseNote || (d.is_auction ? "at the current bid; the final price will be higher" : n(assum.negotiation_pct) ? `${assum.negotiation_pct}% under asking` : "at asking price")}</small></dt><dd>${money(base.purchase)}</dd>
           <dt>Repairs &amp; reconditioning<small>${[n(c.mechanical) ? `mechanical allowance ${money(c.mechanical)}` : "", n(c.recon) ? `cosmetic ${money(c.recon)}` : ""].filter(Boolean).join(" · ") || "none entered"}</small></dt><dd>${money(repairs)}</dd>
           <dt>Fees, transport &amp; taxes<small>${feeParts || "none entered"}</small></dt><dd>${money(fees)}</dd>
           <dt>Holding cost<small>${base.days_to_sell ? `~${Math.round(base.days_to_sell)} days` : ""}${n(assum.holding_per_day) ? ` at ${money(assum.holding_per_day)}/day` : ""}</small></dt><dd>${money(base.holding)}</dd>
           <dt class="total">Total invested</dt><dd class="total">${money(base.invested)}</dd>
-          <dt>Estimated resale<small>${haircut ? `market value ${money(mid)} less ${haircut}% — asking prices aren't sale prices` : "market value from completed sales"}</small></dt><dd>${money(base.resale)}</dd>
+          <dt>Estimated resale<small>${d.valuation_basis === "user_estimate" ? "your own resale estimate" : haircut ? `market value ${money(mid)} less ${haircut}% — asking prices aren't sale prices` : "market value from completed sales"}</small></dt><dd>${money(base.resale)}</dd>
           <dt class="total">Estimated profit</dt><dd class="total ${base.profit > 0 ? "pos" : "neg"}">${money(base.profit)}</dd>
         </dl>
       </div>
@@ -554,12 +573,380 @@ function riskSection(d) {
     </div></section>`;
 }
 
+/* ---------------- Analyze ---------------- */
+const TITLE_CHOICES = [["clean", "Clean"], ["rebuilt", "Rebuilt"], ["salvage", "Salvage"], ["flood", "Flood"],
+  ["lemon", "Lemon / buyback"], ["lien", "Has a lien"], ["missing", "No title"], ["unknown", "Not sure"]];
+const CONDITION_CHOICES = [["runs_drives", "Runs and drives"], ["needs_work", "Needs work"],
+  ["not_running", "Doesn't run"], ["unknown", "Not sure"]];
+const COST_FIELDS = [["mechanical", "Mechanical repairs", "$"], ["recon", "Cosmetic / detailing", "$"],
+  ["transport", "Transport", "$"], ["title_registration", "Title & registration", "$"], ["sales_tax_pct", "Sales tax", "%"],
+  ["selling_fees", "Selling fees", "$"], ["holding_per_day", "Holding cost per day", "$"], ["days_to_sell", "Days to sell", "days"],
+  ["misc", "Other costs", "$"]];
+const COST_NAME = Object.assign(Object.fromEntries(COST_FIELDS.map(([k, l]) => [k, l])), {transport_per_mile: "Transport (distance)"});
+const DECISION_STYLE = {strong_candidate: ["ok", "check", "profit"], worth_investigating: ["info", "search", "accent"],
+  high_risk: ["bad", "alert", "danger"], insufficient_evidence: ["warn", "help", "warn"]};
+const OPP_STAGES = [["analyzing", "Analyzing"], ["inspecting", "Inspecting"], ["negotiating", "Negotiating"],
+  ["purchased", "Purchased"], ["sold", "Sold"], ["passed", "Passed"]];
+const OPP_STAGE_NAME = Object.fromEntries(OPP_STAGES);
+const ANALYZE_TEXT = ["vin", "make", "model", "trim", "zip", "title_status", "condition", "faults", "description", "composite_id"];
+const ANALYZE_NUM = ["year", "mileage", "asking_price", "offer_price", "resale_estimate", "target_profit"];
+
+function analyzePayload(D) {
+  const n_ = x => (x === "" || x == null ? null : Number(x));
+  const costs = {};
+  COST_FIELDS.forEach(([k]) => { if (D["c_" + k] !== "" && D["c_" + k] != null) costs[k] = Number(D["c_" + k]); });
+  const out = {costs};
+  ANALYZE_TEXT.forEach(k => { out[k] = D[k] || null; });
+  ANALYZE_NUM.forEach(k => { out[k] = n_(D[k]); });
+  return out;
+}
+function inputToDraft(inp) {
+  const D = {};
+  ANALYZE_TEXT.concat(ANALYZE_NUM).forEach(k => { if (inp[k] != null) D[k] = String(inp[k]); });
+  Object.entries(inp.costs || {}).forEach(([k, v]) => { if (v != null) D["c_" + k] = String(v); });
+  return D;
+}
+function draftFromDeal(d) {
+  return inputToDraft({year: d.year, make: d.make, model: d.model, trim: d.trim, mileage: d.odometer,
+    asking_price: d.price, description: d.description, composite_id: d.composite_id,
+    title_status: d.is_salvage ? "unknown" : null});
+}
+
+function analyzeForm(D, eff, editing) {
+  const v = k => (D[k] == null ? "" : D[k]);
+  const fld = (k, label, input, hint) => html`<div class="field"><label class="label" for="a-${k}">${label}</label>${input}${hint ? html`<span class="hint">${hint}</span>` : ""}</div>`;
+  const inp = (k, attrs, ph) => html`<input class="input${k === "vin" ? " input--upper" : ""}" id="a-${k}" data-k="${k}" ${raw(attrs || "")} placeholder="${ph || ""}" value="${v(k)}">`;
+  const usd = (k, ph) => html`<div class="input-group"><span class="prefix">$</span>${inp(k, 'type="number" inputmode="numeric" min="0" step="any"', ph)}</div>`;
+  const sel = (k, opts) => html`<select class="select" id="a-${k}" data-k="${k}">${opts.map(([val, l]) => html`<option value="${val}"${(v(k) || "unknown") === val ? raw(" selected") : ""}>${l}</option>`)}</select>`;
+  const opt = t => raw(`${t} <span class="opt">(optional)</span>`);
+  const ph = k => (eff[k] != null ? String(eff[k]) : "not included");
+  const hasCosts = COST_FIELDS.some(([k]) => v("c_" + k) !== "");
+  return html`<form class="card card--pad stack-lg" id="az" novalidate>
+    ${editing ? html`<div class="notice notice--info">${icon("sliders")}<div>Editing a saved deal — re-running saves the new analysis to it. <a href="#/deals/${editing}" id="a-cancel-edit">Cancel</a></div></div>` : ""}
+    <div><h2>The car</h2>
+      <div class="row" style="align-items:flex-end;gap:var(--s2);margin-top:var(--s3)">
+        <div style="flex:1;min-width:0">${fld("vin", opt("VIN"), inp("vin", 'maxlength="17" autocapitalize="characters" spellcheck="false" autocomplete="off"', "17 characters"))}</div>
+        <button class="btn" type="button" id="a-decode">${icon("search")}Decode</button></div>
+      <div class="small muted" id="a-vinmsg" role="status" style="margin-top:4px"></div>
+      <div class="grid-2" style="margin-top:var(--s3)">${fld("year", "Year", inp("year", 'type="number" inputmode="numeric" min="1950"', "2015"))}
+        ${fld("mileage", "Mileage", html`<div class="input-group">${inp("mileage", 'type="number" inputmode="numeric" min="0"', "128000")}<span class="suffix">mi</span></div>`)}</div>
+      <div class="grid-2" style="margin-top:var(--s3)">${fld("make", "Make", inp("make", 'maxlength="30" autocomplete="off"', "Toyota"))}${fld("model", "Model", inp("model", 'maxlength="40" autocomplete="off"', "Camry"))}</div>
+      <div class="grid-2" style="margin-top:var(--s3)">${fld("trim", opt("Trim"), inp("trim", 'maxlength="30"', "SE"))}
+        ${fld("zip", "ZIP where the car is", inp("zip", 'inputmode="numeric" maxlength="5" autocomplete="postal-code"', (S.territory && S.territory.home_zip) || "35401"))}</div></div>
+    <div><h2>Price</h2>
+      <div class="grid-2" style="margin-top:var(--s3)">${fld("asking_price", "Asking price", usd("asking_price", "6800"))}${fld("offer_price", opt("You expect to pay"), usd("offer_price", "asking price"))}</div>
+      <div class="grid-2" style="margin-top:var(--s3)">${fld("resale_estimate", opt("Your resale estimate"), usd("resale_estimate", ""), "Used only when FlipFirst has no market value.")}
+        ${fld("target_profit", "Profit you want", usd("target_profit", "1000"), "Sets the maximum offer.")}</div></div>
+    <div><h2>Condition and title</h2>
+      <div class="grid-2" style="margin-top:var(--s3)">${fld("title_status", "Title", sel("title_status", TITLE_CHOICES))}${fld("condition", "Condition", sel("condition", CONDITION_CHOICES))}</div>
+      <div style="margin-top:var(--s3)">${fld("faults", opt("Known problems"), html`<textarea class="textarea" id="a-faults" data-k="faults" rows="2" maxlength="1000" placeholder="e.g. check-engine light, transmission slips">${v("faults")}</textarea>`)}</div>
+      <div style="margin-top:var(--s3)">${fld("description", opt("Seller's description"), html`<textarea class="textarea" id="a-description" data-k="description" rows="3" maxlength="4000" placeholder="Paste the listing text — title and damage wording get checked">${v("description")}</textarea>`)}</div></div>
+    <details${raw(hasCosts ? " open" : "")}><summary class="label" style="cursor:pointer">Costs for this car <span class="opt">(blank = your usual assumptions)</span></summary>
+      <div class="grid-2" style="margin-top:var(--s3)">${COST_FIELDS.map(([k, l, unit]) => fld("c_" + k, l, unit === "$" ? usd("c_" + k, ph(k))
+        : html`<div class="input-group">${inp("c_" + k, 'type="number" inputmode="decimal" min="0" step="any"', ph(k))}<span class="suffix">${unit}</span></div>`))}</div>
+      <p class="xsmall muted" style="margin-top:var(--s2)"><a href="#/account/assumptions">Change your usual assumptions</a></p></details>
+    <div class="error-text" id="aerr" role="alert"></div>
+    <div class="row"><button class="btn btn--primary btn--lg" type="submit" id="a-run">${icon("chart")}${editing ? "Re-run and save" : "Analyze"}</button>
+      <div class="spacer"></div><button class="btn btn--ghost" type="button" id="a-clear">Clear form</button></div>
+  </form>`;
+}
+
+function decisionBanner(dec) {
+  const st = DECISION_STYLE[dec.class] || ["info", "info"];
+  return html`<div class="notice notice--${st[0]} decision" role="status">${icon(st[1])}<div><strong class="decision__label">${dec.label}</strong>
+    <ul style="margin:4px 0 0;padding-left:18px">${(dec.reasons || []).map(r => html`<li>${r}</li>`)}</ul></div></div>`;
+}
+function identitySection(a) {
+  const id = a.identity || {}, vin = id.vin || {}, dec = id.decoded, ent = id.entered || {};
+  const mm = Object.fromEntries((id.mismatches || []).map(x => [x.field, x]));
+  const status = {decoded: ["ok", "Decoded by NHTSA"], invalid: ["bad", "Fails validation"],
+    unavailable: ["warn", "Decoder unreachable"], not_found: ["warn", "Not found by NHTSA"]}[vin.status];
+  const extra = dec ? [["body", "Body"], ["drive", "Drive"], ["engine", "Engine"], ["fuel", "Fuel"], ["transmission", "Transmission"]].filter(([k]) => dec[k]) : [];
+  return html`<section class="card" aria-labelledby="sec-id"><div class="card__head"><h2 id="sec-id">${icon("car")}Vehicle identity</h2>
+      ${status ? html`<span class="status status--${status[0]}">${status[1]}</span>` : html`<span class="xsmall muted">no VIN entered</span>`}</div>
+    <div class="card__body stack">
+      ${id.mismatch_message ? html`<div class="notice notice--bad">${icon("alert")}<div><strong>The VIN doesn't match what you entered.</strong> ${id.mismatch_message}. Read the VIN off the car and the title before going further.</div></div>` : ""}
+      ${(vin.errors || []).length ? html`<p class="small warn-text">VIN: ${vin.errors.join("; ")}</p>` : ""}
+      <table class="table"><thead><tr><th scope="col"><span class="sr-only">Field</span></th><th scope="col">You entered</th>${dec ? html`<th scope="col">VIN decode</th>` : ""}</tr></thead>
+        <tbody>${[["year", "Year"], ["make", "Make"], ["model", "Model"], ["trim", "Trim"]].map(([k, l]) => html`<tr><th scope="row">${l}</th><td>${ent[k] || html`<span class="muted">—</span>`}</td>${dec ? html`<td>${dec[k] || html`<span class="muted">—</span>`}${mm[k] ? html` <span class="chip chip--danger">differs</span>` : ""}</td>` : ""}</tr>`)}
+        ${extra.map(([k, l]) => html`<tr><th scope="row">${l}</th><td class="muted">—</td><td>${dec[k]}</td></tr>`)}</tbody></table>
+      ${(id.filled_from_vin || []).length ? html`<p class="xsmall muted">Filled in from the VIN: ${id.filled_from_vin.join(", ")}.</p>` : ""}
+      ${vin.status === "decoded" ? html`<p class="xsmall muted">A VIN decode confirms the factory specification only — not title status, accidents, mileage or ownership. Run a history report before you buy.</p>` : ""}
+    </div></section>`;
+}
+function moneyInSection(a) {
+  const inv = a.investment || {}, c = inv.costs || {};
+  return html`<section class="card" aria-labelledby="sec-in"><div class="card__head"><h2 id="sec-in">${icon("dollar")}Money in</h2></div><div class="card__body">
+    <dl class="dl"><dt>Purchase</dt><dd>${money(inv.purchase)}</dd>
+      ${Object.keys(c).map(k => html`<dt>${COST_NAME[k] || k}</dt><dd>${money(c[k])}</dd>`)}
+      <dt>Holding</dt><dd>${money(inv.holding)}</dd>
+      <dt class="total">Total invested</dt><dd class="total">${money(inv.total)}</dd></dl>
+    <p class="small muted" style="margin-top:var(--s3)">FlipFirst has no market value for this car yet, so profit isn't estimated. To come out ahead you'd need to sell for more than ${money(a.break_even_resale)}. Add your own resale estimate to see profit scenarios.</p></div></section>`;
+}
+function missingSection(a) {
+  const m = a.missing || [];
+  if (!m.length) return "";
+  return html`<section class="card" aria-labelledby="sec-miss"><div class="card__head"><h2 id="sec-miss">${icon("help")}Missing information</h2><span class="xsmall muted">${m.length} item${m.length > 1 ? "s" : ""}</span></div>
+    <div class="card__body"><ul class="small" style="margin:0;padding-left:18px;color:var(--ink-2)">${m.map(x => html`<li>${x.why}</li>`)}</ul></div></section>`;
+}
+function analysisView(a, o) {
+  o = o || {};
+  const p = a.profit_detail, base = p && p.scenarios && p.scenarios.base, mo = a.max_offer || {};
+  const own = a.valuation_basis === "user_estimate";
+  return html`<div class="stack-lg">
+    <section class="card card--pad stack" aria-labelledby="an-title">
+      <div class="row row--between" style="align-items:flex-start;gap:var(--s3);flex-wrap:wrap">
+        <div><div class="eyebrow">${o.saved ? "Saved deal" : "Analysis"}${a.analyzed_at ? " · " + ago(a.analyzed_at) : ""}</div>
+          <h2 id="an-title" style="font-size:var(--fs-2xl)">${a.title}</h2>
+          <div class="deal__meta small">${a.odometer ? html`<span>${icon("gauge")}${num(a.odometer)} mi</span>` : ""}${a.zip ? html`<span>${icon("pin")}ZIP ${a.zip}</span>` : ""}</div></div>
+        ${o.actions || ""}</div>
+      ${decisionBanner(a.decision || {})}
+      <div class="metrics-box"><div class="deal__metrics" style="border-radius:var(--r-md);border:1px solid var(--line)">
+        <div class="metric"><div class="metric__label">${a.offer_price ? "You pay" : "Asking"}</div><div class="metric__value">${money(a.offer_price || a.price)}</div><div class="metric__sub">${a.offer_price ? "asking " + money(a.price) : " "}</div></div>
+        <div class="metric"><div class="metric__label">${own ? "Your resale est." : "Market value"}</div><div class="metric__value">${a.value_mid ? moneyK(a.value_mid) : own ? moneyK(a.user_estimate) : "—"}</div><div class="metric__sub">${a.value_mid ? `${moneyK(a.value_low || a.value_mid)}–${moneyK(a.value_high || a.value_mid)}` : own ? "not market-backed" : "no defensible value"}</div></div>
+        <div class="metric"><div class="metric__label">Expected profit</div><div class="metric__value ${base ? (base.profit > 0 ? "pos" : "neg") : ""}">${base ? money(base.profit) : "—"}</div><div class="metric__sub">${base && base.roi_pct != null ? base.roi_pct + "% ROI" : "needs a resale value"}</div></div>
+      </div></div>
+      <dl class="dl">
+        <dt>Break-even resale<small>what you must sell for to get your money back</small></dt><dd>${money(a.break_even_resale)}</dd>
+        ${mo.expected != null ? html`<dt>Maximum offer for ${money(a.target_profit)} profit<small>${own ? "at your resale estimate" : "at the expected resale"}</small></dt><dd>${money(mo.expected)}</dd>` : ""}
+        ${mo.conservative != null ? html`<dt>Maximum offer, low case<small>if it only sells at the low-case price</small></dt><dd>${money(mo.conservative)}</dd>` : ""}
+        ${a.margin_of_safety_pct != null ? html`<dt>Margin of safety<small>how far resale can fall before you lose money</small></dt><dd class="${a.margin_of_safety_pct > 0 ? "pos" : "neg"}">${a.margin_of_safety_pct}%</dd>` : ""}
+      </dl>
+    </section>
+    ${identitySection(a)}
+    ${own ? html`<div class="notice notice--warn">${icon("alert")}<div><strong>No market value found.</strong> Profit uses your resale estimate of ${money(a.user_estimate)}; FlipFirst has no comparables to back it.</div></div>` : ""}
+    ${marketSection(a)}
+    ${p ? profitSection(a, p, {purchaseNote: a.offer_price ? "what you expect to pay" : "at the asking price", editHref: o.editHref || "#/analyze"}) : moneyInSection(a)}
+    ${a.freshness ? html`<p class="xsmall muted" style="margin:calc(-1 * var(--s3)) 0 0">Comparables last confirmed ${a.freshness.oldest.slice(0, 10)} to ${a.freshness.newest.slice(0, 10)}.</p>` : ""}
+    ${compsSection(a)}
+    ${riskSection(a)}
+    ${missingSection(a)}
+    <section class="card" aria-labelledby="sec-data"><div class="card__head"><h2 id="sec-data">${icon("database")}Data used</h2></div><div class="card__body small stack">
+      <ul style="margin:0;padding-left:18px;color:var(--ink-2)">${(a.data_used || []).map(x => html`<li>${x}</li>`)}</ul>
+      <p class="muted">${a.disclaimer}</p></div></section>
+  </div>`;
+}
+
+async function viewAnalyze(m, tok) {
+  setNav("analyze"); topbar(); S.lastList = "#/analyze";
+  const editing = store.get("ff-analyze-edit");
+  const D = store.get("ff-analyze-draft") || {};
+  let eff = {};
+  try { eff = (await api("/api/me/profit_settings")).effective || {}; } catch (e) {}
+  if (!alive(tok)) return;
+  render(html`<div class="narrow stack-lg"><div class="page__head"><div><h1>Analyze a car</h1>
+      <p>Any car you found — on a lot, from a friend or on any site. You get an identity check, the market value when FlipFirst has comparables, your profit math and the risks.</p></div></div>
+    ${analyzeForm(D, eff, editing)}<div id="a-result"></div></div>`);
+  const read = () => { $$("#az [data-k]").forEach(i => { D[i.dataset.k] = i.value.trim(); }); store.set("ff-analyze-draft", D); };
+  $("#az").addEventListener("input", read);
+  $("#az").addEventListener("change", read);
+  const cancel = $("#a-cancel-edit");
+  if (cancel) cancel.onclick = () => { store.del("ff-analyze-edit"); store.del("ff-analyze-draft"); };
+  $("#a-clear").onclick = () => { store.del("ff-analyze-draft"); store.del("ff-analyze-edit"); S.lastAnalysis = null; route(); };
+  $("#a-decode").onclick = async e => {
+    read();
+    const msg = $("#a-vinmsg"), b = e.currentTarget;
+    if (!D.vin) { msg.textContent = "Enter a VIN first."; return; }
+    busy(b, true);
+    try {
+      const r = await post("/api/analyze/vin", {vin: D.vin}), d = r.decoded || {};
+      ["year", "make", "model", "trim"].forEach(k => { if (d[k] && !D[k]) { D[k] = String(d[k]); $("#a-" + k).value = D[k]; } });
+      store.set("ff-analyze-draft", D);
+      msg.textContent = r.decoded ? `NHTSA: ${[d.year, d.make, d.model, d.trim].filter(Boolean).join(" ")}${d.body ? " · " + d.body : ""}` : (r.vin.errors || []).join("; ");
+    } catch (x) { msg.textContent = ((x.body && x.body.vin && x.body.vin.errors) || [x.message]).join("; "); }
+    busy(b, false);
+  };
+  $("#az").onsubmit = async e => {
+    e.preventDefault(); read();
+    const err = $("#aerr"); err.textContent = "";
+    if (!D.asking_price) { err.textContent = "Enter the asking price."; $("#a-asking_price").focus(); return; }
+    if (!D.vin && !(D.year && D.make && D.model)) { err.textContent = "Enter the year, make and model — or a VIN."; return; }
+    const b = $("#a-run"); busy(b, true);
+    try {
+      if (editing) {
+        const o = await api(`/api/opportunities/${editing}`, {method: "PATCH", body: JSON.stringify({input: analyzePayload(D)})});
+        store.del("ff-analyze-edit"); store.del("ff-analyze-draft");
+        toast("Saved the new analysis.", {kind: "ok"}); go(`#/deals/${o.id}`); return;
+      }
+      const a = await post("/api/analyze", analyzePayload(D));
+      if (!alive(tok)) return;
+      S.lastAnalysis = a; paintAnalysis(a, D);
+    } catch (x) { err.textContent = x.message; }
+    busy(b, false);
+  };
+  if (S.lastAnalysis && !editing) paintAnalysis(S.lastAnalysis, D, true);
+}
+function paintAnalysis(a, D, quiet) {
+  const box = $("#a-result"); if (!box) return;
+  setHTML(box, analysisView(a, {actions: html`<button class="btn btn--primary" type="button" id="a-save">${icon("bookmark")}Save to my deals</button>`}));
+  if (!quiet) box.scrollIntoView({behavior: "smooth", block: "start"});
+  $("#a-save").onclick = async ev => {
+    const b = ev.currentTarget; busy(b, true);
+    try {
+      const o = await post("/api/opportunities", {input: analyzePayload(D)});
+      store.del("ff-analyze-draft"); S.lastAnalysis = null;
+      toast("Saved to your deals.", {kind: "ok"}); go(`#/deals/${o.id}`);
+    } catch (e) { busy(b, false); if (!planPrompt(e, "Saving more deals")) toast(e.message, {kind: "bad"}); }
+  };
+}
+
+function outcomeCard(o) {
+  const r = o.realized, est = o.est_profit;
+  const f = (k, l, date) => html`<div class="field"><label class="label" for="o-${k}">${l}</label>${date
+    ? html`<input class="input" type="date" id="o-${k}" data-o="${k}" value="${o[k] || ""}">`
+    : html`<div class="input-group"><span class="prefix">$</span><input class="input" type="number" inputmode="numeric" min="0" id="o-${k}" data-o="${k}" value="${o[k] == null ? "" : o[k]}"></div>`}</div>`;
+  return html`<section class="card" aria-labelledby="sec-out"><div class="card__head"><h2 id="sec-out">${icon("handshake")}What actually happened</h2><span class="xsmall muted">recorded by you · private</span></div>
+    <div class="card__body stack">
+      <div class="grid-2">${f("purchase_price", "Purchase price")}${f("purchased_on", "Bought on", true)}</div>
+      <div class="grid-2">${f("repair_spent", "Repairs spent")}${f("fees_spent", "Fees and other costs")}</div>
+      <div class="grid-2">${f("sale_price", "Sale price")}${f("sold_on", "Sold on", true)}</div>
+      <div class="error-text" id="o-out-err" role="alert"></div>
+      <div class="row"><div class="spacer"></div><button class="btn btn--primary" type="button" id="o-out-save">Save outcome</button></div>
+      ${r ? html`<dl class="dl"><dt>Total invested</dt><dd>${money(r.invested)}</dd>
+          <dt class="total">Realized profit</dt><dd class="total ${r.profit > 0 ? "pos" : "neg"}">${money(r.profit)}</dd>
+          <dt>Realized ROI</dt><dd>${r.roi_pct != null ? r.roi_pct + "%" : "—"}</dd>
+          ${r.holding_days != null ? html`<dt>Days held</dt><dd>${r.holding_days}</dd>` : ""}
+          ${est != null ? html`<dt>Analyze expected<small>at the latest analysis</small></dt><dd>${money(est)}</dd><dt>Difference</dt><dd class="${r.profit - est >= 0 ? "pos" : "neg"}">${money(r.profit - est)}</dd>` : ""}</dl>
+        <p class="xsmall muted">Recorded by ${r.recorded_by}.</p>`
+        : html`<p class="xsmall muted">When you buy and sell this car, record it here to see your real profit next to the estimate.</p>`}
+    </div></section>`;
+}
+async function viewOpportunity(m, tok) {
+  setNav("saved"); topbar({back: true, title: "Deal workspace"});
+  render(html`<div class="narrow stack-lg"><div class="skel" style="height:300px;border-radius:16px"></div></div>`);
+  let o;
+  try { o = await api(`/api/opportunities/${m[1]}`); }
+  catch (e) {
+    if (!alive(tok)) return;
+    if (e.status === 404) return render(html`<div class="card">${emptyState("search", "Deal not found", "It may have been deleted.", html`<a class="btn btn--primary" href="#/saved">Your deals</a>`)}</div>`);
+    throw e;
+  }
+  if (!alive(tok)) return;
+  const stage = html`<label class="sr-only" for="o-stage">Stage</label><select class="select" id="o-stage" style="width:auto">${OPP_STAGES.map(([k, l]) => html`<option value="${k}"${o.status === k ? raw(" selected") : ""}>${l}</option>`)}</select>`;
+  render(html`<div class="narrow stack-lg">
+    ${analysisView(o.analysis || {}, {saved: true, editHref: `#/deals/${o.id}/edit`, actions: html`<div class="row" style="gap:var(--s2);flex-wrap:wrap">${stage}
+      <button class="btn" type="button" id="o-rerun" title="Analyze again with today's comparables">${icon("refresh")}Re-run</button>
+      <a class="btn" href="#/deals/${o.id}/edit">${icon("sliders")}Edit inputs</a></div>`})}
+    <section class="card" aria-labelledby="sec-notes"><div class="card__head"><h2 id="sec-notes">${icon("file")}Inspection notes</h2><span class="xsmall muted">private to you</span></div>
+      <div class="card__body stack"><label class="sr-only" for="o-notes">Inspection notes</label>
+        <textarea class="textarea" id="o-notes" rows="4" maxlength="4000" placeholder="What you found: tires, leaks, warning lights, rust, title in hand, the seller's story…">${o.notes || ""}</textarea>
+        <div class="row"><span class="xsmall muted" id="o-notes-msg" role="status"></span><div class="spacer"></div><button class="btn" type="button" id="o-notes-save">Save notes</button></div></div></section>
+    ${outcomeCard(o)}
+    <div class="row"><div class="spacer"></div><button class="btn btn--ghost" type="button" id="o-del">${icon("trash")}Delete this deal</button></div>
+  </div>`);
+  const patch = body => api(`/api/opportunities/${o.id}`, {method: "PATCH", body: JSON.stringify(body)});
+  $("#o-stage").onchange = async e => {
+    try { await patch({status: e.target.value}); toast(`Moved to ${OPP_STAGE_NAME[e.target.value]}.`, {kind: "ok"}); }
+    catch (x) { toast(x.message, {kind: "bad"}); }
+  };
+  $("#o-rerun").onclick = async e => {
+    busy(e.currentTarget, true);
+    try { await patch({input: o.input}); toast("Re-analyzed with current data.", {kind: "ok"}); route(); }
+    catch (x) { busy(e.currentTarget, false); toast(x.message, {kind: "bad"}); }
+  };
+  $("#o-notes-save").onclick = async e => {
+    busy(e.currentTarget, true);
+    try { await patch({notes: $("#o-notes").value}); $("#o-notes-msg").textContent = "Saved."; }
+    catch (x) { $("#o-notes-msg").textContent = x.message; }
+    busy(e.currentTarget, false);
+  };
+  $("#o-out-save").onclick = async e => {
+    const body = {}; $$("[data-o]").forEach(i => { body[i.dataset.o] = i.value; });
+    busy(e.currentTarget, true);
+    try { await patch(body); toast("Outcome saved.", {kind: "ok"}); route(); }
+    catch (x) { busy(e.currentTarget, false); $("#o-out-err").textContent = x.message; }
+  };
+  $("#o-del").onclick = async () => {
+    if (!confirm("Delete this deal and its notes? This can't be undone.")) return;
+    try { await api(`/api/opportunities/${o.id}`, {method: "DELETE"}); toast("Deleted."); go("#/saved"); }
+    catch (x) { toast(x.message, {kind: "bad"}); }
+  };
+}
+async function viewEditOpportunity(m, tok) {
+  const o = await api(`/api/opportunities/${m[1]}`);
+  if (!alive(tok)) return;
+  store.set("ff-analyze-draft", inputToDraft(o.input || {})); store.set("ff-analyze-edit", o.id);
+  location.replace("#/analyze");
+}
+
+function oppRow(it) {
+  const st = DECISION_STYLE[it.decision];
+  return html`<li class="list__row" style="align-items:center">
+    <input type="checkbox" class="w-pick" value="${it.id}" aria-label="Compare ${it.title}">
+    <a class="list__main" href="#/deals/${it.id}" style="text-decoration:none;color:inherit">
+      <div class="list__title">${it.title}</div>
+      <div class="list__sub" style="display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:4px;align-items:center">
+        <span class="chip">${OPP_STAGE_NAME[it.status] || it.status}</span>
+        ${it.decision_label ? html`<span class="chip chip--${st ? st[2] : ""}">${it.decision_label}</span>` : ""}
+        <span>${money(it.offer_price || it.asking_price)}</span><span>updated ${ago(it.updated_at)}</span></div></a>
+    <div style="text-align:right;flex:0 0 auto">${it.realized ? html`<b class="num ${it.realized.profit > 0 ? "pos" : "neg"}">${money(it.realized.profit)}</b><div class="list__sub">realized</div>`
+      : it.est_profit != null ? html`<b class="num ${it.est_profit > 0 ? "pos" : "neg"}">${money(it.est_profit)}</b><div class="list__sub">expected</div>`
+      : html`<span class="muted small">no estimate</span>`}</div></li>`;
+}
+async function paintWorkspace(tok) {
+  const box = $("#dbody");
+  setHTML(box, html`<div class="feed" aria-busy="true">${skeletons(2)}</div>`);
+  let w;
+  try { w = await api("/api/opportunities"); } catch (e) { if (alive(tok)) setHTML(box, errorBlock(e)); return; }
+  if (!alive(tok)) return;
+  if (!w.items.length) return setHTML(box, html`<div class="card">${emptyState("chart", "No analyzed deals yet",
+    "Analyze any car you find, then save it here to keep inspection notes, track your offer and record what you actually made.",
+    html`<a class="btn btn--primary" href="#/analyze">Analyze a car</a>`)}</div>`);
+  const h = w.history || {};
+  setHTML(box, html`
+    ${h.completed_flips ? html`<section class="card card--pad" style="margin-bottom:var(--s4)" aria-label="Your track record"><div class="eyebrow">Your track record</div>
+      <div class="row row--wrap" style="gap:var(--s6);margin-top:var(--s2)">
+        <div class="metric"><div class="metric__label">Completed flips</div><div class="metric__value">${h.completed_flips}</div></div>
+        <div class="metric"><div class="metric__label">Realized profit</div><div class="metric__value ${h.realized_profit > 0 ? "pos" : "neg"}">${money(h.realized_profit)}</div></div>
+        <div class="metric"><div class="metric__label">Avg. ROI</div><div class="metric__value">${h.avg_roi_pct != null ? h.avg_roi_pct + "%" : "—"}</div></div>
+        <div class="metric"><div class="metric__label">Avg. days held</div><div class="metric__value">${h.avg_holding_days != null ? h.avg_holding_days : "—"}</div></div>
+        ${h.avg_estimate_error != null ? html`<div class="metric"><div class="metric__label">Actual vs. estimate</div><div class="metric__value ${h.avg_estimate_error >= 0 ? "pos" : "neg"}">${money(h.avg_estimate_error)}</div><div class="metric__sub">average per flip</div></div>` : ""}
+      </div><p class="xsmall muted" style="margin-top:var(--s2)">${h.note}</p></section>` : ""}
+    <div class="row" style="margin-bottom:var(--s3)"><span class="small muted">${w.items.length} of ${w.limit} deals · select 2–3 to compare</span><div class="spacer"></div>
+      <button class="btn" type="button" id="w-compare" disabled>${icon("layers")}Compare</button></div>
+    <ul class="list card" style="list-style:none;margin:0;padding:0">${w.items.map(oppRow)}</ul>`);
+  const picks = () => $$(".w-pick:checked").map(x => x.value);
+  box.onchange = () => { const n_ = picks().length; $("#w-compare").disabled = n_ < 2 || n_ > 3; };
+  $("#w-compare").onclick = () => go(`#/compare/${picks().join(",")}`);
+}
+async function viewCompare(m, tok) {
+  setNav("saved"); topbar({back: true, title: "Compare deals"});
+  const ids = m[1].split(",").filter(Boolean).slice(0, 3);
+  const list = await Promise.all(ids.map(id => api(`/api/opportunities/${id}`)));
+  if (!alive(tok)) return;
+  const rows = [
+    ["Decision", o => o.decision_label || "—"],
+    ["You pay", o => money(o.offer_price || o.asking_price)],
+    ["Market value", o => (o.value_mid ? money(o.value_mid) : o.valuation_basis === "user_estimate" ? "your estimate only" : "none")],
+    ["Expected profit", o => (o.est_profit != null ? money(o.est_profit) : "—")],
+    ["Low-case profit", o => (o.est_profit_conservative != null ? money(o.est_profit_conservative) : "—")],
+    ["Expected ROI", o => (o.est_roi_pct != null ? o.est_roi_pct + "%" : "—")],
+    ["Break-even resale", o => money(o.break_even_resale)],
+    ["Margin of safety", o => (o.margin_of_safety_pct != null ? o.margin_of_safety_pct + "%" : "—")],
+    ["Mileage", o => (o.mileage ? num(o.mileage) + " mi" : "—")],
+    ["Risks", o => (o.risk_flags || []).filter(f => FLAGS[f] && FLAGS[f][1] === "danger").map(f => FLAGS[f][0]).join(", ") || "none blocking"],
+    ["Stage", o => OPP_STAGE_NAME[o.status] || o.status],
+    ["Realized profit", o => (o.realized ? money(o.realized.profit) : "—")],
+  ];
+  render(html`<div class="card"><div class="card__body" style="overflow-x:auto">
+    <table class="table compare"><thead><tr><th scope="col"><span class="sr-only">Measure</span></th>${list.map(o => html`<th scope="col"><a href="#/deals/${o.id}">${o.title}</a></th>`)}</tr></thead>
+      <tbody>${rows.map(([l, f]) => html`<tr><th scope="row">${l}</th>${list.map(o => html`<td>${f(o)}</td>`)}</tr>`)}</tbody></table>
+    <p class="xsmall muted" style="margin-top:var(--s3)">From each deal's latest analysis. Estimates, not guarantees; realized figures are as you recorded them.</p></div></div>`);
+}
+
 /* ---------------- Saved ---------------- */
 async function viewSaved(m, tok) {
   setNav("saved"); topbar(); S.lastList = "#/saved";
+  const tab = store.get("ff-deals-tab") || "analyzed";
+  render(html`<div class="page__head"><div><h1>Your deals</h1><p>Cars you analyzed and listings you saved — private to you.</p></div>
+      <a class="btn btn--primary" href="#/analyze">${icon("plus")}Analyze a car</a></div>
+    <div class="seg" role="tablist" aria-label="Deal lists" id="dtabs" style="margin-bottom:var(--s4)">
+      ${[["analyzed", "Analyzed"], ["listings", "Saved listings"]].map(([k, l]) => html`<button class="seg__btn" role="tab" type="button" data-dtab="${k}" aria-selected="${k === tab ? "true" : "false"}">${l}</button>`)}</div>
+    <div id="dbody"></div>`);
+  $("#dtabs").onclick = e => { const b = e.target.closest("[data-dtab]"); if (b) { store.set("ff-deals-tab", b.dataset.dtab); route(); } };
+  if (tab === "analyzed") return paintWorkspace(tok);
   const stage = store.get("ff-stage") || "all";
-  render(html`<div class="page__head"><div><h1>Saved deals</h1><p>Track the cars you're working, from first contact to purchase.</p></div></div>
-    <div class="seg" role="tablist" aria-label="Deal stage" id="stages" style="margin-bottom:var(--s4)"></div>
+  setHTML($("#dbody"), html`<div class="seg" role="tablist" aria-label="Deal stage" id="stages" style="margin-bottom:var(--s4)"></div>
     <div id="feed" class="feed" aria-busy="true">${skeletons(2)}</div>`);
   let rows;
   try { rows = await api("/api/deals?feed=saved&limit=100"); }
@@ -573,9 +960,9 @@ async function viewSaved(m, tok) {
     const list = st === "all" ? rows : rows.filter(r => r.user_status === st);
     $("#feed").setAttribute("aria-busy", "false");
     setHTML($("#feed"), list.length ? html`${list.map(d => dealCard(d, {stage: true}))}`
-      : html`<div class="card" style="grid-column:1/-1">${emptyState("bookmark", "No saved deals yet", hasPlan("starter")
-          ? "Tap the bookmark on any deal to save it here and track it through contact, negotiation and purchase."
-          : "Saving deals is part of the Lite and Pro plans.",
+      : html`<div class="card" style="grid-column:1/-1">${emptyState("bookmark", "No saved listings yet", hasPlan("starter")
+          ? "Tap the bookmark on any deal in Discover to save it here and track it through contact, negotiation and purchase."
+          : "Saving listings from Discover is part of the Lite and Pro plans. Analyzed deals are free.",
           html`<a class="btn btn--primary" href="${hasPlan("starter") ? "#/discover" : "#/account/plan"}">${hasPlan("starter") ? "Browse deals" : "See plans"}</a>`)}</div>`);
   };
   paint(cur);
@@ -1232,6 +1619,8 @@ document.addEventListener("click", e => {
   if (back) { e.preventDefault(); goBack(); return; }
   const so = e.target.closest("[data-signout]");
   if (so) { e.preventDefault(); signOut(); return; }
+  const an = e.target.closest("[data-analyze]");
+  if (an && S.currentDeal) { e.preventDefault(); store.set("ff-analyze-draft", draftFromDeal(S.currentDeal)); store.del("ff-analyze-edit"); S.lastAnalysis = null; go("#/analyze"); return; }
   const retry = e.target.closest("[data-retry]");
   if (retry) { e.preventDefault(); route(); return; }
   const cp = e.target.closest("[data-copy]");

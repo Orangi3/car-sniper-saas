@@ -60,6 +60,15 @@ territory by territory.
 6. How quickly do new private listings and price changes appear?
 7. Is there pilot or startup pricing for the first 3 months, before we
    charge users?
+8. On-demand use: when a user asks FlipFirst to analyze one car, may we
+   call the Price API for that car and show the result to that user? May
+   the value stay in the user's private saved deal, and for how long? Your
+   docs list franchise/independent dealer types only: is there a
+   private-party value?
+9. Is comparing a user's asking price with your predicted price "price
+   modelling" under the clause about AI training or competing datasets?
+10. Which terms govern our use (website terms, API agreement or data-feed
+    terms), and what is the per-call price above the plan's included calls?
 
 Thank you — I'm happy to walk through the product on a call.
 

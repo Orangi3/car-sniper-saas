@@ -8,12 +8,12 @@ What a deletion removes:
   * the user's seller listings, through seller_listings.remove() (listing,
     valuation, price history, other buyers' saved copies and matches)
   * then, in one transaction: their jobs, usage events, sessions, saved
-    searches and deals, matches, alert history, seller contacts and
-    verifications, subscription mirrors and listing tombstones (deleted
-    explicitly — never relying on foreign-key cascades), the name on the
-    invitation they used, Stripe webhook payloads that mention their email
-    or customer id (redacted; the event id stays for idempotency), and the
-    users row
+    searches and deals, analyzed deals (opportunities), matches, alert
+    history, seller contacts and verifications, subscription mirrors and
+    listing tombstones (deleted explicitly — never relying on foreign-key
+    cascades), the name on the invitation they used, Stripe webhook
+    payloads that mention their email or customer id (redacted; the event
+    id stays for idempotency), and the users row
 
 Refused: an account with a subscription that may still bill (cancel it in
 Stripe first — Stripe keeps its own billing records), and the last admin.
@@ -28,7 +28,7 @@ import sys
 LIVE_SUBSCRIPTION = ("active", "trialing", "past_due", "unpaid", "incomplete")
 _USER_TABLES = ("jobs", "usage_events", "sessions", "saved_searches", "saved_v2",
                 "user_matches", "user_alerts", "seller_contacts", "contact_verifications",
-                "subscriptions")
+                "subscriptions", "opportunities")
 
 
 class Refused(Exception):

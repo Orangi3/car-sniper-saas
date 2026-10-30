@@ -16,6 +16,7 @@ Applies to the owner and anyone given server or database access.
 | Data | Retention | Mechanism |
 |---|---|---|
 | Accounts and their data | until deleted | `python -m accounts delete EMAIL --yes` (dry run without `--yes`) |
+| Analyzed deals (workspace) | until the user deletes the deal or the account | the user's Delete button; account deletion. Private: no admin screen shows them; read them only to answer that user's own support request |
 | Sessions | 30 days | expiry + cleanup |
 | Failed sign-in counters | minutes | deleted as newer attempts arrive |
 | Seller listings | until removed; hidden after 30 days unconfirmed | seller `Remove` / admin removal deletes derived rows; **[owner decision]** delete hidden listings after […] days |

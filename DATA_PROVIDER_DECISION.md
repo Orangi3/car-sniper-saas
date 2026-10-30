@@ -57,6 +57,85 @@ Also checked, not recommended now:
    value them through the vendor from step 1 (or VinAudit by quote).
 4. Nothing unlicensed: Craigslist, Facebook Marketplace and similar stay off.
 
+## On-demand valuation for Analyze (research 2026-10-30)
+
+Analyze, unlike Discover, values a car only when a user asks. Some providers
+license exactly that kind of use ("tied to a live query or user-driven
+interaction", in MarketCheck's terms). Sources are short excerpts of official
+pages found by search (direct fetches were blocked from the build
+environment) plus third-party pages, marked **3P**. Nothing below is a quote
+or a grant of rights.
+
+| Provider | What it gives | Published price | Rights as written | Fit |
+|---|---|---|---|---|
+| NHTSA vPIC | VIN decode (make, model, trim, body, drive, engine); 50-VIN batches; database download | free, no registration | commercial use and caching not stated; "automated traffic rate control" | **in use** for identity, cached 30 days |
+| MarketCheck Price API | predicted price for **dealer types franchise/independent only** (no private-party value) | $0.07 / $0.09 / $0.13 per call (Base / Premium / Plus); FSBO search $0.01; Free tier 500 calls/mo within 100 mi; Basic $299/mo | "display and use results within your application"; use "tied to a live query or user-driven interaction"; no persisting "substantial portions" outside normal application use; no competing datasets or AI training | best fit for tier 2 below, labeled a dealer-retail anchor, **after written permission** |
+| VinAudit Market Values | value by VIN or year/make/model/trim: mean, range, count; docs list retail, wholesale and trade-in (one product page also says private party) | self-service $100/mo + $0.10 per query; 100-query trial | display, caching and attribution not stated | alternative to MarketCheck; ask in writing |
+| Black Book, J.D. Power, Kelley Blue Book | private-party values (Black Book, KBB) | quote only | not public; KBB requires approval for consumer-facing display | later, if volume justifies an enterprise contract |
+| Edmunds | — | — | open API retired in 2018 | not available |
+| CarsXE, Vehicle Databases | wholesale/retail/trade-in values; no private-party value found | CarsXE from $40.83/mo (annual); Vehicle Databases by credit (**3P** overage figures) | not stated; resellers of other providers' data | only if they show their upstream licence |
+| Auto.dev | VIN decode, dealer listings | 1,000 free calls/mo; plans $299/$599 | "solely for your internal business purposes" | **not usable** for showing customers |
+| Manheim MMR | wholesale auction values | not published; dealer access after review | internal valuation use; no derivative products or display outside an authorized instance; a value's licence expires 24 h after the call | **not usable** |
+
+### Recommended hybrid (each source does only what it's licensed to do)
+
+1. **Identity: NHTSA vPIC.** Free, built.
+2. **Value, tier 1: comparables FlipFirst already holds** (licensed listings
+   and FlipFirst sellers). $0 per analysis, built. When there are fewer than
+   three, Analyze shows no value.
+3. **Value, tier 2 (not built; needs written permission).** One on-demand,
+   user-initiated licensed valuation, only when tier 1 is insufficient:
+   - metered by the plan's daily analysis limit;
+   - MarketCheck Price, labeled "dealer-retail estimate", gets the existing
+     dealer-to-private haircut; VinAudit is the alternative.
+   - Build it (an adapter of about a day) once the agreement allows showing
+     the value to subscribers and keeping it in the user's saved deal.
+4. **Discover listings: MarketCheck private sellers, or eBay with
+   permission.** Built and gated.
+5. **Original inventory: FlipFirst sellers and dealers.** Built. This is the
+   only source whose cost stays at zero as volume grows.
+
+### Cost per completed valuation (ESTIMATES)
+
+Assume 15 analyses per active user per month, and that tier 2 is needed for
+60% of them; `pilot_report` measures the real numbers. Then
+15 × 0.6 = 9 paid calls per user per month:
+
+| Users | MarketCheck Price Base ($0.07) | VinAudit ($100/mo + $0.10) |
+|---:|---:|---:|
+| 10 | $6 | $109 |
+| 100 | $63 | $190 |
+| 1,000 | $630 | $1,000 |
+| 10,000 | $6,300 | $9,100 |
+
+MarketCheck figures are per-call fees only. Add the plan on top: the Free
+tier (500 calls a month, if commercial use is allowed there) or Basic
+($299/mo). Per active user that's $0.63/month in call fees on MarketCheck
+Base, against $2.99–$9.99 plans. Caching one value per VIN for repeat lookups (only if permitted)
+lowers it further.
+
+### Questions to get answered in writing before tier 2
+
+- **MarketCheck** (add to `outreach/MARKETCHECK_REQUEST.md` before sending):
+  1. May Price and FSBO results be shown to paying subscribers on the
+     Free / Basic plans?
+  2. What do "normal application use" and "substantial portions" mean? In
+     particular, may a user's saved deal keep the value we showed them, and
+     for how long?
+  3. Is comparing a user's asking price to your value "price modelling"
+     under the AI-training clause?
+  4. Which terms govern: website, API agreement, or data-feed terms?
+  5. What is the overage price per call? The radius cap per plan? Any
+     attribution requirement?
+- **VinAudit:**
+  1. Is a private-party value returned?
+  2. What is the basis: asking prices, inferred sales or completed sales;
+     over what dates; with what minimum count?
+  3. May values be shown to subscribers and stored per VIN, and for how
+     long? What attribution is required?
+  4. Are no-match queries billed?
+  5. What is the error for $2k–$15k cars more than 10 years old?
+
 ## Ranked matrix (reproducible)
 
 Generated by `python economics/provider_matrix.py`; weights and every

@@ -62,6 +62,53 @@ licensed data (`FIRST_LIVE_TEST.md`).
 | Duplicate listings | VIN / cross-post collapse; one notification per car | `test_same_vin_and_cross_posts_collapse_to_one`, `test_same_vin_on_two_sources_notifies_once`; benchmark `dup-heavy-market` |
 | Asking price presented as a sale | separate evidence class and labels end to end | `test_asking_comps_never_labelled_as_sales`, `test_asking_prices_are_labeled_as_asking_end_to_end` |
 
+## Analyze: cars users find themselves (`analyze.py`)
+
+The same engine values a car a user types in (any source, no ingestion):
+
+1. **Identity.** What the user entered is checked against the free NHTSA vPIC
+   VIN decode. A failed check digit (`vin_invalid`) or a different year,
+   make or model (`vin_mismatch`) blocks the car. A VIN can fill in the
+   year, make and model when the user left them blank.
+2. **Value.** `valuation.value_listing` runs on comparables already in
+   FlipFirst that `/api/deals` may show. Those are licensed sources and
+   FlipFirst sellers, within each source's display window (eBay: 6 h).
+   Analyze makes no sold-price lookups and no third-party listing calls.
+   Fewer than three usable comparables means **no value**; nothing is
+   modeled or invented.
+3. **Profit.** `profit.compute` runs from the price the user expects to pay,
+   their costs for this car on top of their saved assumptions, and either:
+   - the market value, with the usual asking-to-sale haircut; or
+   - the user's own resale estimate, labeled as theirs, with no haircut,
+     since it is already a sale price.
+
+   With neither, profit isn't computed. The user still gets:
+   - **break-even resale**: total money in;
+   - **maximum offer**: the price that leaves the target profit;
+   - **margin of safety**: how far resale can fall before a loss.
+4. **Risks.** The title and condition the user chose, plus their fault notes
+   and pasted description, are checked with the same negation-aware patterns
+   as listings, and two more: flood and structural/airbag. Other checks:
+   - implausible mileage (shared with Discover);
+   - a price far below or above the comparables;
+   - scam wording;
+   - "needs work" with no repair estimate.
+5. **Decision.** Thresholds are constants in `analyze.py`:
+
+| Class | Rule |
+|---|---|
+| High risk | any blocking risk, or the expected case loses money |
+| Insufficient evidence | no market value and no resale estimate of the user's |
+| Strong candidate | market value at medium/high confidence, no blocking risk, low-case profit ≥ $1,000, expected ROI ≥ 15 %, margin of safety ≥ 10 % |
+| Worth investigating | everything else that makes money in the expected case |
+
+A user's own estimate never yields "strong candidate". Every analysis lists:
+- the data it used;
+- the information still missing;
+- the reasons for its class.
+
+Tests: `tests/test_analyze.py`, run on SQLite and PostgreSQL, with SIMULATED comparables.
+
 ## Benchmark (SIMULATED)
 
 `python benchmarks/run_benchmark.py`: 39 synthetic cases labeled by the
