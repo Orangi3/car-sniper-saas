@@ -307,7 +307,12 @@ def _normalize_listing(l: NormalizedListing) -> None:
 # ---------- Opportunity assessment ----------------------------------------
 
 BLOCKING_FLAGS = {"scam_signals", "too_good_to_be_true", "branded_title", "needs_work",
-                  "auction_bid"}
+                  "auction_bid", "mileage_suspect"}
+# An odometer far below normal driving for the car's age is more often a typo
+# ("18k" for "180k") or an odometer problem than a find, and the valuation
+# would credit it as a low-mileage car.
+MILEAGE_SUSPECT_PER_YEAR = 3_000
+MILEAGE_SUSPECT_MIN_AGE = 4
 
 
 def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str, list[str]]:
@@ -337,6 +342,10 @@ def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str
         flags.append("seller_type_unknown")     # can't confirm a private seller
     if not l.get("odometer"):
         flags.append("mileage_unknown")
+    elif l.get("year"):
+        age = datetime.now(timezone.utc).year - int(l["year"])
+        if age >= MILEAGE_SUSPECT_MIN_AGE and l["odometer"] / age < MILEAGE_SUSPECT_PER_YEAR:
+            flags.append("mileage_suspect")
     if l.get("relist_of"):
         flags.append("relisted")
     if v.confidence in ("low", "insufficient"):

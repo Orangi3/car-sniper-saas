@@ -25,7 +25,7 @@ EVIDENCE = {"confirmed_sales": 1.0, "asking_comparables": 0.85,
 CONFIDENCE = {"high": 1.0, "medium": 0.85, "low": 0.6}
 CONDITION = {  # multiplied together for each flag present
     "scam_signals": 0.0, "branded_title": 0.4, "needs_work": 0.5,
-    "too_good_to_be_true": 0.3, "mileage_unknown": 0.85, "relisted": 0.9,
+    "too_good_to_be_true": 0.3, "mileage_unknown": 0.85, "mileage_suspect": 0.5, "relisted": 0.9,
     "dealer": 0.9,
     "seller_type_unknown": 0.95,
     "auction_bid": 0.3, "description_unchecked": 0.9,

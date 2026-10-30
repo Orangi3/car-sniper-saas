@@ -26,6 +26,7 @@ const FLAGS = {
   dealer: ["Dealer listing", "warn", "Sold by a dealer; prices and fees differ from private sales."],
   seller_type_unknown: ["Seller type unknown", "warn", "We couldn't tell whether this is a private seller or a dealer."],
   mileage_unknown: ["Mileage unknown", "warn", "No odometer reading, so comparables can't be matched on mileage."],
+  mileage_suspect: ["Check the mileage", "danger", "The mileage is unusually low for the car's age — often a typo (18k for 180k) or an odometer problem. Confirm it before trusting the value."],
   relisted: ["Relisted", "warn", "This car was listed before — ask why it didn't sell."],
   low_confidence: ["Low confidence", "warn", "Few or loosely matched comparables. Treat the value as rough."],
   insufficient_data: ["Not enough data", "warn", "Fewer than 3 usable comparables — no reliable value."],

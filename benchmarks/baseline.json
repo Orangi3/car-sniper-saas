@@ -1,9 +1,9 @@
 {
   "metrics": {
-    "cases": 38,
+    "cases": 39,
     "fn": 0,
     "fp": 1,
-    "tn": 26,
+    "tn": 27,
     "tp": 11
   },
   "outcomes": {
@@ -24,6 +24,7 @@
     "legit-silverado-25": "TP",
     "legit-tacoma-k-price": "TP",
     "low-miles-real-deal": "TP",
+    "mileage-typo-18k": "TN",
     "monthly-teaser": "TN",
     "needs-motor": "TN",
     "no-make-in-title": "TP",
