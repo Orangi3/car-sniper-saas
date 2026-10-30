@@ -359,11 +359,11 @@ function dealDetail(d) {
   const drop = n(d.previous_price) != null && n(d.previous_price) > n(d.price);
   const p = d.profit_detail;
   const title = d.title || [d.year, d.make, d.model].filter(Boolean).join(" ");
-  const keyMetrics = html`<div class="deal__metrics" style="border-radius:var(--r-md);border:1px solid var(--line)">
+  const keyMetrics = html`<div class="metrics-box"><div class="deal__metrics" style="border-radius:var(--r-md);border:1px solid var(--line)">
       <div class="metric"><div class="metric__label">Asking</div><div class="metric__value">${money(d.price)}</div><div class="metric__sub">${drop ? html`was <s>${money(d.previous_price)}</s>` : " "}</div></div>
       <div class="metric"><div class="metric__label">Est. profit</div><div class="metric__value ${pr ? pr.cls : ""}">${pr ? html`<span class="full">${pr.text}</span><span class="compact">${pr.short}</span>` : "—"}</div><div class="metric__sub">${pr ? "after est. costs" : "no valuation"}</div></div>
       <div class="metric"><div class="metric__label">Below mkt</div><div class="metric__value ${disc > 0 ? "pos" : ""}">${disc != null ? pct(disc) : "—"}</div><div class="metric__sub">${n(d.value_mid) ? "mkt " + moneyK(d.value_mid) : " "}</div></div>
-    </div>`;
+    </div></div>`;
   const actions = html`
     ${link ? html`<a class="btn btn--primary btn--lg btn--block" href="${link}" target="_blank" rel="noopener noreferrer">${icon("external")}Open original listing</a>` : ""}
     <div class="row" style="margin-top:var(--s2)">

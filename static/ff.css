@@ -502,11 +502,14 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .deal__actions .btn { position: relative; z-index: 2; }
 .deal.is-leaving { opacity: 0; transform: scale(.98); transition: opacity var(--t-med) var(--ease), transform var(--t-med) var(--ease); }
 .deal-skel { height: 196px; border-radius: var(--r-lg); }
-/* card-width aware: compact money and labels when the CARD is narrow (2-up grids, phones) */
+/* card-width aware: compact money and labels when the CARD (or the deal page's
+   metrics box, e.g. the narrow main column at 1024px) is narrow */
+.metrics-box { container-type: inline-size; }
 @container (max-width: 460px) {
-  .deal .full { display: none; } .deal .compact { display: inline; } .deal .hide-narrow { display: none; }
-  .deal .deal__metrics { grid-template-columns: .95fr 1.4fr .8fr; }
-  .deal .deal__metrics .metric__value { font-size: 15px; }
+  .deal .full, .metrics-box .full { display: none; }
+  .deal .compact, .metrics-box .compact { display: inline; } .deal .hide-narrow { display: none; }
+  .deal .deal__metrics, .metrics-box .deal__metrics { grid-template-columns: .95fr 1.4fr .8fr; }
+  .deal .deal__metrics .metric__value, .metrics-box .deal__metrics .metric__value { font-size: 15px; }
 }
 
 /* price-vs-market bar */
