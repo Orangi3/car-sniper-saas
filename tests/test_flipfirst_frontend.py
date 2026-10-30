@@ -149,3 +149,16 @@ def test_alert_titles_have_no_emoji_and_say_below_market():
                                        "previous_price": 8100, "discount_pct": 25, "event": "price_drop"})
     assert t2.startswith("Price drop · 2015 Toyota Camry $8,100 → $7,600")
     assert not re.search(r"[\U0001F300-\U0001FAFF]", t + t2)
+
+
+def test_an_auction_price_is_called_a_current_bid():
+    """A running auction's price is its current bid: alert titles and the
+    deal card/detail must never call it an asking price."""
+    import notifications
+    from pathlib import Path
+    t, _ = notifications.format_deal({"year": 2015, "make": "Toyota", "model": "Camry",
+                                      "price": 6400, "discount_pct": 37, "is_auction": 1})
+    assert t == "2015 Toyota Camry · current bid $6,400 · 37% below market"
+    js = (Path(__file__).resolve().parent.parent / "static" / "app.js").read_text()
+    assert 'metric__label">Asking<' not in js and js.count("${priceWord(d)}") >= 4
+    assert 'const priceWord = d => (d.is_auction ? "Current bid" : "Asking");' in js
