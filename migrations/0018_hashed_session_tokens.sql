@@ -1,4 +1,4 @@
--- 0018_hashed_session_tokens.sqlite.sql
+-- 0018_hashed_session_tokens.sql (SQLite; PostgreSQL has the .postgres.sql twin)
 -- sessions.token now holds the SHA-256 (hex) of the cookie value, not the
 -- value itself (auth.create_session). SQLite has no SHA-256 function, so
 -- sessions stored the old way are removed: on a SQLite (local/demo)
