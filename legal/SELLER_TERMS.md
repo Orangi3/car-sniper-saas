@@ -21,6 +21,11 @@ How listing works:
   You can change the price or remove the listing any time; removal deletes
   it and everything derived from it.
 - Listing is free during the pilot.
+- Dealers and wholesalers approved by FlipFirst may upload their inventory
+  as a file. The three confirmations above apply to every vehicle in it,
+  and their listings are labeled with the business name. **[LEGAL REVIEW]**
+  whether dealer advertising rules (price disclosures, fees, the Buyers
+  Guide) apply to these listings.
 - FlipFirst may remove a listing that looks inaccurate, fraudulent or
   unlawful, or on a credible report from a buyer.
 

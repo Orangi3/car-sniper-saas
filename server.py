@@ -1794,6 +1794,14 @@ def api_admin_billing_health():
 # app.view_functions[rule.endpoint](...) — replacing that mapping is the
 # canonical way to upgrade a route's behavior in place.
 
+def _json_obj(v) -> Optional[dict]:
+    try:
+        o = json.loads(v) if isinstance(v, str) else v
+    except ValueError:
+        return None
+    return o if isinstance(o, dict) else None
+
+
 def _replace_view(endpoint: str, new_handler) -> None:
     """Bind `new_handler` to an already-registered endpoint name. No-op if
     the endpoint was never registered (defensive)."""
@@ -2396,7 +2404,7 @@ def api_deal_detail(cid: str):
     u = auth.current_user()
     with sniper.db() as conn:
         r = conn.execute(
-            f"SELECT {_DEAL_COLS}, l.description, nm.confidence_reasons, nm.evidence, "
+            f"SELECT {_DEAL_COLS}, l.description, l.extras, nm.confidence_reasons, nm.evidence, "
             "  sv.status AS user_status, sv.note AS user_note "
             "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
             "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
@@ -2429,10 +2437,30 @@ def api_deal_detail(cid: str):
         import seller_listings as sl
         with sniper.db() as conn:
             d["seller_contact"] = sl.contact_for(conn, d["composite_id"], plan)
-        d["provenance"] = ("Listed on FlipFirst by the seller. The seller's email address is "
+        dealer = (_json_obj(d.get("extras")) or {}).get("dealer_name")
+        d["provenance"] = (f"Listed on FlipFirst by {dealer}, a dealer approved by FlipFirst. "
+                           "Its email address is verified; the vehicle details are "
+                           "dealer-reported and not independently verified." if dealer else
+                           "Listed on FlipFirst by the seller. The seller's email address is "
                            "verified; the vehicle details are seller-reported and not "
                            "independently verified.")
+    d.pop("extras", None)
     return jsonify(d)
+
+
+@app.post("/api/deals/<path:cid>/report")
+@auth.login_required
+def api_deal_report(cid: str):
+    """A buyer reports a FlipFirst seller listing; the owner reviews it."""
+    import seller_listings as sl
+    rl = _rl_or_fail("report", 10)
+    if rl:
+        return rl
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(sl.report(auth.current_user(), cid, body.get("reason"), body.get("note"))), 201
+    except sl.SubmissionError as e:
+        return _seller_err(e)
 
 
 _DEAL_ACTIONS = {"save": "saved", "contacted": "contacted", "dismiss": "passed",
@@ -2760,10 +2788,31 @@ def _seller_err(e):
 @auth.login_required
 def api_seller_mine():
     import seller_listings as sl
-    return jsonify({"enabled": sl.enabled(), "listings": sl.mine(auth.current_user()) if sl.enabled() else [],
-                    "limits": {"active": sl.MAX_ACTIVE_PER_USER,
-                               "per_day": sl.MAX_NEW_PER_USER_PER_DAY,
-                               "confirm_days": sl.CONFIRM_DAYS}})
+    u = auth.current_user()
+    with sniper.db() as conn:
+        lim = sl.limits_for(conn, u.id)
+    return jsonify({"enabled": sl.enabled(), "listings": sl.mine(u) if sl.enabled() else [],
+                    "seller": {"kind": lim["kind"], "business_name": lim["business_name"]},
+                    "limits": {"active": lim["active"], "per_day": lim["per_day"],
+                               "confirm_days": sl.CONFIRM_DAYS,
+                               "import_rows": sl.IMPORT_MAX_ROWS}})
+
+
+@app.post("/api/seller/listings/import")
+@auth.login_required
+def api_seller_import():
+    """An approved dealer's own inventory as CSV text (the browser reads the
+    file). Size, rows, columns and every cell are checked (seller_listings)."""
+    import seller_listings as sl
+    rl = _rl_or_fail("seller_import", 6)
+    if rl:
+        return rl
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(sl.import_inventory(auth.current_user(), body.get("csv"),
+                                           body.get("attest"), bool(body.get("remove_missing"))))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
 
 
 @app.post("/api/seller/listings")

@@ -41,6 +41,8 @@ const FLAGS = {
   vin_mismatch: ["VIN doesn't match", "danger", "The VIN decodes to a different year, make or model than described — a typo or a cloned VIN. Verify before going further."],
   description_missing: ["No seller description", "warn", "Paste the listing text so title and damage wording can be checked."],
 };
+const REPORT_REASONS = [["scam", "Looks like a scam"], ["sold", "Already sold"], ["wrong_details", "Details are wrong"],
+  ["offensive", "Offensive"], ["other", "Something else"]];
 // A running auction's price is its current bid, never an asking price
 const priceWord = d => (d.is_auction ? "Current bid" : "Asking");
 const SOURCE_NAMES = {ebay: "eBay", craigslist: "Craigslist", direct: "FlipFirst seller", marketcheck: "MarketCheck",
@@ -410,6 +412,12 @@ function dealDetail(d) {
           ${d.provenance ? html`<div class="notice notice--info">${icon("info")}<div>${d.provenance}${d.seller_contact ? (d.seller_contact.available
               ? html` <br><strong>Seller:</strong> <a href="mailto:${d.seller_contact.email}">${d.seller_contact.email}</a>`
               : html` <br>${d.seller_contact.why}.`) : ""}</div></div>` : ""}
+          ${d.source === "direct" ? html`<details class="small"><summary style="cursor:pointer;color:var(--muted)">Report this listing</summary>
+            <div class="stack" style="margin-top:var(--s2)"><label class="sr-only" for="rep-reason">Reason</label>
+              <select class="select" id="rep-reason">${REPORT_REASONS.map(([k, l]) => html`<option value="${k}">${l}</option>`)}</select>
+              <label class="sr-only" for="rep-note">What's wrong</label>
+              <textarea class="textarea" id="rep-note" rows="2" maxlength="500" placeholder="What's wrong? (optional)"></textarea>
+              <div class="row"><div class="spacer"></div><button class="btn btn--sm" type="button" data-report="${cid}">Send report</button></div></div></details>` : ""}
         </div>
       </section>
 
@@ -1278,6 +1286,7 @@ async function viewSell(m, tok) {
     <div class="page__head"><div><h1>Sell a car</h1><p>List it once, free. Buyers near you who are looking for it get an alert.</p></div>
       ${atLimit ? "" : html`<a class="btn btn--primary" href="#/sell/new">${icon("plus")}List a car</a>`}</div>
     ${contactCard(c)}
+    ${s.seller && s.seller.kind === "dealer" ? importCard(s) : ""}
     <section class="section" aria-labelledby="sec-mine">
       <div class="section__head"><h2 id="sec-mine">Your listings</h2><span class="xsmall muted">${active} of ${s.limits.active} active</span></div>
       ${s.listings.length ? html`<div class="stack">${s.listings.map(l => html`<div class="card card--pad" data-listing="${l.id}">
@@ -1298,6 +1307,7 @@ async function viewSell(m, tok) {
     </section>
     <section class="section"><div class="notice">${icon("info")}<div>Everything you enter is shown as <strong>seller-reported</strong>. FlipFirst verifies that you control your contact email — not the car, its title or its condition. Listings hide after ${s.limits.confirm_days} days unless you confirm they're still for sale, and you can remove one any time.</div></div></section>`);
   wireContact(c);
+  if (s.seller && s.seller.kind === "dealer") wireImport();
   $$("[data-unlist]").forEach(b => b.onclick = async () => {
     if (!confirm("Remove this listing? It disappears for all buyers and can't be undone.")) return;
     busy(b, true);
@@ -1318,6 +1328,43 @@ async function viewSell(m, tok) {
     try { await api(`/api/seller/listings/${b.dataset.price}`, {method: "PATCH", body: JSON.stringify({price: Math.round(p)})}); toast("Price updated. Buyers watching for price drops are notified.", {kind: "ok"}); route(); }
     catch (e) { busy(b, false); toast(e.message, {kind: "bad"}); }
   });
+}
+const CSV_TEMPLATE = "vin,year,make,model,trim,mileage,price,zip,title_status,mechanical_issues,cosmetic_issues,description\n" +
+  "4T1BF1FK5FU123456,2015,Toyota,Camry,SE,128000,6800,35401,clean,,small door ding,One owner; new tires\n";
+function importCard(s) {
+  return html`<section class="card" aria-labelledby="sec-import"><div class="card__head"><h2 id="sec-import">${icon("database")}Import your inventory</h2>
+      <span class="xsmall muted">${s.seller.business_name} · dealer</span></div>
+    <div class="card__body stack">
+      <p class="small muted">Upload a CSV of cars you're authorized to sell — up to ${s.limits.import_rows} rows, one per VIN. Re-uploading a VIN updates its price and keeps it live. <a href="data:text/csv;charset=utf-8,${encodeURIComponent(CSV_TEMPLATE)}" download="flipfirst-inventory-template.csv">Download the template</a>.</p>
+      <label class="label" for="imp-file">CSV file</label>
+      <input class="input" type="file" id="imp-file" accept=".csv,text/csv">
+      <fieldset style="border:0;padding:0;margin:0"><legend class="label" style="margin-bottom:var(--s2)">For every car in this file</legend>
+        <label class="check"><input type="checkbox" id="imp-a1"><div><strong>We own it or are authorized to sell it</strong></div></label>
+        <label class="check"><input type="checkbox" id="imp-a2"><div><strong>The details are accurate</strong><span>Including title status and known problems.</span></div></label>
+        <label class="check"><input type="checkbox" id="imp-a3"><div><strong>Buyers on paid plans may see our contact email</strong></div></label></fieldset>
+      <label class="check"><input type="checkbox" id="imp-remove"><div><strong>Remove our live listings that aren't in this file</strong><span>Use this when the file is your full current inventory.</span></div></label>
+      <div class="row"><span class="error-text" id="imp-err" role="alert"></span><div class="spacer"></div><button class="btn btn--primary" type="button" id="imp-go">${icon("arrow-right")}Import</button></div>
+      <div id="imp-result" role="status"></div>
+    </div></section>`;
+}
+function wireImport() {
+  $("#imp-go").onclick = async e => {
+    const err = $("#imp-err"), file = $("#imp-file").files[0];
+    err.textContent = "";
+    if (!file) { err.textContent = "Choose a CSV file first."; return; }
+    if (file.size > 256 * 1024) { err.textContent = "The file is over 256 KB."; return; }
+    const b = e.currentTarget; busy(b, true);
+    try {
+      const r = await post("/api/seller/listings/import", {csv: await file.text(), remove_missing: $("#imp-remove").checked,
+        attest: {authorized_to_sell: $("#imp-a1").checked, details_accurate: $("#imp-a2").checked, share_contact_with_buyers: $("#imp-a3").checked}});
+      const bad = r.rows.filter(x => x.status === "error");
+      setHTML($("#imp-result"), html`<div class="notice notice--${bad.length ? "warn" : "ok"}">${icon(bad.length ? "alert" : "check")}<div>
+          <strong>${r.created} added, ${r.updated} updated, ${r.removed} removed${bad.length ? `, ${bad.length} with problems` : ""}.</strong>
+          ${bad.length ? html`<ul style="margin:4px 0 0;padding-left:18px">${bad.slice(0, 20).map(x => html`<li>Row ${x.row}${x.vin ? " (" + x.vin + ")" : ""}: ${x.errors.join("; ")}</li>`)}</ul>` : ""}</div></div>`);
+      if (r.created || r.updated || r.removed) toast("Inventory imported.", {kind: "ok", action: {label: "Refresh", run: route}});
+    } catch (x) { err.textContent = x.message; }
+    busy(b, false);
+  };
 }
 function contactCard(c) {
   if (c.verified) return html`<div class="notice notice--ok">${icon("check")}<div>Contact email <strong>${c.email}</strong> is confirmed. Paid buyers can see it on your listings so they can reach you.</div></div>`;
@@ -1375,7 +1422,8 @@ async function viewSellWizard(m, tok) {
           ${fld("mileage", "Mileage", html`<div class="input-group">${inp("mileage", 'type="number" inputmode="numeric" min="0" max="500000"', "128000")}<span class="suffix">mi</span></div>`)}</div>
         <div class="grid-2" style="margin-top:var(--s4)">${fld("make", "Make", inp("make", 'autocomplete="off" maxlength="30"', "Toyota"))}${fld("model", "Model", inp("model", 'autocomplete="off" maxlength="40"', "Camry"))}</div>
         <div class="grid-2" style="margin-top:var(--s4)">${fld("trim", raw('Trim <span class="opt">(optional)</span>'), inp("trim", 'maxlength="30"', "SE"))}
-          ${fld("vin", raw('VIN <span class="opt">(optional)</span>'), inp("vin", 'maxlength="17" autocapitalize="characters" spellcheck="false"', "17 characters"), "Lets buyers run a history check.")}</div>`,
+          ${fld("vin", raw('VIN <span class="opt">(optional)</span>'), inp("vin", 'maxlength="17" autocapitalize="characters" spellcheck="false"', "17 characters"), "Lets buyers run a history check.")}</div>
+        <div class="row" style="margin-top:var(--s2)"><button class="btn btn--sm" type="button" id="s-decode">${icon("search")}Fill in from the VIN</button><span class="small muted" id="s-vinmsg" role="status"></span></div>`,
       () => html`<h2>Condition and title</h2><p class="small muted" style="margin:4px 0 var(--s5)">Be accurate — buyers see this as seller-reported, and honest listings sell faster.</p>
         <div class="field"><span class="label" id="lbl-title">Title status</span>
           <div role="radiogroup" aria-labelledby="lbl-title">${TITLE_STATUS.map(([k, l, h]) => html`<label class="check"><input type="radio" name="title_status" value="${k}" ${raw(v("title_status") === k ? "checked" : "")}><div><strong>${l}</strong><span>${h}</span></div></label>`)}</div>
@@ -1471,6 +1519,19 @@ async function viewSellWizard(m, tok) {
     });
     const prev = $("#prev"); if (prev) prev.onclick = () => { read(); D.step--; save(); paint(); };
     wireContact();
+    const dec = $("#s-decode");
+    if (dec) dec.onclick = async () => {
+      read(); const msg = $("#s-vinmsg");
+      if (!D.v.vin) { msg.textContent = "Enter the VIN first."; return; }
+      busy(dec, true);
+      try {
+        const r = await post("/api/analyze/vin", {vin: D.v.vin}), d = r.decoded || {};
+        ["year", "make", "model", "trim"].forEach(k => { if (d[k] && !D.v[k]) { D.v[k] = String(d[k]); const el = $("#s-" + k); if (el) el.value = D.v[k]; } });
+        save();
+        msg.textContent = r.decoded ? `NHTSA: ${[d.year, d.make, d.model, d.trim].filter(Boolean).join(" ")}` : (r.vin.errors || []).join("; ");
+      } catch (x) { msg.textContent = ((x.body && x.body.vin && x.body.vin.errors) || [x.message]).join("; "); }
+      busy(dec, false);
+    };
     $("#wiz").onsubmit = async ev => {
       ev.preventDefault(); read();
       if (!validate()) { const bad = $("#wiz [aria-invalid=true]") || $("#wiz .error-text:not(:empty)"); if (bad && bad.focus) bad.focus(); return; }
@@ -1619,6 +1680,14 @@ document.addEventListener("click", e => {
   if (back) { e.preventDefault(); goBack(); return; }
   const so = e.target.closest("[data-signout]");
   if (so) { e.preventDefault(); signOut(); return; }
+  const rp = e.target.closest("[data-report]");
+  if (rp) {
+    e.preventDefault(); busy(rp, true);
+    post(`/api/deals/${encodeURIComponent(rp.dataset.report)}/report`, {reason: $("#rep-reason").value, note: $("#rep-note").value})
+      .then(() => { toast("Thanks — FlipFirst will review it.", {kind: "ok"}); rp.closest("details").open = false; })
+      .catch(x => toast(x.message, {kind: "bad"})).finally(() => busy(rp, false));
+    return;
+  }
   const an = e.target.closest("[data-analyze]");
   if (an && S.currentDeal) { e.preventDefault(); store.set("ff-analyze-draft", draftFromDeal(S.currentDeal)); store.del("ff-analyze-edit"); S.lastAnalysis = null; go("#/analyze"); return; }
   const retry = e.target.closest("[data-retry]");
