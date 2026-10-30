@@ -205,6 +205,8 @@ class Sim:
              if not k.startswith(("SNIPER_TEST", "EBAY_", "MARKETCHECK_", "STRIPE_"))}
         e.update({"DATABASE_URL": self.db_url, "SNIPER_COMMERCIAL_MODE": "1",
                   "ALLOW_REGISTRATION": "1", "EBAY_CLIENT_ID": "sim", "EBAY_CLIENT_SECRET": "sim",
+                  # the provider is a local stand-in: no real eBay data, no approval exists
+                  "EBAY_COMMERCIAL_AGREEMENT": "SIMULATION ONLY - not an eBay approval",
                   "EBAY_API_BASE": f"http://127.0.0.1:{self.prov_port}",
                   "NTFY_SERVER": f"http://127.0.0.1:{self.prov_port}",
                   "PYTHONUNBUFFERED": "1", "SNIPER_SECRET_KEY": "sim-secret",
