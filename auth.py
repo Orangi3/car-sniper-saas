@@ -6,9 +6,11 @@ Replaces the legacy owner-by-IP + shared-password gate.
 
 Design choices:
   * passwords      → bcrypt (12 rounds), never stored or logged in plaintext
-  * sessions       → opaque random token (32B from secrets) stored in `sessions`
-                     table; only the token rides in the cookie (HttpOnly,
-                     Secure when behind HTTPS, SameSite=Lax). 30-day TTL.
+  * sessions       → opaque random token (32B from secrets); the cookie
+                     carries the token, the `sessions` table only its
+                     SHA-256 (HttpOnly, Secure when behind HTTPS,
+                     SameSite=Lax). 30-day TTL; revoke_sessions() signs a
+                     user out everywhere.
   * server-side    → every decision uses values read fresh from the DB on the
                      current request. Client cookies / JSON / query strings
                      NEVER carry user_id, role, or plan — those are looked up.
@@ -25,6 +27,7 @@ Registration is open by default; flip ALLOW_REGISTRATION env to "0" to lock it.
 """
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import logging
 import os
@@ -55,14 +58,17 @@ SESSION_TTL_DAYS = 30
 # lock down to admin-created users only.
 ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "1") != "0"
 
-# Cookies set Secure when the request arrived via HTTPS (real prod) but not
-# when reaching the dev server over http://127.0.0.1. SameSite=Lax keeps
-# cookies on top-level navigations while blocking the common CSRF flows.
+# Cookies set Secure when the request arrived via HTTPS, or the configured
+# public origin is https (deployed behind Caddy, even if the proxy's scheme
+# header were lost), but not on the dev server over http://127.0.0.1.
+# SameSite=Lax keeps cookies on top-level navigations while blocking the
+# common CSRF flows.
 def _cookie_kwargs() -> dict:
     return {
         "httponly": True,
         "samesite": "Lax",
-        "secure": request.is_secure,
+        "secure": request.is_secure
+                  or (os.environ.get("BILLING_ORIGIN") or "").startswith("https://"),
         "max_age": SESSION_TTL_DAYS * 86400,
         "path": "/",
     }
@@ -120,6 +126,23 @@ def verify_password(plain: str, stored_hash: str) -> bool:
                               stored_hash.encode("ascii"))
     except (ValueError, AttributeError):
         return False
+
+
+_DUMMY_HASH: Optional[str] = None
+
+
+def password_matches(plain: str, stored_hash: Optional[str]) -> bool:
+    """verify_password for sign-in. An unknown account (no stored hash)
+    still costs one bcrypt check, so the response time doesn't reveal which
+    email addresses have accounts."""
+    global _DUMMY_HASH
+    if not stored_hash:
+        if _DUMMY_HASH is None:
+            _DUMMY_HASH = bcrypt.hashpw(secrets.token_hex(16).encode(),
+                                        bcrypt.gensalt(rounds=BCRYPT_ROUNDS)).decode("ascii")
+        verify_password(plain, _DUMMY_HASH)
+        return False
+    return verify_password(plain, stored_hash)
 
 
 # ---------- DB access (raw SQL — keeps the layer thin) ----------------
@@ -232,20 +255,32 @@ def _new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _token_hash(token: str) -> str:
+    """What sessions.token stores: the SHA-256 of the cookie value (migration
+    0018), so a copy of the database can't be replayed as a session. The
+    token is 256 random bits, so a plain hash is enough (no salt or slow
+    hash), and the lookup is an indexed equality on the hash."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def create_session(user: User) -> str:
+    """New random session for `user`; returns the cookie value. Expired
+    sessions are deleted here, so the table doesn't grow without bound."""
     token = _new_token()
+    now = db.now_utc_iso()
     expires = (datetime.now(timezone.utc)
                + timedelta(days=SESSION_TTL_DAYS)).isoformat()
     ua = (request.headers.get("User-Agent") or "")[:300]
     ip = client_ip()[:64]
     with db.transaction() as conn:
+        _exec(conn, f"DELETE FROM sessions WHERE expires_at <= {_PH()}", (now,))
         _exec(conn,
               f"INSERT INTO sessions(token, user_id, expires_at, user_agent, ip) "
               f"VALUES ({_PH()},{_PH()},{_PH()},{_PH()},{_PH()})",
-              (token, user.id, expires, ua, ip))
+              (_token_hash(token), user.id, expires, ua, ip))
         _exec(conn,
               f"UPDATE users SET last_login_at={_PH()} WHERE id={_PH()}",
-              (db.now_utc_iso(), user.id))
+              (now, user.id))
     return token
 
 
@@ -253,11 +288,20 @@ def destroy_session(token: str) -> None:
     if not token:
         return
     with db.transaction() as conn:
-        _exec(conn, f"DELETE FROM sessions WHERE token={_PH()}", (token,))
+        _exec(conn, f"DELETE FROM sessions WHERE token={_PH()}", (_token_hash(token),))
+
+
+def revoke_sessions(user_id: int) -> int:
+    """Sign a user out everywhere (lost device, suspected compromise):
+        python -c "import auth; print(auth.revoke_sessions(auth.get_user_by_email('pat@example.com').id))"
+    Returns how many sessions were removed."""
+    with db.transaction() as conn:
+        return _exec(conn, f"DELETE FROM sessions WHERE user_id={_PH()}",
+                     (int(user_id),)).rowcount
 
 
 def _user_for_token(token: str) -> Optional[User]:
-    if not token:
+    if not token or len(token) > 256:
         return None
     now = db.now_utc_iso()
     with db.transaction() as conn:
@@ -265,7 +309,7 @@ def _user_for_token(token: str) -> Optional[User]:
             f"SELECT u.id, u.email, u.role, u.plan "
             f"FROM sessions s JOIN users u ON u.id = s.user_id "
             f"WHERE s.token={_PH()} AND s.expires_at > {_PH()}",
-            (token, now))
+            (_token_hash(token), now))
         row = cur.fetchone()
         return _row_to_user(row) if row else None
 

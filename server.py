@@ -278,6 +278,28 @@ def _load_user():
     )
 
 
+# Called by Stripe, not a browser; the signature is its check.
+_CROSS_SITE_OK = frozenset({"/api/billing/webhook"})
+
+
+@app.before_request
+def _refuse_cross_site_writes():
+    """Browsers send Origin with every POST/PUT/PATCH/DELETE; one naming
+    another site (or "null") is refused. Defense in depth on top of the
+    SameSite=Lax session cookie and JSON request bodies. Requests without
+    Origin (curl, server-to-server) fall back to the SameSite cookie rule."""
+    if request.method in ("GET", "HEAD", "OPTIONS") or request.path in _CROSS_SITE_OK:
+        return None
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if not origin:
+        return None
+    allowed = {request.host_url.rstrip("/"), (os.environ.get("BILLING_ORIGIN") or "").rstrip("/")}
+    if origin in allowed:
+        return None
+    _logger.info(f"CROSS_SITE_REFUSED path={request.path} origin={origin[:80]}")
+    return jsonify({"error": "cross-site request refused"}), 403
+
+
 # Backwards-compatible shim — a handful of legacy handlers (e.g. /debug/status,
 # /api/notify_settings phone-masking) still want to know "is this an admin
 # touching the box?". Map the new world onto the old call site.
@@ -1480,7 +1502,8 @@ def api_login():
                 (user.id,))
             row = cur.fetchone()
             pw_hash = (row["password_hash"] if row else None)
-    if not (user and pw_hash and auth.verify_password(password, pw_hash)):
+    ok = auth.password_matches(password, pw_hash)   # costs a bcrypt check even with no account
+    if not (user and ok):
         auth.record_login_failure()
         return jsonify({"error": "invalid email or password"}), 401
     auth.clear_login_failures()
