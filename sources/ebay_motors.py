@@ -177,6 +177,9 @@ def normalize(it: dict, radius: float | None = None) -> Optional[NormalizedListi
     seller = it.get("seller") or {}
     acct = (seller.get("sellerAccountType") or "").upper()   # BUSINESS | INDIVIDUAL
     postal = str(loc.get("postalCode") or "")[:5]
+    # eBay's own condition "For parts or not working" (id 7000)
+    for_parts = (str(it.get("conditionId") or "") == "7000"
+                 or "not working" in str(it.get("condition") or "").lower())
     return NormalizedListing(
         source=SOURCE_ID, source_id=str(it["itemId"]), url=url, title=title,
         price=price, year=year, make=mk, model=mdl, odometer=miles,
@@ -195,7 +198,8 @@ def normalize(it: dict, radius: float | None = None) -> Optional[NormalizedListi
                 "seller_rating": seller.get("feedbackPercentage"),
                 "currency": currency,
                 # no structured vehicle fields in item summaries
-                "vehicle_fields_from": "title"},
+                "vehicle_fields_from": "title",
+                **({"needs_work": True} if for_parts else {})},
     )
 
 

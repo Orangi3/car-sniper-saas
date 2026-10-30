@@ -90,6 +90,7 @@ def evaluate_case(c: dict, threshold: float) -> dict:
               "odometer": nl.odometer, "is_salvage": nl.is_salvage,
               "needs_work": bool((nl.extras or {}).get("needs_work")),
               "is_dealer": nl.is_dealer, "previous_price": t.get("previous_price"),
+              "is_auction": bool(t.get("is_auction")),
               "trim": V.parse_trim(title, model)}
     m = c["market"]
     peers = [p for p in _peers(m) if p["make"] and p["model"]

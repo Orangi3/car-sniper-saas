@@ -163,14 +163,23 @@ SALVAGE_RE = re.compile(
     r"bill\s*of\s*sale\s*only|no\s*title|without\s*(?:a\s*)?title|"
     r"title\s*(?:issue|problem)s?|parts\s*only|for\s*parts|parting\s*out|"
     r"part\s*out|parts\s*car)\b", re.IGNORECASE)
-# Runs/drives problems — still a listing, but not a resale-ready "deal"
+# Runs/drives problems and disclosed damage — still a listing, but not a
+# resale-ready "deal"
 NEEDS_WORK_RE = re.compile(
     r"\b(not\s*running|non[-\s]?runner|doesn'?t\s*run|does\s*not\s*run|"
     r"won'?t\s*(?:start|crank|run)|needs\s*(?:a\s*)?(?:motor|engine|transmission|trans)|"
     r"blown\s*(?:motor|engine|head\s*gasket)|bad\s*(?:motor|engine|transmission|trans)|"
-    r"seized|mechanic'?s?\s*special|project\s*car|as[-\s]?is\s*project|tow\s*(?:it\s*)?away)\b",
+    r"seized|mechanic'?s?\s*special|project\s*car|as[-\s]?is\s*project|tow\s*(?:it\s*)?away|"
+    r"needs\s*(?:some\s*)?(?:work|repairs?)|needs?\s*(?:a\s*)?head\s*gaskets?|"
+    r"head\s*gasket\s*(?:leak|issue|problem)s?|"
+    r"trans(?:mission)?\s*(?:is\s*)?slip(?:s|ping)?|slipping\s*trans(?:mission)?|"
+    r"over[\s-]?heat(?:s|ing|ed)|(?:rod|engine|motor)\s*knock(?:s|ing)?|"
+    r"burns?\s*oil|wreck(?:ed)?|"
+    r"(?:front|rear|side|body|frame|collision|accident|structural|flood)[\s-]*(?:end\s*)?damaged?|"
+    r"air\s*bags?\s*(?:deployed|went\s*off)|deployed\s*air\s*bags?)\b",
     re.IGNORECASE)
-_NEGATION_RE = re.compile(r"\b(no|not|never|non|isn'?t|wasn'?t|zero)\b[\w\s,'-]{0,14}$",
+_NEGATION_RE = re.compile(r"\b(no|not|never|non|isn'?t|wasn'?t|zero|doesn'?t|don'?t|"
+                          r"didn'?t|hasn'?t|haven'?t)\b[\w\s,'-]{0,14}$",
                           re.IGNORECASE)
 
 
@@ -246,6 +255,8 @@ def _canon_model(tokens: list[str]) -> Optional[str]:
     key = _model_key(first)
     if key in MODEL_CANON:
         return MODEL_CANON[key]
+    if len(tokens) > 1 and _model_key(first + tokens[1]) in MODEL_CANON:
+        return MODEL_CANON[_model_key(first + tokens[1])]      # "F 150", "CR V"
     if (len(tokens) > 1 and (len(key) <= 2 or key in _JOIN_NEXT)
             and not _NOT_MODEL_TOKEN.match(tokens[1])):
         return f"{first} {tokens[1]}".title()

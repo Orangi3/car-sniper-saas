@@ -2215,7 +2215,7 @@ _DEAL_COLS = (
     "l.composite_id, l.source, l.url, l.title, l.price, l.previous_price, "
     "l.price_changed_at, l.year, l.make, l.model, l.odometer, l.location, l.state, "
     "l.posted_at, l.first_seen_at, l.last_seen_at, l.image_urls, l.is_dealer, "
-    "l.is_salvage, l.needs_work, l.is_auction, l.relist_of, l.scam_score, "
+    "l.is_salvage, l.needs_work, l.is_auction, l.auction_end_at, l.relist_of, l.scam_score, "
     "nm.discount_pct, nm.comp_avg AS value_mid, nm.value_low, nm.value_high, "
     "nm.comp_n, nm.evidence_class, nm.confidence, nm.trust, nm.risk_flags, "
     "nm.refreshed_at AS valued_at, nm.evidence AS evidence_json, "
@@ -2271,12 +2271,19 @@ def _display_limits() -> dict:
 
 
 def _displayable(d: dict, limits: dict) -> bool:
+    from datetime import datetime, timedelta, timezone
     if d.get("source") == "direct":
         return d.get("composite_id") in limits.get("__direct__", set())
+    if d.get("is_auction") and d.get("auction_end_at"):
+        try:                                  # an ended auction is not for sale
+            end = datetime.fromisoformat(str(d["auction_end_at"]).replace("Z", "+00:00"))
+            if (end if end.tzinfo else end.replace(tzinfo=timezone.utc)) <= datetime.now(timezone.utc):
+                return False
+        except ValueError:
+            pass
     hrs = limits.get(d.get("source"))
     if not hrs:
         return True
-    from datetime import datetime, timedelta, timezone
     seen = d.get("last_seen_at") or d.get("first_seen_at")
     try:
         t = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))

@@ -306,7 +306,8 @@ def _normalize_listing(l: NormalizedListing) -> None:
 
 # ---------- Opportunity assessment ----------------------------------------
 
-BLOCKING_FLAGS = {"scam_signals", "too_good_to_be_true", "branded_title", "needs_work"}
+BLOCKING_FLAGS = {"scam_signals", "too_good_to_be_true", "branded_title", "needs_work",
+                  "auction_bid"}
 
 
 def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str, list[str]]:
@@ -319,12 +320,16 @@ def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str
                                  l.get("price"), v.value_mid)
     if max(scam, l.get("scam_score") or 0) >= 50:
         flags.append("scam_signals")
-    if discount > int(CONFIG.get("max_believable_discount_pct", 65)) / 100.0:
+    if discount > int(CONFIG.get("max_believable_discount_pct", 50)) / 100.0:
         flags.append("too_good_to_be_true")
+    if l.get("is_auction"):
+        flags.append("auction_bid")     # the price is a current bid, not one you can pay
     if l.get("is_salvage"):
         flags.append("branded_title")
     if l.get("needs_work"):
         flags.append("needs_work")
+    if not str(l.get("description") or "").strip():
+        flags.append("description_unchecked")   # title only: damage can't be screened
     seller = valuation.seller_kind(l)
     if seller == "dealer":
         flags.append("dealer")

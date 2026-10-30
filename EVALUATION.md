@@ -1,6 +1,6 @@
 # Real-world evaluation
 
-The unit tests and `benchmarks/` (29 synthetic, engineer-labeled cases)
+The unit tests and `benchmarks/` (38 synthetic, engineer-labeled cases)
 check behavior on known edge cases. **They are not evidence that customers
 find worthwhile cars.** This workflow measures that, using real listings and
 real outcomes recorded by people.
