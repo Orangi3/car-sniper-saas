@@ -39,3 +39,22 @@ def test_gate_2_hand_set_lite_plan_gets_alerts_and_survives_reconciliation(clien
     assert [m["composite_id"] for m in q("SELECT composite_id FROM user_matches "
                                          "WHERE user_id = ?", (uid,))] == ["craigslist:deal"]
     assert len(user_jobs(uid)) == 1
+
+
+def test_pilot_report_counts_without_personal_data(client, world, capsys):
+    import pilot_report
+    uid = make_user(client, "tester@example.com", plan="starter",
+                    searches=[("c", {"model": "camry"})])
+    world.ingest([L("deal", 8100, odo=120000)])
+    score_all()
+    login(client, "tester@example.com")
+    client.post("/api/deals/craigslist:deal/action", json={"action": "contacted"})
+    r = pilot_report.report(7)
+    assert r["testers"]["accounts"] == 1 and r["testers"]["signed_in"] == 1
+    assert r["engagement"]["deal_actions_by_stage"] == {"contacted": 1}
+    assert r["alerts"]["matches"] == 1 and r["alerts"]["notifications_waiting"] == len(user_jobs(uid))
+    assert r["supply"]["listings_by_source"]["craigslist"] >= 1
+    assert r["supply"]["trusted_candidates"] >= 1
+    assert pilot_report.main([]) == 0
+    out = capsys.readouterr().out
+    assert "tester@example.com" not in out and "Camry" not in out
