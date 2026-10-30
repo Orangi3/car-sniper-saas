@@ -5,7 +5,7 @@ economics/provider_matrix.py — reproducible ranking of listing-data providers.
 
 Scores are 0–5 per criterion. Each score is tagged:
   V  verified from the provider's published docs/terms (via search excerpts,
-     2026-10-28) or from this codebase
+     2026-10-28 and 2026-10-30) or from this codebase
   E  estimated / judgment — not confirmed with the provider
 A score is evidence-weighted judgment, not a measurement. Change scores
 here (with a reason), not in the markdown.
@@ -33,21 +33,24 @@ P = {
         "freshness": (3, "E", "docs say near real-time; older article says 24h"),
         "geo_filtering": (5, "V", "zip + radius"),
         "field_richness": (4, "V", "price, YMM, miles, location, source URL; no seller contact"),
-        "cost": (2, "V", "$299/mo + $0.01/call"),
-        "quota_scalability": (3, "V", "5k calls/mo on Basic; Standard $749"),
+        "cost": (2, "V", "$299/mo + per-call fee ($0.01 or $0.006: vendor pages conflict)"),
+        "quota_scalability": (2, "E", "vendor pages conflict (500 vs 5,000 calls/mo); lower "
+                                      "tier may cap the radius at 100 mi"),
         "contract_effort": (2, "E", "order form + written permission"),
         "integration_status": (4, "V", "adapter + schema check + probe built; never run live"),
         "verification": (1, "V", "no live response seen"),
     },
     "eBay Browse API": {
         "private_party_coverage": (2, "E", "some private sellers; auctions/BIN, not classifieds"),
-        "commercial_rights": (4, "V", "API License Agreement: display w/ freshness ≤6h, delete ≤30d"),
+        "commercial_rights": (2, "V", "Buy API production use needs EPN application, eBay "
+                                      "approval and contracts; approval not guaranteed"),
         "freshness": (4, "V", "live API"),
         "geo_filtering": (4, "V", "pickupPostalCode/pickupRadius filters (documented)"),
         "field_richness": (3, "V", "title, price, location, seller account type; YMM parsed"),
         "cost": (5, "V", "free"),
-        "quota_scalability": (4, "E", "default call limits; sufficient for central polling"),
-        "contract_effort": (5, "V", "click-through developer agreement"),
+        "quota_scalability": (4, "V", "5,000 Browse calls/day default; Growth Check for more"),
+        "contract_effort": (2, "V", "EPN application, support ticket, contracts; account-"
+                                    "deletion notifications or exemption"),
         "integration_status": (5, "V", "adapter in production code; geo fixed; probe built"),
         "verification": (1, "V", "not yet called with real keys"),
     },
@@ -84,8 +87,9 @@ P = {
         "cost": (4, "E", "our build cost only"),
         "quota_scalability": (5, "E", "no quota"),
         "contract_effort": (4, "E", "seller terms + privacy policy"),
-        "integration_status": (1, "E", "not built"),
-        "verification": (0, "V", "n/a"),
+        "integration_status": (4, "V", "built: form, email verification, lifecycle, privacy; "
+                                       "off until SNIPER_SELLER_SUBMISSIONS=1"),
+        "verification": (1, "V", "tests + simulation; no real seller yet"),
     },
     "Craigslist (unlicensed)": {
         "private_party_coverage": (5, "E", "largest local private supply"),

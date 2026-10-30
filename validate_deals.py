@@ -9,7 +9,9 @@ customer-facing).
 
 `run` does, in order:
   1. refuses every source that is not licensed for a paid product
-     (sources.licensing_block in commercial mode) or has no credentials
+     (sources.licensing_block in commercial mode; for eBay that means the
+     owner recorded eBay's Buy API approval) or has no credentials. eBay
+     Sandbox / stand-in runs need no licence: they carry no real data
   2. polls each permitted source a bounded number of times, at least the
      source's minimum interval apart, for one territory and price band
   3. ingests through the production pipeline into a PRIVATE SQLite database
@@ -131,8 +133,9 @@ def run(run_dir: Path, source_ids=("ebay",), zip_code: str = "35401", radius: in
         m = mods.get(sid)
         src = cfg.setdefault("sources", {}).setdefault(sid, {})
         src.pop("zip", None), src.pop("radius_mi", None)   # the run's territory wins
+        # eBay's Sandbox and a stand-in hold no real provider data: no licence needed
         why = ("not a licensed API adapter the harness runs" if sid not in HARNESS_SOURCES or not m
-               else sources.licensing_block(m, cfg))
+               else sources.licensing_block(m, cfg) if provenance(m)[0] == "real" else None)
         if why:
             refused.append({"source": sid, "why": why, "kind": "licensing"})
         elif getattr(m, "config_issue", lambda c: None)(cfg):

@@ -151,14 +151,19 @@ def test_nothing_reaches_customers(stand, tmp_path, monkeypatch):
 
 def test_unlicensed_and_unconfigured_sources_are_refused(app, tmp_path, monkeypatch):
     monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("EBAY_COMMERCIAL_AGREEMENT", raising=False)
     monkeypatch.delenv("MARKETCHECK_COMMERCIAL_AGREEMENT", raising=False)
     rep = run(tmp_path, source_ids=("ebay", "marketcheck_fsbo", "craigslist"))
     refused = {r["source"]: r for r in rep["runs"][-1]["refused"]}
-    assert refused["ebay"]["kind"] == "credentials"
+    assert refused["ebay"]["kind"] == "licensing"            # production eBay: approval first
+    assert "EBAY_COMMERCIAL_AGREEMENT" in refused["ebay"]["why"]
     assert refused["marketcheck_fsbo"]["kind"] == "licensing"
     assert "commercial agreement" in refused["marketcheck_fsbo"]["why"]
     assert refused["craigslist"]["kind"] == "licensing"
     assert rep["funnel"]["retrieved"] == 0 and rep["data_kind"] == "none"
+    monkeypatch.setenv("EBAY_COMMERCIAL_AGREEMENT", "EPN approval ref")
+    rep = run(tmp_path, source_ids=("ebay",))
+    assert rep["runs"][-1]["refused"][0]["kind"] == "credentials"
 
 
 def test_review_labels_become_false_positive_metrics_and_survive_reruns(stand, tmp_path):
