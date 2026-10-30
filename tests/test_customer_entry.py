@@ -40,8 +40,17 @@ def test_anonymous_visitor_sees_value_and_honest_terms(client):
 
 
 def test_customer_app_offers_plan_management_and_sign_out(client):
+    import re
     register(client, "m@example.com")
     page = client.get("/m").get_data(as_text=True)
+    # the app's code ships as versioned static scripts; follow them
+    srcs = re.findall(r'<script src="(/static/[^"?]+)\?v=([0-9a-f]+|dev)"', page)
+    assert srcs, "app scripts not referenced"
+    bundle = page
+    for src, _ in srcs:
+        r = client.get(src)
+        assert r.status_code == 200, src
+        bundle += r.get_data(as_text=True)
     for hook in ("/api/billing/me", "/api/billing/checkout", "/api/billing/portal",
-                 'id="signout"', "billing_return"):
-        assert hook in page, hook
+                 "data-signout", "billing_return"):
+        assert hook in bundle, hook

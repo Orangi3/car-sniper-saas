@@ -6,7 +6,7 @@ Disabled until configured; nothing falls back to "pretend it was sent":
     SMTP_HOST, SMTP_PORT (587 = STARTTLS, 465 = implicit TLS; SMTP_SSL=1
     forces implicit TLS on another port),
     SMTP_USER, SMTP_PASSWORD,
-    SMTP_FROM ("Car Sniper <no-reply@your-domain>")
+    SMTP_FROM ("FlipFirst <no-reply@your-domain>")
 
 TLS always verifies the server certificate and host name (Python's
 smtplib does NOT unless given a context). Plain-text SMTP (SMTP_STARTTLS=0)
@@ -48,7 +48,10 @@ def send(to: str, subject: str, body: str) -> None:
     msg["From"] = os.environ["SMTP_FROM"]
     msg["To"] = to
     msg["Subject"] = subject
-    msg.set_content(body, cte="7bit")      # plain text: links stay intact in any client
+    # plain text: 7bit keeps links byte-for-byte intact in any client;
+    # non-ASCII copy (an em dash, a name) goes out as UTF-8 8bit instead of
+    # failing — quoted-printable would mangle the "=" in verification links
+    msg.set_content(body, cte="7bit" if body.isascii() else "8bit")
     host, port = os.environ["SMTP_HOST"], int(os.environ.get("SMTP_PORT") or 587)
     implicit = port == 465 or os.environ.get("SMTP_SSL", "").lower() in ("1", "true", "yes")
     plain = (not implicit and

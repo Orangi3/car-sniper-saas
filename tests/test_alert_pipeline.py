@@ -179,7 +179,7 @@ def test_saved_search_match_lands_in_user_tray_and_pushes(client, pipeline):
     set_plan("flip@example.com", "starter")
     login(client, "flip@example.com")
     r = client.post("/api/me/alert_channels", json={"ntfy_topic": "generate"})
-    assert r.status_code == 200 and r.get_json()["ntfy_topic"].startswith("sniper-")
+    assert r.status_code == 200 and r.get_json()["ntfy_topic"].startswith("flipfirst-")
     client.post("/api/saved_searches", json={
         "name": "cheap tacos", "notify_enabled": True,
         "filter": {"make": "toyota", "model": "tacoma", "max_price": 16000}})

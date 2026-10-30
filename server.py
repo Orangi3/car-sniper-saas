@@ -56,7 +56,44 @@ import auth
 import db as _db
 
 ROOT = Path(__file__).parent
-app = Flask(__name__, static_folder=str(ROOT))
+STATIC = ROOT / "static"
+# Only static/ is web-served. (static_folder=ROOT used to expose every file
+# next to the code — source, a SQLite listings.db, logs — at /<dirname>/…)
+app = Flask(__name__, static_folder=str(STATIC), static_url_path="/static")
+
+
+def _asset_version() -> str:
+    """Content hash of static/ — pages reference /static/…?v=<hash>, so
+    assets can be cached for a year and still change with every deploy."""
+    import hashlib
+    h = hashlib.sha1()
+    for f in sorted(p for p in STATIC.rglob("*") if p.is_file()):
+        h.update(f.relative_to(STATIC).as_posix().encode())
+        h.update(f.read_bytes())
+    return h.hexdigest()[:10]
+
+
+ASSET_V = _asset_version() if STATIC.is_dir() else "dev"
+
+
+import mimetypes as _mimetypes
+_mimetypes.add_type("application/manifest+json", ".webmanifest")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    resp = send_from_directory(STATIC / "brand", "favicon.ico", mimetype="image/x-icon")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
+
+
+def _page(name: str):
+    """Serve an HTML page with its asset version filled in; never cached."""
+    body = (ROOT / name).read_text(encoding="utf-8").replace("__ASSET_V__", ASSET_V)
+    resp = make_response(body)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 # ---------- Production-safe schema check ----------------------------------
 #
@@ -272,6 +309,10 @@ def _log_and_cache(response):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    elif request.path.startswith("/static/") and response.status_code in (200, 304):
+        # versioned URLs (?v=<content hash>) never change; unversioned get an hour
+        response.headers["Cache-Control"] = ("public, max-age=31536000, immutable"
+                                             if request.args.get("v") else "public, max-age=3600")
     # Security headers — lock the dashboard down against framing, MIME
     # sniffing, referrer leaks, and unwanted browser permissions.
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -1306,7 +1347,7 @@ def api_notify_test():
     if not phone:
         return jsonify({"ok": False, "error": "no phone configured"}), 400
     ok, detail = send_imessage(phone,
-        "🎯 SNIPER test — text alerts are wired up. Real deals will arrive here.")
+        "FlipFirst test — text alerts are wired up. Real deals will arrive here.")
     return jsonify({"ok": ok, "detail": detail, "phone": phone}), (200 if ok else 500)
 
 
@@ -1357,12 +1398,9 @@ def api_import_email():
 
 @app.get("/login")
 def login_page():
-    page = ROOT / "login.html"
-    if not page.is_file():
+    if not (ROOT / "login.html").is_file():
         return ("Login page missing.", 500)
-    resp = send_from_directory(ROOT, "login.html")
-    resp.headers["Cache-Control"] = "no-store"
-    return resp
+    return _page("login.html")
 
 
 # ---- Stripe Checkout return landings ------------------------------------
@@ -1473,7 +1511,13 @@ def api_me():
     so the dashboard can either render the app or redirect to /login."""
     u = auth.current_user()
     if not u:
-        return jsonify({"error": "not authenticated"}), 401
+        # the login page shows "create account" only when sign-up is open;
+        # with invite-only registration the invitation link opens it.
+        # ?optional=1 answers 200 so a signed-out page load logs no error.
+        body = {"user": None, "registration": "open" if auth.ALLOW_REGISTRATION else "invite"}
+        if request.args.get("optional") == "1":
+            return jsonify(body)
+        return jsonify({"error": "not authenticated", **body}), 401
     return jsonify({"user": u.public_dict()})
 
 
@@ -2056,7 +2100,7 @@ def api_me_alert_channels_post():
     if "ntfy_topic" in body:
         t = str(body["ntfy_topic"] or "").strip()
         if t == "generate":
-            t = "sniper-" + secrets.token_urlsafe(18).replace("-", "").replace("_", "")[:24]
+            t = "flipfirst-" + secrets.token_urlsafe(18).replace("-", "").replace("_", "")[:24]
         if t and not _NTFY_TOPIC_RE.match(t):
             return jsonify({"error": "ntfy topic must be 12-64 letters, digits, - or _ "
                                      "(long + random, since ntfy topics are public)"}), 400
@@ -2283,8 +2327,18 @@ def api_deals():
                     rows.append(r)
                 if len(rows) >= limit:
                     break
+        elif feed == "saved":
+            # the user's saved deals, valued with the same profit model as
+            # every other feed (the legacy /api/saved used a flat $1,500 fee)
+            rows = conn.execute(
+                f"SELECT {_DEAL_COLS}, sv.status AS user_status, sv.note AS user_note, "
+                "  sv.updated_at AS saved_updated_at FROM saved_v2 sv "
+                "JOIN listings l ON l.composite_id = sv.composite_id "
+                "LEFT JOIN near_misses nm ON nm.composite_id = sv.composite_id "
+                "WHERE sv.user_id = ? AND sv.status <> 'passed' "
+                "ORDER BY sv.updated_at DESC LIMIT ?", (u.id, limit)).fetchall()
         else:
-            return jsonify({"error": "feed must be mine|trusted|risk|search"}), 400
+            return jsonify({"error": "feed must be mine|trusted|risk|search|saved"}), 400
     limits = _display_limits()
     out = [_deal_row(dict(r), psettings, plan, home_zip) for r in rows
            if _displayable(dict(r), limits)]
@@ -2292,7 +2346,7 @@ def api_deals():
         # shared feeds respect the user's territory too
         out = [d for d in out if d["distance_mi"] is not None
                and d["distance_mi"] <= home_radius]
-    if feed != "mine":                    # "mine" stays newest-first
+    if feed not in ("mine", "saved"):     # these stay newest-first
         out = _rank(out)
     return jsonify(out)
 
@@ -2338,7 +2392,7 @@ def api_deal_detail(cid: str):
         import seller_listings as sl
         with sniper.db() as conn:
             d["seller_contact"] = sl.contact_for(conn, d["composite_id"], plan)
-        d["provenance"] = ("Listed on Car Sniper by the seller. The seller's email address is "
+        d["provenance"] = ("Listed on FlipFirst by the seller. The seller's email address is "
                            "verified; the vehicle details are seller-reported and not "
                            "independently verified.")
     return jsonify(d)
@@ -2612,18 +2666,14 @@ def api_admin_ops():
 @app.get("/admin/ops")
 @auth.admin_required
 def admin_ops_page():
-    resp = send_from_directory(ROOT, "ops.html")
-    resp.headers["Cache-Control"] = "no-store"
-    return resp
+    return _page("ops.html")
 
 
 @app.get("/m")
 def mobile_page():
     if not auth.current_user():
         return redirect("/login", code=302)
-    resp = send_from_directory(ROOT, "mobile.html")
-    resp.headers["Cache-Control"] = "no-store"
-    return resp
+    return _page("mobile.html")
 
 
 # ---- Admin: source health + manual poll trigger -------------------------

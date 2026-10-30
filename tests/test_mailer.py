@@ -60,6 +60,17 @@ def test_link_survives_plain_text_delivery(sink):
     assert link in msg                       # not quoted-printable mangled
 
 
+def test_non_ascii_copy_is_delivered_not_a_crash(sink):
+    """A typographic dash in the copy used to raise UnicodeDecodeError under
+    cte=7bit, which turned every verification email into a 500."""
+    import mailer
+    link = "https://app.example.test/m#verify=AbC_-123" + "x" * 40
+    mailer.send("seller@example.com", "Confirm · FlipFirst", f"Open:\n\n{link}\n\n— FlipFirst · José")
+    msg = sink[0]
+    assert "Content-Transfer-Encoding: 8bit" in msg
+    assert link in msg and "— FlipFirst · José" in msg
+
+
 # ---------- TLS: certificates are verified, passwords never go out in clear ----------
 
 import os

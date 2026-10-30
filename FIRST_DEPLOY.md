@@ -60,7 +60,7 @@ the app under a 20-client load used ~220 MB. 2 GB leaves headroom; add a
 9. **Health + admin** — `bash deploy/sync.sh --status root@sniper-staging`;
    create your admin account (STAGING_RUNBOOK §7, proven); sign in at
    `https://car.<yourdomain>/m`.
-10. **Email** — see "Email setup" below; then Setup → "Selling a car?" →
+10. **Email** — see "Email setup" below; then Sell →
     "Email me a confirmation link" must arrive in Gmail *and* Outlook.
 11. **Backups** — create the B2 bucket + keys and an age keypair (below),
     then `systemctl enable --now sniper-backup.timer` and run one now:
@@ -94,7 +94,7 @@ additive).
    SMTP_PORT=587
    SMTP_USER=resend
    SMTP_PASSWORD=<the API key>
-   SMTP_FROM=Car Sniper <no-reply@car.yourdomain>
+   SMTP_FROM=FlipFirst <no-reply@car.yourdomain>
    ```
    `systemctl restart sniper-web`. If your VPS provider blocks port 587,
    use `SMTP_PORT=2587` (also STARTTLS).

@@ -144,10 +144,10 @@ def format_deal(deal: dict) -> tuple[str, str]:
     price = int(deal.get("price") or 0)
     disc = float(deal.get("discount_pct") or 0)
     if deal.get("event") == "price_drop" and deal.get("previous_price"):
-        title = (f"📉 {car} dropped ${int(deal['previous_price']):,} → ${price:,} "
-                 f"({disc:.0f}% under)")
+        title = (f"Price drop · {car} ${int(deal['previous_price']):,} → ${price:,} "
+                 f"({disc:.0f}% below market)")
     else:
-        title = f"🎯 {car} — ${price:,} ({disc:.0f}% under)"
+        title = f"{car} · ${price:,} · {disc:.0f}% below market"
     ev = deal.get("evidence_class") or (
         "confirmed_sales" if deal.get("basis") == "verified" else "asking_comparables")
     label = {"confirmed_sales": "sold comps", "asking_comparables": "local asking prices",
