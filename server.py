@@ -803,10 +803,10 @@ def api_diagnostics():
         })
     u = auth.current_user()
     if not (u and u.is_admin):
-        # Reasons can quote provider error text (credentials, plan, quota):
-        # operator detail, not for customers. Status stays visible.
-        for row in out:
-            row["reason"] = row["error"] = None
+        # Customers see which sources work (the app's "N sources healthy"
+        # note), nothing else: reasons can quote provider error text
+        # (credentials, plan, quota) and the counts are operator detail.
+        out = [{"id": r["id"], "name": r["name"], "status": r["status"]} for r in out]
     return jsonify(out)
 
 
@@ -1787,6 +1787,17 @@ _LOGIN_REQUIRED_READ_PREFIXES = (
     "/api/saved", "/api/saved_searches", "/api/me",
 )
 
+# Owner-console data, used only by the classic console at / (admin-only).
+# These return every listing, the owner's alert log, settings and pipeline
+# internals, without the rules /api/deals applies (eBay's display age, which
+# seller listings are visible, the caller's plan), so customers use
+# /api/deals and these are refused to anyone but an admin.
+_ADMIN_ONLY = frozenset({
+    "/api/alerts", "/api/fresh_listings", "/api/near_misses", "/api/listings",
+    "/api/listings/closing_soon", "/api/stats", "/api/facets", "/api/score_progress",
+    "/api/sources", "/api/share_settings",
+})
+
 _PLAN_REQUIRED = {
     # Comp + VIN lookups consume third-party API quota → 'starter'+
     "/api/comps":            "starter",
@@ -1816,6 +1827,8 @@ def _enforce_route_policy():
     if p.startswith("/api/"):
         if not auth.current_user():
             return jsonify({"error": "authentication required"}), 401
+        if p in _ADMIN_ONLY and not auth.current_user().is_admin:
+            return jsonify({"error": "admin only"}), 403
         for prefix, min_plan in _PLAN_REQUIRED.items():
             if p == prefix or p.startswith(prefix + "/"):
                 if not auth.current_user().has_plan(min_plan):

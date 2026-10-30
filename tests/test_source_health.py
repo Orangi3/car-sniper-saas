@@ -176,10 +176,11 @@ def test_min_interval_prevents_over_polling(router):
 
 
 def test_diagnostics_api_reads_persisted_status(client, router):
-    from tests.conftest import register, login
+    from tests.conftest import register, login, make_admin
     router.append((lambda u: True, FakeResp(403, b"", "text/html")))
     _poll("craigslist")
     register(client, "d@example.com")
+    make_admin("d@example.com")
     login(client, "d@example.com")
     diag = {d["id"]: d for d in client.get("/api/diagnostics").get_json()}
     assert diag["craigslist"]["status"] == "blocked"
@@ -193,7 +194,7 @@ def test_diagnostics_hide_provider_error_text_from_customers(client, router):
     register(client, "cust@example.com")
     login(client, "cust@example.com")
     row = {d["id"]: d for d in client.get("/api/diagnostics").get_json()}["craigslist"]
-    assert row["status"] == "blocked" and row["reason"] is None and row["error"] is None
+    assert row == {"id": "craigslist", "name": row["name"], "status": "blocked"}  # status only
     logout(client)
     register(client, "admin@example.com")
     make_admin("admin@example.com")
