@@ -177,13 +177,15 @@ def test_extrapolated_mileage_adjustment_is_stated():
     assert any("mileage adjustment extrapolated" in r for r in v.reasons)
 
 
-@pytest.mark.parametrize("year,miles,suspect", [
-    (2012, 18000, True),      # 18k on a 14-year-old car: likely "180k"
-    (2008, 40000, True),
-    (2014, 65000, False),     # low but plausible (benchmark: low-miles-real-deal)
-    (2024, 6000, False),      # too new to judge
+@pytest.mark.parametrize("age,miles,suspect", [
+    (14, 18000, True),        # 18k on a 14-year-old car: likely "180k"
+    (18, 40000, True),
+    (12, 65000, False),       # low but plausible (benchmark: low-miles-real-deal)
+    (2, 6000, False),         # too new to judge
+    (31, 80000, False),       # collector age: often driven little
 ])
-def test_implausibly_low_mileage_is_not_a_trusted_deal(year, miles, suspect):
+def test_implausibly_low_mileage_is_not_a_trusted_deal(age, miles, suspect):
+    year = NOW.year - age
     target = peer("t", f"{year} Toyota Camry LE", 6500, year=year, miles=miles,
                   description="clean title")
     market = [peer(i, f"{year} Toyota Camry LE", 9000 + 100 * i, year=year,

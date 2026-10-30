@@ -4,15 +4,16 @@ accounts.py — owner tool to delete a FlipFirst account on request.
     python -m accounts delete pat@example.com          # dry run: shows what would go
     python -m accounts delete pat@example.com --yes    # deletes
 
-What a deletion removes, in one pass:
+What a deletion removes:
   * the user's seller listings, through seller_listings.remove() (listing,
     valuation, price history, other buyers' saved copies and matches)
-  * notification and import jobs, imported inbox rows and usage events
-    recorded for the user (no foreign key, so removed explicitly)
-  * the users row; the database cascades sessions, saved searches, saved
-    deals, matches, alert history, seller contacts and verifications, and
-    subscription mirrors; invitations and billing anomalies keep their row
-    with the user reference cleared
+  * then, in one transaction: their jobs, usage events, sessions, saved
+    searches and deals, matches, alert history, seller contacts and
+    verifications, subscription mirrors and listing tombstones (deleted
+    explicitly — never relying on foreign-key cascades), the name on the
+    invitation they used, Stripe webhook payloads that mention their email
+    or customer id (redacted; the event id stays for idempotency), and the
+    users row
 
 Refused: an account with a subscription that may still bill (cancel it in
 Stripe first — Stripe keeps its own billing records), and the last admin.
@@ -25,9 +26,9 @@ import argparse
 import sys
 
 LIVE_SUBSCRIPTION = ("active", "trialing", "past_due", "unpaid", "incomplete")
-_UNLINKED = ("jobs", "marketplace_inbox", "usage_events")      # user_id without FK
-_CASCADED = ("sessions", "saved_searches", "saved_v2", "user_matches", "user_alerts",
-             "seller_contacts", "contact_verifications", "subscriptions")
+_USER_TABLES = ("jobs", "usage_events", "sessions", "saved_searches", "saved_v2",
+                "user_matches", "user_alerts", "seller_contacts", "contact_verifications",
+                "subscriptions")
 
 
 class Refused(Exception):
@@ -37,7 +38,7 @@ class Refused(Exception):
 def plan(conn, user_id: int) -> dict:
     """Rows that belong to the user, by table."""
     out = {t: conn.execute(f"SELECT COUNT(*) FROM {t} WHERE user_id = ?",
-                           (user_id,)).fetchone()[0] for t in _UNLINKED + _CASCADED}
+                           (user_id,)).fetchone()[0] for t in _USER_TABLES}
     out["seller_listings"] = conn.execute(
         "SELECT COUNT(*) FROM seller_listings WHERE user_id = ? AND status <> 'removed'",
         (user_id,)).fetchone()[0]
@@ -70,10 +71,26 @@ def delete(email: str, *, confirm: bool = False) -> dict:
         return {"email": email, "deleted": False, "would_delete": rows}
     for sid in listing_ids:
         seller_listings.remove(user, sid)
-    with _db.session() as conn:
-        for table in _UNLINKED:
+    with _db.session() as conn:                  # one transaction; rolled back on Refused
+        if _db.IS_PG:                            # two deletions at once can't both pass the admin check
+            conn.execute("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE")
+        if conn.execute("SELECT COUNT(*) FROM seller_listings WHERE user_id = ? AND "
+                        "status <> 'removed'", (user.id,)).fetchone()[0]:
+            raise Refused("a new listing appeared while deleting; run the command again")
+        needles = [email] + [r[0] for r in conn.execute(
+            "SELECT DISTINCT stripe_customer_id FROM subscriptions WHERE user_id = ?",
+            (user.id,)).fetchall() if r[0]]
+        for needle in needles:
+            like = "%" + needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            conn.execute("UPDATE stripe_webhook_events SET payload = '{\"redacted\": true}' "
+                         "WHERE payload LIKE ? ESCAPE '\\'", (like,))
+        conn.execute("UPDATE invitations SET note = NULL WHERE used_by_user_id = ?", (user.id,))
+        for table in _USER_TABLES + ("seller_listings",):
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user.id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user.id,))
+        if user.is_admin and not conn.execute(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin'").fetchone()[0]:
+            raise Refused("this is the only admin account")
     return {"email": email, "deleted": True, "removed": rows}
 
 

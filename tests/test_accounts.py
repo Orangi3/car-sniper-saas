@@ -83,3 +83,28 @@ def test_cli_is_a_dry_run_unless_told_otherwise(client, world, capsys):
     assert accounts.main(["delete", "cli@example.com", "--yes"]) == 0
     assert q("SELECT 1 FROM users WHERE email = 'cli@example.com'") == []
     assert accounts.main(["delete", "cli@example.com", "--yes"]) == 1
+
+
+def test_deletion_clears_the_invitation_name_and_redacts_stripe_events(client, world, monkeypatch):
+    import accounts
+    import auth
+    import db
+    import invites
+    monkeypatch.setattr(auth, "ALLOW_REGISTRATION", False)       # invitation-only, as in the pilot
+    (iid, token), = invites.issue(note="Pat (seller)")
+    client.post("/api/auth/register", json={"email": "pat@example.com", "password": "testpass123",
+                                            "invite": token})
+    uid = q("SELECT id FROM users WHERE email = 'pat@example.com'")[0]["id"]
+    assert q("SELECT used_by_user_id FROM invitations WHERE id = ?", (iid,))[0]["used_by_user_id"] == uid
+    with db.session() as c:
+        c.execute("INSERT INTO stripe_webhook_events(stripe_event_id, type, payload) VALUES (?,?,?)",
+                  ("evt_pat", "customer.updated", '{"email": "pat@example.com"}'))
+        c.execute("INSERT INTO stripe_webhook_events(stripe_event_id, type, payload) VALUES (?,?,?)",
+                  ("evt_other", "customer.updated", '{"email": "patXexample.com"}'))
+    accounts.delete("pat@example.com", confirm=True)
+    assert q("SELECT note, used_by_user_id FROM invitations WHERE id = ?", (iid,)) == [
+        {"note": None, "used_by_user_id": None}]
+    events = {r["stripe_event_id"]: r["payload"] for r in q("SELECT * FROM stripe_webhook_events")}
+    assert events["evt_pat"] == '{"redacted": true}'          # event id kept for idempotency
+    assert "patXexample.com" in events["evt_other"]           # "_"/"%" are not wildcards here
+    assert q("SELECT 1 FROM sessions WHERE user_id = ?", (uid,)) == []

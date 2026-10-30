@@ -146,12 +146,13 @@ def run(run_dir: Path, source_ids=("ebay",), zip_code: str = "35401", radius: in
 
     saved = {k: CONFIG.get(k) for k in ("notify_text_enabled", "commercial_mode",
                                          "min_price", "max_price")}
-    saved_reload, saved_sold = sniper._config_mod.reload, comps.raw_sold
+    saved_reload, saved_sold, saved_cache = sniper._config_mod.reload, comps.raw_sold, comps.CACHE_PATH
     CONFIG.update(notify_text_enabled=False, commercial_mode=True,
                   min_price=int(band[0]), max_price=int(band[1]))
     sniper._config_mod.reload = lambda: None            # keep notifications off mid-run
     if not sold_comps:
         comps.raw_sold = lambda *a, **k: ({}, 0)
+    comps.CACHE_PATH = run_dir / "comps_cache.sqlite"   # provider data stays in the run dir
     log = run_dir / "polls.jsonl"
     first = max((p["poll"] for p in _polls(run_dir)), default=0)
     try:
@@ -186,7 +187,7 @@ def run(run_dir: Path, source_ids=("ebay",), zip_code: str = "35401", radius: in
             sniper._score_one_listing(cid)
     finally:
         CONFIG.update(saved)
-        sniper._config_mod.reload, comps.raw_sold = saved_reload, saved_sold
+        sniper._config_mod.reload, comps.raw_sold, comps.CACHE_PATH = saved_reload, saved_sold, saved_cache
     meta = {"territory": {"zip": zip_code, "radius_mi": int(radius)},
             "price_band": list(band), "polls_requested": polls, "interval_s": interval_s,
             "sold_comps": sold_comps, "refused": refused,
@@ -223,7 +224,7 @@ def _shown_now(r: dict, now: datetime) -> bool:
 def _read_review(path: Path) -> dict:
     if not path.exists():
         return {}
-    with path.open(newline="") as f:
+    with path.open(newline="", encoding="utf-8-sig") as f:     # Excel saves a BOM
         return {(r.get("source"), r.get("source_listing_id")): r for r in csv.DictReader(f)}
 
 
@@ -407,6 +408,7 @@ def build_report(run_dir: Path) -> dict:
 
 
 def _write_review(path: Path, cands: list[dict], existing: dict) -> None:
+    from evaluation import spreadsheet_safe
     out = {}
     for c in cands:
         key = (c["source"], c["source_listing_id"])
@@ -414,7 +416,8 @@ def _write_review(path: Path, cands: list[dict], existing: dict) -> None:
                "trust": c["trust"], "discount_pct": c["discount_pct"],
                "asking_price": c["price"], "est_value": c["valuation"]["value_mid"],
                "confidence": c["valuation"]["confidence"],
-               "risk_flags": " ".join(c["risk_flags"]), "title": c["title"], "url": c["url"],
+               "risk_flags": " ".join(c["risk_flags"]),
+               "title": spreadsheet_safe(c["title"]), "url": spreadsheet_safe(c["url"]),
                "first_seen_at": c["freshness"]["first_seen_at"],
                "last_confirmed_at": c["freshness"]["last_confirmed_at"]}
         old = existing.get(key, {})
@@ -432,7 +435,7 @@ def purge(run_dir: Path) -> list[str]:
     comparables) from the report and review sheet; ids, labels and
     aggregates stay. Returns what was removed."""
     gone = []
-    for p in run_dir.glob("harness.db*"):
+    for p in [*run_dir.glob("harness.db*"), *run_dir.glob("comps_cache.sqlite*")]:
         p.unlink()
         gone.append(p.name)
     rp = run_dir / "report.json"

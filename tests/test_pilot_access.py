@@ -51,6 +51,9 @@ def test_pilot_report_counts_without_personal_data(client, world, capsys):
     client.post("/api/deals/craigslist:deal/action", json={"action": "contacted"})
     r = pilot_report.report(7)
     assert r["testers"]["accounts"] == 1 and r["testers"]["signed_in"] == 1
+    from tests.conftest import logout
+    logout(client)                                             # sign-out keeps the count
+    assert pilot_report.report(7)["testers"]["signed_in"] == 1
     assert r["engagement"]["deal_actions_by_stage"] == {"contacted": 1}
     assert r["alerts"]["matches"] == 1 and r["alerts"]["notifications_waiting"] == len(user_jobs(uid))
     assert r["supply"]["listings_by_source"]["craigslist"] >= 1

@@ -64,6 +64,13 @@ _FIELDS = ("posted_at", "posted_at_kind", "first_seen_at", "detected_at",
 _BOOLS = {"alerted", "in_reference_set", "seller_contacted", "sold_confirmed", "is_fixture"}
 
 
+def spreadsheet_safe(v):
+    """A text cell a spreadsheet would run as a formula (=, +, -, @, tab,
+    CR first) gets a leading apostrophe. Listing titles and URLs come from
+    sellers and providers."""
+    return "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -162,7 +169,7 @@ def import_csv(path: str, *, fixture: bool = False) -> int:
     taken as given (empty = unknown)."""
     import db as _db
     n = 0
-    with open(path, newline="") as f, _db.session() as conn:
+    with open(path, newline="", encoding="utf-8-sig") as f, _db.session() as conn:
         for row in csv.DictReader(f):
             if not row.get("source") or not row.get("source_listing_id"):
                 continue
@@ -411,7 +418,9 @@ def cohort(source: Optional[str] = None, n: int = 100, *, snapshot_rows: bool = 
         with open(sheet, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(sheet_rows[0]))
             w.writeheader()
-            w.writerows(sheet_rows)
+            keys = {"source", "source_listing_id"}       # must round-trip on import
+            w.writerows({k: v if k in keys else spreadsheet_safe(v) for k, v in r.items()}
+                        for r in sheet_rows)
         out["sheet"] = sheet
     return out
 

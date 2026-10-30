@@ -313,6 +313,7 @@ BLOCKING_FLAGS = {"scam_signals", "too_good_to_be_true", "branded_title", "needs
 # would credit it as a low-mileage car.
 MILEAGE_SUSPECT_PER_YEAR = 3_000
 MILEAGE_SUSPECT_MIN_AGE = 4
+MILEAGE_SUSPECT_MAX_AGE = 25         # collector cars often are driven little
 
 
 def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str, list[str]]:
@@ -344,7 +345,8 @@ def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str
         flags.append("mileage_unknown")
     elif l.get("year"):
         age = datetime.now(timezone.utc).year - int(l["year"])
-        if age >= MILEAGE_SUSPECT_MIN_AGE and l["odometer"] / age < MILEAGE_SUSPECT_PER_YEAR:
+        if (MILEAGE_SUSPECT_MIN_AGE <= age <= MILEAGE_SUSPECT_MAX_AGE
+                and l["odometer"] / age < MILEAGE_SUSPECT_PER_YEAR):
             flags.append("mileage_suspect")
     if l.get("relist_of"):
         flags.append("relisted")

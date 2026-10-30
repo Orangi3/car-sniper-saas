@@ -8,8 +8,9 @@ already keeps. Read-only; prints counts, never names, emails or listings.
 Sections: testers (invitations, accounts, sign-ins), engagement (deal
 actions by stage), alerts (matches, notifications delivered / failed),
 supply (listings by source, valued, trusted candidates), seller listings,
-and reviewed outcomes (evaluation labels). "Active" means signed in during
-the window — the app records sign-ins, not page views.
+and reviewed outcomes (evaluation labels). "Signed in" counts testers whose
+last sign-in falls in the window — the app records sign-ins, not page
+views. The window starts at midnight UTC `days` days ago.
 """
 from __future__ import annotations
 
@@ -28,7 +29,8 @@ def _groups(conn, sql: str, args: tuple = ()) -> dict:
 
 def report(days: int = 7) -> dict:
     import db as _db
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    # a date compares correctly with every timestamp format the tables hold
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
     with _db.session() as conn:
         delivered = _count(conn, "SELECT COUNT(*) FROM jobs WHERE kind = 'notify' AND status = 'done' "
                                  "AND finished_at >= ?", (since,))
@@ -42,9 +44,8 @@ def report(days: int = 7) -> dict:
                                              (since,)),
                 "invitations_claimed": _count(conn, "SELECT COUNT(*) FROM invitations WHERE used_at >= ?",
                                               (since,)),
-                "signed_in": _count(conn, "SELECT COUNT(DISTINCT s.user_id) FROM sessions s JOIN users u "
-                                          "ON u.id = s.user_id WHERE u.role <> 'admin' AND s.created_at >= ?",
-                                    (since,)),
+                "signed_in": _count(conn, "SELECT COUNT(*) FROM users WHERE role <> 'admin' "
+                                          "AND last_login_at >= ?", (since,)),
                 "by_plan": _groups(conn, "SELECT plan, COUNT(*) FROM users WHERE role <> 'admin' "
                                          "GROUP BY plan"),
             },
@@ -80,7 +81,7 @@ def report(days: int = 7) -> dict:
 
 
 def _print(r: dict) -> None:
-    print(f"Pilot report — last {r['window_days']} days (since {r['since'][:16]} UTC)")
+    print(f"Pilot report — last {r['window_days']} days (since {r['since']} UTC)")
     for section in ("testers", "engagement", "alerts", "supply"):
         print(f"\n{section}")
         for k, v in r[section].items():

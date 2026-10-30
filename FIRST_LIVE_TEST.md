@@ -76,7 +76,10 @@ Only after MarketCheck confirms in writing that storing listings for review
 is allowed (`OWNER_ACTIONS.md` § 1). `~/.config/flipfirst/marketcheck.env`
 (`chmod 600`): `MARKETCHECK_API_KEY=`, `MARKETCHECK_COMMERCIAL_AGREEMENT=`
 (your agreement reference). Each poll is ≤ 2 paid calls
-(`MARKETCHECK_FSBO_MAX_PAGES`, default 2). Use the radius your plan allows
+(`MARKETCHECK_FSBO_MAX_PAGES`, default 2), so a run is at most 2 × `--polls`
+calls (96 at the 48-poll maximum). Harness runs use their own database, so
+the server's monthly call budget (`provider_budget.py`) does not see them —
+add them up yourself against your plan. Use the radius your plan allows
 (a 100-mile cap is reported on the free tier):
 
 ```bash
