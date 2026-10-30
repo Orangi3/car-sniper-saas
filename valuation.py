@@ -101,7 +101,7 @@ VARIANT_MARKERS = {
         ("chevrolet", "silverado"), ("gmc", "sierra"), ("dodge", "ram"),
         ("chevrolet", "suburban"), ("chevrolet", "express"), ("gmc", "savana"),
         ("chevrolet", "avalanche"))},
-    ("jeep", "wrangler"): ("Unlimited", r"\bunlimited\b|\b(?:4|four)[\s-]*door\b|\bjku\b|\bjlu\b"),
+    ("jeep", "wrangler"): ("Unlimited", r"\bunlimited\b|\b(?:4|four)[\s-]*(?:door|dr)\b|\bjku\b|\bjlu\b"),
     ("nissan", "titan"): ("XD", r"\bxd\b"),
 }
 _VARIANT_RES = {k: (label, re.compile(rx, re.IGNORECASE))

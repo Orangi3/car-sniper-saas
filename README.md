@@ -194,7 +194,9 @@ RELEASE_READINESS.md    audit, results and GO / NO-GO
   title-only source (eBay item summaries) can still mix them.
 - Damage and title problems are found only in the text we receive. eBay item
   summaries carry no description, so those listings are labeled "description
-  not checked" rather than screened.
+  not checked" rather than screened. Detection is keyword-based with simple
+  negation rules: "no rust, minor front end damage" still reads as a denial,
+  so a person must read every listing before acting on it.
 - Valuation confidence is evidence-based but **not yet calibrated** against
   real sale outcomes; the benchmark is synthetic.
 - In commercial mode there is no licensed confirmed-sales feed yet, so values

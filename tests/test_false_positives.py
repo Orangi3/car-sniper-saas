@@ -83,6 +83,7 @@ def test_other_models_have_no_variant_split():
     assert V.model_variant("2016 Nissan Titan XD SV", "Nissan", "Titan") == "XD"
     assert V.model_variant("2012 Jeep Wrangler Unlimited Sahara", "Jeep", "Wrangler") == "Unlimited"
     assert V.model_variant("2012 Jeep Wrangler Sport", "Jeep", "Wrangler") == "standard"
+    assert V.model_variant("2012 Jeep Wrangler Sahara 4dr", "Jeep", "Wrangler") == "Unlimited"
 
 
 def test_half_ton_is_not_valued_from_heavy_duty_asks():
@@ -182,6 +183,9 @@ def test_extrapolated_mileage_adjustment_is_stated():
     "front end damage, drives fine", "wrecked on passenger side", "airbags deployed",
     "frame damage", "transmission slipping when cold", "overheats in traffic", "needs work",
     "rod knock", "needs head gasket", "burns oil",
+    # a verb negation covers only the phrase after it, never a later clause
+    "AC doesn't work, front end damage", "it doesn't start, needs work",
+    "Doesn't start, needs battery or starter", "No title issues, wrecked last year",
 ])
 def test_damage_wording_marks_needs_work(desc):
     from sources.base import looks_needs_work
@@ -191,10 +195,28 @@ def test_damage_wording_marks_needs_work(desc):
 @pytest.mark.parametrize("desc", [
     "never wrecked", "no accident damage", "doesn't overheat", "does not burn oil",
     "new head gasket", "no frame damage, clean title", "hasn't been wrecked",
+    # found in review: over-flagging of ordinary seller wording
+    "Body damage free and rust free", "Clean title. No accidents, flood or frame damage.",
+    "No accidents, rust, flood, hail or frame damage",
 ])
 def test_denials_of_damage_are_not_flagged(desc):
     from sources.base import looks_needs_work
     assert not looks_needs_work("2013 Honda Accord", desc)
+
+
+@pytest.mark.parametrize("desc,branded", [
+    ("Transmission rebuilt last year, shifts perfect", False),
+    ("Rebuilt engine with 20k miles on it", False),
+    ("New rebuilt alternator", False),
+    ("Engine was professionally rebuilt", False),
+    ("Rebuilt title", True), ("Title is rebuilt", True),
+    ("rebuilt engine, rebuilt title", True),
+])
+def test_a_rebuilt_part_is_not_a_branded_title(desc, branded):
+    """Found in review (pre-existing on main): any "rebuilt" read as a
+    branded title, so a rebuilt transmission sent a clean car to the risk feed."""
+    from sources.base import looks_salvage
+    assert looks_salvage("2013 Honda Accord", desc) is branded
 
 
 def test_airbags_deployed_is_damage_not_a_military_story():
