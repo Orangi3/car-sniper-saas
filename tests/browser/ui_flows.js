@@ -140,19 +140,21 @@ const textIn = (page, sel, text = /\S/, timeout) => page.locator(sel, { hasText:
     await q.context().addCookies(cookies);
     await q.goto(BASE + "/m#/discover/trusted"); await q.waitForSelector("article[data-cid]");
     const deal = await q.getAttribute(".deal__title a", "href");
-    for (const h of ["#/discover/trusted", "#/discover/risk", deal, "#/saved", "#/alerts", "#/alerts/new", "#/sell", "#/sell/new", "#/account"]) {
-      await q.goto(BASE + "/m" + h); await q.waitForTimeout(700);
+    for (const h of ["#/discover/trusted", "#/discover/risk", deal, "#/saved", "#/alerts", "#/alerts/new",
+                     "#/sell", "#/sell/new", "#/account", "OPS"]) {
+      await q.goto(h === "OPS" ? BASE + "/admin/ops" : BASE + "/m" + h); await q.waitForTimeout(700);
       const [sw, iw, clipped] = await q.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth,
-        // money figures must never be cut off (e.g. "$1,323–$…" in a narrow column)
-        [...document.querySelectorAll(".metric__value, .kpi__value, .scenario__value")]
+        // amounts and their labels must never be cut off or run into each other
+        // (e.g. "$1,323–$…" or "mkt $13…" in a narrow column, "Evidence" under its value)
+        [...document.querySelectorAll(".metric__value, .metric__sub, .kpi__value, .scenario__value, .dl > dt, .dl > dd")]
           .filter(el => el.offsetParent && el.scrollWidth > el.clientWidth + 1).map(el => el.textContent.trim())]);
       if (sw > iw) fail(`${w}px ${h}: horizontal overflow ${sw}>${iw}`);
-      if (clipped.length) fail(`${w}px ${h}: clipped amounts ${JSON.stringify(clipped)}`);
+      if (clipped.length) fail(`${w}px ${h}: clipped text ${JSON.stringify(clipped)}`);
     }
     await q.goto(BASE + "/login"); await q.waitForTimeout(300);
     await q.context().close();
   }
-  ok("no horizontal overflow or clipped amounts at 375/768/1024/1440");
+  ok("no horizontal overflow or clipped amounts/labels at 375/768/1024/1440");
 
   // ---- 7. keyboard: skip link first, visible focus ---------------------
   const k = await newPage(1440, 900);
