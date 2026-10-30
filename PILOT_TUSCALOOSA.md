@@ -69,6 +69,56 @@ seller listings.
   `python -m evaluation label … purchased_profit_verified` — the only
   realized-profit evidence the pilot can produce.
 
+## Pilot operations
+
+**Onboarding (per tester, about 5 minutes of your time)**
+1. Send the reviewed tester terms and privacy policy (`legal/`); wait for
+   "I agree".
+2. Issue one invitation link per tester on the server (`COMPLIANCE.md`
+   shows the `systemd-run` prefix):
+   `python -m invites issue --note "pilot: <first name>" --count 1 --days 14`.
+   Links are single-use and shown once — send each to its person yourself.
+3. The tester opens the link, sets a password, then **Account → Buying
+   area**: ZIP (e.g. 35401) and radius (150). The deal feeds then show only
+   their territory.
+4. Testers start on Free: trusted and risk feeds, deal pages, save /
+   contacted / passed stages. Saved searches and alerts wait for Gate 2.
+
+**Feedback and false-positive reports**
+- In the app: deal stages (above) — counted weekly by `pilot_report`.
+- Weekly form (any free form tool), five questions: deals you contacted;
+  any that weren't what they looked like and why (wrong comparison, damage,
+  title, already sold, scam, too far); anything missing; time saved; "would
+  you pay $4.99/month for this week's results?" (yes / no / at what price).
+- Anything urgent — a scam, a wrong value, a listing that should come down —
+  by email to you; remove a seller listing as admin if needed.
+
+**Your weekly review (about an hour)**
+1. `python -m pilot_report --days 7` — sign-ins, deal actions, alert
+   delivery, supply, seller listings.
+2. Label every trusted candidate from the week (harness review sheet or
+   `python -m evaluation cohort --sheet review.csv`, then `import`); copy
+   tester reasons into `notes`.
+3. `python -m validate_deals report <run dir>` or `python -m evaluation
+   report` for precision and false-positive reasons.
+4. Any reason seen twice becomes a fix with a regression test.
+
+**Support:** one email address for testers, answered within one business
+day; account deletion on request with `python -m accounts delete EMAIL`
+(dry run first, then `--yes`).
+
+## Pilot success criteria (proposed — confirm before the pilot starts)
+
+| Measure | Target over the pilot | Source |
+|---|---|---|
+| Verified real listings | ≥ 1 licensed source exits 0 in `validate_deals`; in-band listings counted weekly | harness, `pilot_report` |
+| Useful opportunities | ≥ 5 trusted candidates a week | `pilot_report` |
+| Valuation accuracy | precision lower bound ≥ 40% at Gate 1 and ≥ 50% at Gate 2 | `EVALUATION.md` gates |
+| False-positive rate | no single reason ≥ 25% of judged candidates without a fix | review labels |
+| Alert reliability (after Gate 2) | delivery rate ≥ 95% | `pilot_report` |
+| Engagement | ≥ 6 of 10 testers sign in each week; ≥ 1 contacted car per tester | `pilot_report` |
+| Willingness to pay | ≥ 4 of 10 say they'd pay ≥ $4.99/month | weekly form |
+
 ## Must work before inviting testers
 
 - [ ] A licensed source approved in writing (MarketCheck agreement, or eBay

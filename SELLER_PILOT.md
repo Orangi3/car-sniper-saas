@@ -99,6 +99,10 @@ its condition.
 - Removal: seller taps Remove (or asks you; admins can remove any listing).
   The listing and everything derived from it is deleted.
 - Stale: hidden after 30 days without "Still for sale".
+- Abuse or a bad listing: buyers report it to you by email (the pilot has
+  no in-app report button); as admin, remove the listing, which deletes it
+  and everything derived from it. Repeat offenders: delete the account
+  (`python -m accounts delete EMAIL --yes`).
 
 ## Reviewing the first 10 (no technical skills needed)
 

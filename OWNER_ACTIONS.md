@@ -38,48 +38,10 @@ Never set `MARKETCHECK_COMMERCIAL_AGREEMENT` or `EBAY_COMMERCIAL_AGREEMENT`
 (or enable a source in commercial mode) without the signed permission or
 written approval it represents.
 
-## 1. Draft inquiry to MarketCheck
+## 1. Inquiry to MarketCheck
 
-> **Subject:** Licensing private-party listings and price data for a small used-car pilot
->
-> Hello MarketCheck team,
->
-> I'm building FlipFirst, a web app that shows individual used-car buyers
-> private-party vehicles listed below market value in their area. We are
-> starting with a free, invite-only pilot of 10 users around Tuscaloosa, AL
-> (ZIP 35401, 150-mile radius, $2,000–$15,000), then a low-cost monthly
-> subscription. Before subscribing we want to be sure our use is permitted.
->
-> How we would use your data:
-> - One central query per territory every 15–60 minutes to Private Party
->   Search (`/v2/search/car/fsbo/active`); users never query you directly.
-> - Store listing records (price, year/make/model, mileage, location,
->   listing URL, first/last seen) and price history for up to [30] days to
->   detect new listings and price drops, and delete them after that.
-> - Estimate a market value for each listing — from comparable listings or
->   your MarketCheck Price API — and show it with limited listing details
->   and a link to the original listing; later, push alerts to subscribers.
-> - Before the pilot, an internal evaluation: a few polls stored privately,
->   reviewed by me, then deleted.
-> - No resale, bulk redistribution, or AI training on your data.
->
-> Questions:
-> 1. Do your plans permit this use (storage for alerts and price history,
->    values and listing details shown to our users)? If not, which agreement
->    or tier does?
-> 2. Is the internal evaluation permitted on the Free or Basic plan?
-> 3. Which plan includes Private Party Search and the Price API, what does
->    each call cost, and is the 150-mile radius available on that plan?
-> 4. Retention, caching, attribution and display rules for listing records,
->    URLs and photos.
-> 5. Which marketplaces feed the private-party data, and roughly how many
->    active listings are within 150 miles of ZIP 35401 in our price range?
-> 6. How soon do new private listings and price changes appear?
-> 7. Is there pilot or startup pricing below the Basic plan?
->
-> Thank you — happy to share more about the product.
->
-> [Your name] · FlipFirst · [email] · [phone]
+Ready to send: `outreach/MARKETCHECK_REQUEST.md` (where to send it, the
+message, and what to do with the reply).
 
 Similar questions apply to any alternative provider (e.g. Vehicle
 Acquisition Network): ask where their FSBO data comes from and whether they
