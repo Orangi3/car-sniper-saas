@@ -60,6 +60,8 @@ STATIC = ROOT / "static"
 # Only static/ is web-served. (static_folder=ROOT used to expose every file
 # next to the code — source, a SQLite listings.db, logs — at /<dirname>/…)
 app = Flask(__name__, static_folder=str(STATIC), static_url_path="/static")
+# no request body this app accepts is near this; larger ones get 413 before parsing
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 
 
 def _asset_version() -> str:
@@ -2396,7 +2398,7 @@ def api_deal_detail(cid: str):
     u = auth.current_user()
     with sniper.db() as conn:
         r = conn.execute(
-            f"SELECT {_DEAL_COLS}, l.description, nm.confidence_reasons, nm.evidence, "
+            f"SELECT {_DEAL_COLS}, l.description, l.zip, l.vin, nm.confidence_reasons, nm.evidence, "
             "  sv.status AS user_status, sv.note AS user_note "
             "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
             "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
@@ -2489,14 +2491,26 @@ def _analysis_ctx(u):
     return settings, home_zip, limit, used
 
 
+REANALYZE_FREE_MIN = 30     # the same inputs again within this window aren't counted again
+
+
 def _run_analysis(u, body) -> tuple[Optional[dict], Optional[tuple]]:
-    """(analysis, None) or (None, error response). Counts one analysis."""
+    """(analysis, None) or (None, error response). Counts one analysis, unless
+    this user analyzed exactly these inputs in the last REANALYZE_FREE_MIN
+    minutes (saving or re-opening what they just saw costs nothing)."""
     import analyze as analyze_mod
+    from datetime import datetime, timedelta, timezone
     rl = _rl_or_fail("analyze", 20)
     if rl:
         return None, rl
     settings, home_zip, limit, used = _analysis_ctx(u)
-    if used >= limit:
+    fields, _ = analyze_mod.clean(body)
+    key = analyze_mod.input_key(fields)
+    since = (datetime.now(timezone.utc) - timedelta(minutes=REANALYZE_FREE_MIN)).isoformat()
+    with sniper.db() as conn:
+        repeat = conn.execute("SELECT 1 FROM usage_events WHERE user_id = ? AND kind = 'analysis' "
+                              "AND ref = ? AND created_at >= ?", (u.id, key, since)).fetchone()
+    if used >= limit and not repeat:
         return None, (jsonify({"error": f"You've used today's {limit} analyses on your plan; "
                                         "more tomorrow, or upgrade for a higher limit.",
                                "limit": limit}), 429)
@@ -2505,10 +2519,12 @@ def _run_analysis(u, body) -> tuple[Optional[dict], Optional[tuple]]:
                                        peer_filter=lambda r: _displayable(r, limits))
     if errs:
         return None, (jsonify({"error": errs[0], "errors": errs}), 400)
-    with sniper.db() as conn:
-        conn.execute("INSERT INTO usage_events(user_id, kind, units, cost_cents, created_at) "
-                     "VALUES (?, 'analysis', 1, 0, ?)", (u.id, _db.now_utc_iso()))
-    result["usage"] = {"analyses_today": used + 1, "analyses_per_day": limit}
+    if not repeat:
+        with sniper.db() as conn:
+            conn.execute("INSERT INTO usage_events(user_id, kind, units, cost_cents, created_at, ref) "
+                         "VALUES (?, 'analysis', 1, 0, ?, ?)", (u.id, _db.now_utc_iso(), key))
+        used += 1
+    result["usage"] = {"analyses_today": used, "analyses_per_day": limit}
     return result, None
 
 
@@ -2579,9 +2595,10 @@ def api_opportunity_create():
 @auth.login_required
 def api_opportunity_get(oid: int):
     import workspace
+    limits = _display_limits()
     with sniper.db() as conn:
         try:
-            return jsonify(workspace.get(conn, auth.current_user().id, oid))
+            return jsonify(workspace.get(conn, auth.current_user().id, oid, limits))
         except workspace.NotFound:
             return jsonify({"error": "not found"}), 404
 
@@ -2607,10 +2624,11 @@ def api_opportunity_update(oid: int):
         if err:
             return err
         inputs, _ = analyze_mod.clean(body["input"])
+    limits = _display_limits()
     with sniper.db() as conn:
         try:
-            return jsonify(workspace.update(conn, u.id, oid, changes, inputs=inputs,
-                                            analysis=result))
+            workspace.update(conn, u.id, oid, changes, inputs=inputs, analysis=result)
+            return jsonify(workspace.get(conn, u.id, oid, limits))
         except workspace.NotFound:
             return jsonify({"error": "not found"}), 404
         except ValueError as e:

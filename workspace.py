@@ -5,8 +5,10 @@ happened (purchase price, repair spending, fees, sale price and dates).
 
 Private by construction: every function takes the user's id and every query
 is scoped to it, so another user's deal is simply "not found". Outcomes are
-recorded by the user and labeled that way: FlipFirst doesn't verify them,
-show them to anyone else, or use them in aggregate.
+recorded by the user and labeled that way: FlipFirst doesn't verify them or
+show them to anyone else. The only aggregate use is pilot_report's counts
+(deals saved, by stage, outcomes recorded) — numbers only, never a vehicle,
+price or note.
 """
 from __future__ import annotations
 
@@ -56,7 +58,7 @@ def clean_changes(p) -> tuple[dict, list[str]]:
             continue
         try:
             n = int(round(float(str(v).replace(",", "").replace("$", ""))))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             errs.append(f"{k.replace('_', ' ')} must be a number")
             continue
         if not 0 <= n <= 1_000_000:
@@ -147,15 +149,35 @@ def list_for(conn, user_id: int) -> list[dict]:
     return [_item(r) for r in rows]
 
 
-def get(conn, user_id: int, oid: int) -> dict:
+def _hide_stale_comps(a: Optional[dict], display_limits: Optional[dict]) -> None:
+    """A saved analysis keeps its comparables, but a source whose terms limit
+    how stale shown listings may be (eBay: 6 h) drops out once the analysis
+    is older than that; the values computed at the time stay."""
+    comps = ((a or {}).get("evidence") or {}).get("comps") or []
+    hours = {k: v for k, v in (display_limits or {}).items() if isinstance(v, (int, float))}
+    if not comps or not hours:
+        return
+    try:
+        at = datetime.fromisoformat(str(a.get("analyzed_at")).replace("Z", "+00:00"))
+        age_h = (datetime.now(timezone.utc) - at).total_seconds() / 3600
+    except ValueError:
+        age_h = float("inf")
+    keep = [c for c in comps if not (c.get("source") in hours and age_h > hours[c["source"]])]
+    if len(keep) < len(comps):
+        a["evidence"]["comps"] = keep
+        a["evidence"]["comps_hidden"] = len(comps) - len(keep)
+
+
+def get(conn, user_id: int, oid: int, display_limits: Optional[dict] = None) -> dict:
     row = conn.execute(f"SELECT {_COLS} FROM opportunities WHERE id = ? AND user_id = ?",
                        (oid, user_id)).fetchone()
     if not row:
         raise NotFound()
     r = dict(row)
     out = _item(row)
-    out["input"] = json.loads(r["input_json"] or "{}")
+    out["input"] = json.loads(r["input_json"] or "null") or {}
     out["analysis"] = json.loads(r["analysis_json"] or "null")
+    _hide_stale_comps(out["analysis"], display_limits)
     return out
 
 

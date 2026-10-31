@@ -169,8 +169,9 @@ def test_analyze_api_free_plan_daily_limit_and_login(client, world, monkeypatch)
     assert r.get_json()["usage"] == {"analyses_today": 1, "analyses_per_day": 20}
     assert client.post("/api/analyze", json={"asking_price": 1}).status_code == 400
     monkeypatch.setenv("PLAN_LIMITS_JSON", '{"free": {"analyses_per_day": 2}}')
-    assert client.post("/api/analyze", json=CAMRY).status_code == 200
-    assert client.post("/api/analyze", json=CAMRY).status_code == 429
+    assert client.post("/api/analyze", json={**CAMRY, "mileage": 140000}).status_code == 200
+    assert client.post("/api/analyze", json={**CAMRY, "mileage": 150000}).status_code == 429
+    assert client.post("/api/analyze", json=CAMRY).status_code == 200      # a repeat isn't counted
     assert client.post("/api/analyze", json=CAMRY,
                        headers={"Origin": "https://evil.example"}).status_code == 403
 
@@ -255,3 +256,77 @@ def test_workspace_plan_limit_and_account_deletion(client, world, monkeypatch):
     logout(client)
     accounts.delete("a@example.com", confirm=True)
     assert q("SELECT 1 FROM opportunities") == []
+
+
+# ---------- regressions from the security review (2026-10-31) -------------------
+
+def test_a_cosmetic_cost_alone_keeps_the_repair_allowance(client, world):
+    r = run({**CAMRY, "costs": {"recon": 200}})
+    assert r["investment"]["costs"]["mechanical"] == 500 and r["investment"]["costs"]["recon"] == 200
+    r = run({**CAMRY, "condition": "needs_work", "faults": "transmission slips", "costs": {"recon": 150}})
+    assert "repairs_not_estimated" in r["risk_flags"] and r["decision"]["class"] == "high_risk"
+
+
+def test_overflowing_numbers_are_rejected_not_crashes(client, world):
+    make_user(client, "u@example.com", plan="free", topic=False)
+    login(client, "u@example.com")
+    assert client.post("/api/analyze", json={**CAMRY, "asking_price": "1e999"}).status_code == 400
+    oid = client.post("/api/opportunities", json={"input": CAMRY}).get_json()["id"]
+    for bad in ("inf", "nan", "-1e999"):
+        assert client.patch(f"/api/opportunities/{oid}", json={"purchase_price": bad}).status_code == 400
+
+
+def test_saving_what_you_just_analyzed_is_not_counted_twice(client, world, monkeypatch):
+    monkeypatch.setenv("PLAN_LIMITS_JSON", '{"free": {"analyses_per_day": 2}}')
+    make_user(client, "u@example.com", plan="free", topic=False)
+    login(client, "u@example.com")
+    other = {**CAMRY, "mileage": 140000}
+    assert client.post("/api/analyze", json=CAMRY).get_json()["usage"]["analyses_today"] == 1
+    assert client.post("/api/analyze", json=other).get_json()["usage"]["analyses_today"] == 2
+    assert client.post("/api/opportunities", json={"input": other}).status_code == 201  # at the limit
+    assert client.post("/api/analyze", json=CAMRY).status_code == 200                # same inputs: free
+    assert client.post("/api/analyze", json={**CAMRY, "mileage": 99000}).status_code == 429
+
+
+def test_saved_deals_stop_showing_stale_ebay_comparables(client, world):
+    import json
+    import db
+    now = datetime.now(timezone.utc).isoformat()
+    with db.session() as c:
+        c.execute("UPDATE listings SET source = 'ebay', last_seen_at = ? "
+                  "WHERE composite_id LIKE 'craigslist:peer%'", (now,))
+    make_user(client, "u@example.com", plan="free", topic=False)
+    login(client, "u@example.com")
+    o = client.post("/api/opportunities", json={"input": CAMRY}).get_json()
+    n = len(o["analysis"]["evidence"]["comps"])
+    assert n and {x["source"] for x in o["analysis"]["evidence"]["comps"]} == {"ebay"}
+    a = o["analysis"]
+    a["analyzed_at"] = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
+    with db.session() as c:
+        c.execute("UPDATE opportunities SET analysis_json = ? WHERE id = ?", (json.dumps(a), o["id"]))
+    later = client.get(f"/api/opportunities/{o['id']}").get_json()["analysis"]
+    assert later["evidence"]["comps"] == [] and later["evidence"]["comps_hidden"] == n
+    assert later["value_mid"] == a["value_mid"]                    # the value computed then stays
+
+
+def test_the_mileage_slope_uses_a_bounded_sample():
+    import time
+    import valuation
+    pts = [(50_000 + i * 60, 12_000 - 0.05 * i * 60) for i in range(3_000)]
+    t = time.perf_counter()
+    assert abs(valuation.theil_sen_slope(pts) + 0.05) < 1e-9
+    assert time.perf_counter() - t < 1.0
+
+
+def test_oversized_bodies_are_refused_before_parsing(client, world):
+    make_user(client, "u@example.com", plan="free", topic=False)
+    login(client, "u@example.com")
+    r = client.post("/api/analyze", json={**CAMRY, "description": "x" * (3 * 1024 * 1024)})
+    assert r.status_code == 413
+
+
+def test_deal_detail_carries_zip_and_vin_for_analyze_with_my_numbers(client, world):
+    make_user(client, "u@example.com", plan="free", topic=False)
+    login(client, "u@example.com")
+    d = client.get("/api/deals/craigslist:peer0").get_json()
+    assert "zip" in d and "vin" in d
