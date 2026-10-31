@@ -9,7 +9,7 @@ const V = FF.ASSET_V;
 /* ---------------- vocabulary ---------------- */
 const PLAN_NAMES = {free: "Free", starter: "Lite", pro: "Pro"};
 const PLAN_RANK = {free: 0, starter: 1, pro: 2};
-const FEEDS = [["mine", "For you"], ["trusted", "Top deals"], ["risk", "Flagged"]];
+const FEEDS = [["mine", "For you"], ["trusted", "Top deals"], ["sellers", "FlipFirst sellers"], ["risk", "Flagged"]];
 const SORTS = [["rank", "Best opportunity"], ["discount", "Biggest discount"], ["profit", "Highest est. profit"],
                ["price", "Lowest price"], ["newest", "Newest"]];
 const EVIDENCE = {confirmed_sales: "completed sales", asking_comparables: "asking prices",
@@ -116,7 +116,7 @@ function goBack() {
 
 /* ---------------- router ---------------- */
 const ROUTES = [
-  [/^#\/discover(?:\/(mine|trusted|risk))?$/, viewDiscover],
+  [/^#\/discover(?:\/(mine|trusted|sellers|risk))?$/, viewDiscover],
   [/^#\/deal\/(.+)$/, viewDeal],
   [/^#\/saved$/, viewSaved],
   [/^#\/analyze$/, viewAnalyze],
@@ -315,6 +315,7 @@ async function viewDiscover(m, tok) {
         <div style="flex:1 1 220px;min-width:0"><h3 style="font-size:var(--fs-md)">Get alerted the moment a deal appears</h3>
           <p class="small muted">Tell FlipFirst what you buy, where, and what counts as a deal. Matches arrive as push alerts.</p></div>
         <a class="btn btn--primary" href="#/alerts/new">${icon("plus")}Create a search</a></div>` : ""}
+    ${feed === "sellers" ? html`<div class="notice" style="margin-bottom:var(--s4)">${icon("tag")}<div>Cars listed on FlipFirst by their owners and approved dealers. Details are <strong>seller-reported</strong>; a market value appears only when FlipFirst has enough comparables. Use <strong>Analyze with my numbers</strong> on any of them.</div></div>` : ""}
     ${feed === "risk" ? html`<div class="notice notice--warn" style="margin-bottom:var(--s4)">${icon("alert")}<div>These listings have <strong>risk flags</strong> — branded titles, mechanical problems, scam signals or weak comparables. Shown for transparency; verify everything before acting.</div></div>` : ""}
     <div id="feed" class="feed" aria-busy="true">${skeletons(4)}</div>
     <p class="xsmall muted" style="margin-top:var(--s6);text-align:center">Values and profits are estimates from comparable listings, not guarantees. Inspect every car and check its title before you buy.</p>`);
@@ -342,6 +343,8 @@ function feedEmpty(feed) {
     html`<div class="row" style="justify-content:center;flex-wrap:wrap">${S.searches.length ? "" : html`<a class="btn btn--primary" href="#/alerts/new">${icon("plus")}Create a search</a>`}<a class="btn" href="#/discover/trusted">Browse top deals</a></div>`);
   if (feed === "trusted") return emptyState("discover", "No top deals right now",
     "Top deals are at least 10% below market with medium or high valuation confidence and no risk flags. New listings are checked continuously.", raw('<div id="src-note"></div>'));
+  if (feed === "sellers") return emptyState("tag", "No FlipFirst seller listings here yet",
+    "Cars listed directly on FlipFirst by their owners and approved dealers appear here, with or without a market value.");
   return emptyState("shield", "Nothing flagged right now", "Risk-flagged listings that are still priced well below market show up here.");
 }
 async function sourceNote() {

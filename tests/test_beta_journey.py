@@ -55,6 +55,9 @@ def test_one_buyer_one_dealer_without_paid_data(client, no_paid_data, mail):
 
     # 4, 8. the flipper finds it, analyzes it with their own numbers, compares, reports
     login(client, "flipper@example.com")
+    feeds = {f: [x["composite_id"] for x in client.get(f"/api/deals?feed={f}").get_json()]
+             for f in ("sellers", "trusted", "risk")}
+    assert feeds == {"sellers": [cid], "trusted": [], "risk": []}   # findable without a value
     d = client.get(f"/api/deals/{cid}").get_json()
     assert "Northport Wholesale, a dealer approved by FlipFirst" in d["provenance"]
     assert d.get("value_mid") is None                       # no comparables: no market value
@@ -72,3 +75,27 @@ def test_one_buyer_one_dealer_without_paid_data(client, no_paid_data, mail):
     assert r["analyze"]["deals_saved"] == 2 and r["analyze"]["outcomes_recorded"] == 1
     assert r["sellers"]["approved_dealers"] == 1 and r["sellers"]["open_reports"] == 1
     assert q("SELECT COUNT(*) AS n FROM listings WHERE source = 'direct'")[0]["n"] == 1
+
+
+def test_sellers_feed_shows_only_live_confirmed_listings_in_the_buyers_area(client, no_paid_data, mail):
+    from datetime import datetime, timedelta, timezone
+    from tests.test_seller_inventory import vin
+    from tests.test_seller_listings import car
+    seller(client, "pending@example.com", verify=False)
+    client.post("/api/seller/listings", json=car(vin=vin(5)))        # email unconfirmed: not live
+    logout(client)
+    seller(client, "live@example.com", box=mail)
+    live = client.post("/api/seller/listings", json=car(vin=vin(6))).get_json()["composite_id"]
+    stale = client.post("/api/seller/listings", json=car(vin=vin(7))).get_json()["composite_id"]
+    old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+    import db
+    with db.session() as c:                                            # not re-confirmed for 40 days
+        c.execute("UPDATE seller_listings SET last_confirmed_at = ? WHERE id = ?",
+                  (old, int(stale.split(":")[1])))
+    logout(client)
+    make_user(client, "buyer@example.com", plan="free", topic=False)
+    login(client, "buyer@example.com")
+    feed = lambda: [x["composite_id"] for x in client.get("/api/deals?feed=sellers").get_json()]
+    assert feed() == [live]                                           # not the pending or the stale one
+    assert client.post("/api/me/territory", json={"home_zip": "36602", "radius_mi": 25}).status_code == 200
+    assert feed() == []                                               # outside the buyer's area

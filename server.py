@@ -2347,6 +2347,16 @@ def api_deals():
                 "  AND (sv.status IS NULL OR sv.status <> 'passed') "
                 "ORDER BY nm.score DESC LIMIT ?",
                 (u.id, feed, limit)).fetchall()
+        elif feed == "sellers":
+            # cars listed on FlipFirst by their sellers, valued or not: at launch
+            # most have no comparables, and a listing never needs a market value
+            # to be seen (_displayable keeps only live, verified, re-confirmed ones)
+            rows = conn.execute(
+                f"SELECT {_DEAL_COLS}, sv.status AS user_status FROM listings l "
+                "LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
+                "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
+                "WHERE l.source = 'direct' AND (sv.status IS NULL OR sv.status <> 'passed') "
+                "ORDER BY l.first_seen_at DESC LIMIT ?", (u.id, limit)).fetchall()
         elif feed == "search":
             import plans
             import saved_search_alerts as ssa
@@ -2383,15 +2393,15 @@ def api_deals():
                 "WHERE sv.user_id = ? AND sv.status <> 'passed' "
                 "ORDER BY sv.updated_at DESC LIMIT ?", (u.id, limit)).fetchall()
         else:
-            return jsonify({"error": "feed must be mine|trusted|risk|search|saved"}), 400
+            return jsonify({"error": "feed must be mine|trusted|risk|sellers|search|saved"}), 400
     limits = _display_limits()
     out = [_deal_row(dict(r), psettings, plan, home_zip) for r in rows
            if _displayable(dict(r), limits)]
-    if feed in ("trusted", "risk") and home_zip and home_radius:
+    if feed in ("trusted", "risk", "sellers") and home_zip and home_radius:
         # shared feeds respect the user's territory too
         out = [d for d in out if d["distance_mi"] is not None
                and d["distance_mi"] <= home_radius]
-    if feed not in ("mine", "saved"):     # these stay newest-first
+    if feed not in ("mine", "saved", "sellers"):     # these stay newest-first
         out = _rank(out)
     return jsonify(out)
 
