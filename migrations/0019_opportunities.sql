@@ -26,3 +26,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_opportunities_user ON opportunities(user_id, updated_at);
+-- usage_events.ref: what was metered (for analyses, a hash of the validated
+-- inputs) so the same analysis saved or re-opened minutes later isn't
+-- counted against the daily limit twice.
+ALTER TABLE usage_events ADD COLUMN ref TEXT;

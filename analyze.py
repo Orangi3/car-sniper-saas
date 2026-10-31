@@ -84,7 +84,7 @@ def _num(p: dict, key: str, lo: int, hi: int, label: str, errs: list) -> Optiona
         return None
     try:
         n = int(round(float(str(v).replace(",", "").replace("$", "").strip())))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):     # "abc", "nan", "1e999", "inf"
         errs.append(f"{label} must be a number")
         return None
     if not lo <= n <= hi:
@@ -137,6 +137,13 @@ def clean(p) -> tuple[dict, list[str]]:
     if f["condition"] not in CONDITIONS:
         errs.append("Condition must be one of: " + ", ".join(CONDITIONS))
     return f, errs
+
+
+def input_key(f: dict) -> str:
+    """Identifies an analysis request (validated inputs) for usage counting."""
+    import hashlib
+    import json
+    return hashlib.sha256(json.dumps(f, sort_keys=True, default=str).encode()).hexdigest()[:32]
 
 
 def summarize(raw: Optional[dict]) -> Optional[dict]:
@@ -228,7 +235,10 @@ def run(f: dict, ident: dict, *, settings: Optional[dict], home_zip: Optional[st
 
     # ---- profit: the price you expect to pay, your costs, a resale basis ----
     pay = f["offer_price"] or f["asking_price"]
-    s = {**(settings or {}), **f["costs"], "negotiation_pct": 0}
+    # this car's costs over the user's full, effective assumptions: overlaying
+    # raw settings would let a lone cosmetic cost trip profit.merged's
+    # pre-split rule and drop the mechanical allowance
+    s = {**profit.merged(settings), **f["costs"], "negotiation_pct": 0}
     dist = geo.distance_mi(home_zip, *at) if (at and home_zip and car_zip != home_zip) else None
     if market:
         basis = "market"
@@ -283,7 +293,7 @@ def run(f: dict, ident: dict, *, settings: Optional[dict], home_zip: Optional[st
         flag("structural_damage")
     if cond == "not_running":
         flag("not_running")
-    repairs_entered = bool(f["costs"].get("mechanical") or f["costs"].get("recon"))
+    repairs_entered = bool(f["costs"].get("mechanical"))      # cosmetic work isn't a repair estimate
     if cond == "needs_work" or looks_needs_work("", text):
         flag("needs_work")
         if not repairs_entered:

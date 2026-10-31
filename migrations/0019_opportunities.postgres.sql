@@ -18,3 +18,4 @@ CREATE TABLE IF NOT EXISTS opportunities (
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_opportunities_user ON opportunities(user_id, updated_at);
+ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS ref TEXT;

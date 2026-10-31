@@ -618,9 +618,10 @@ function inputToDraft(inp) {
   return D;
 }
 function draftFromDeal(d) {
+  // the listing's title goes in with its description so title wording (salvage, rebuilt…) is checked too
   return inputToDraft({year: d.year, make: d.make, model: d.model, trim: d.trim, mileage: d.odometer,
-    asking_price: d.price, description: d.description, composite_id: d.composite_id,
-    title_status: d.is_salvage ? "unknown" : null});
+    asking_price: d.price, zip: d.zip, vin: d.vin, composite_id: d.composite_id,
+    description: [d.title, d.description].filter(Boolean).join("\n")});
 }
 
 function analyzeForm(D, eff, editing) {
