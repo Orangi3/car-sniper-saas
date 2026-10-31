@@ -56,6 +56,17 @@ legal review of legal/ drafts ──► publish links ──► invitations
 | Disposable-host deployment | SIMULATED — see `DEPLOY_TEST_REPORT.md` |
 | Real listings, real deals, real users | NOT TESTED — BLOCKED on #3 |
 
+## Verified — Analyze, workspace, original inventory (PRs #13, #14)
+
+| Check | Result |
+|---|---|
+| SQLite suite (#14 code, includes #13) | VERIFIED — 595 passed, 2 skipped (the skips need PostgreSQL) |
+| PostgreSQL 16 suite (#14 code) | VERIFIED — 597 passed |
+| CI on #13 head `8ce3c01` | VERIFIED — 6/6 (sqlite, postgres, browser-smoke; push and pull_request runs) |
+| Browser, Playwright 1.47.2 (CI's version) | VERIFIED: the Analyze journey in `smoke_mobile.js`; `ui_flows.js` (incl. no overflow at 375–1440 px); a local check of a dealer CSV import |
+| Analyze speed on 50,000 SIMULATED listings | MEASURED — 41 ms per analysis on SQLite, 59 ms on PostgreSQL (with the 0020 index) |
+| Real vehicles, real sellers, real users | NOT TESTED — no licensed data or sellers yet |
+
 ## Task register — Analyze, workspace, original inventory (branch `feat/flipfirst-analyze`)
 
 Scored before building: priority = value × business importance ÷ (effort +
@@ -87,6 +98,11 @@ Operating cost is per month at pilot scale.
   CI is still green.
 - PR #12: after #11 merges it is retargeted to `main`; approve its final
   head the same way.
+- PR #13 (Analyze, workspace), then PR #14 (dealer inventory, reports,
+  cost model): the same each time. I merge the one below, retarget the next
+  to `main`, check that its diff is only its own commits, close and reopen it
+  so CI runs against `main`, then ask you to approve its final head. Never
+  squash, so the stacked branches keep applying cleanly.
 
 **Written provider approval**
 - MarketCheck: send `outreach/MARKETCHECK_REQUEST.md` (contact form on
@@ -134,4 +150,8 @@ no paid plans).
 - After #11 merges: `gh api repos/Orangi3/car-sniper-saas/pulls/12 -X PATCH
   -f base=main`, confirm the diff is only #12's commits, wait for CI, ask for
   approval of the final head.
+- Branches for the stack: `feat/flipfirst-analyze` (PR #13) and
+  `feat/flipfirst-seller-inventory` (PR #14, stacked on #13).
+- Browser tests locally: use Playwright **1.47.2**, the version CI pins.
+  Newer versions hide CSP problems; 1.63 passed a test that 1.47.2 failed.
 - Then: whichever provider answers first → `FIRST_LIVE_TEST.md`.
