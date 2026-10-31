@@ -1,5 +1,61 @@
 # Deployment test reports — disposable host
 
+## Go-live rehearsal, 2026-10-31 (PR #16, `golive.sh`)
+
+A fresh disposable Ubuntu 24.04 host (SIMULATED server and services). The
+steps:
+1. `install.sh` and `sync.sh --apply` at `7a24672`.
+2. The checks below.
+3. The two `golive.sh` fixes the run found.
+4. `sync.sh --apply` of the final commit `732ab60` over the old release,
+   with `golive.sh` and the restore drill run again on it.
+
+Test-only stand-ins:
+- Resend: an SMTP server that requires STARTTLS, with a certificate from a
+  throwaway CA the host trusts, then AUTH;
+- B2: an S3-compatible server (moto);
+- Healthchecks.io: a local HTTP server;
+- the restore drill's computer: the same host, holding a test age key.
+
+| Check | Result |
+|---|---|
+| `golive.sh` with nothing configured | stops at gate 1 and lists the missing settings by name, values never printed |
+| `golive.sh` with a test-only SSH rule still open | gates 1–7 pass, then it stops at gate 8: "ufw allows more than 80 and 443: 22/tcp" |
+| `golive.sh --test-email` after removing the rule, at `732ab60` | all 9 gates pass; admin present |
+| Test email | delivered over STARTTLS + AUTH, with the certificate verified |
+| Health pings | web, pipeline and backup |
+| Backup | encrypted dump uploaded to the S3 stand-in; nightly timer on |
+| Timers | reconcile disabled; backup and health on |
+| Restore drill (`restore.sh`) | download, off-host decrypt, restore into a fresh database, 0 new migrations, row counts, drop: PASS |
+| Seller confirmation email over STARTTLS, contact by plan | PASS |
+| Reboot (`docker restart`) | systemd running; PostgreSQL, Caddy, web, worker, scheduler active; reconcile still disabled; HTTPS with the verified certificate; both health probes pinged |
+| Memory | ~350–450 MB for the whole stack (RSS: two gunicorn workers ~54 MB each, worker and scheduler ~45 MB each, Caddy ~43 MB, PostgreSQL) |
+
+Found and fixed during this rehearsal:
+- **`golive.sh`, admin check.** It counted admins through a raw database
+  connection that has no `execute`, and hid the error. It reported "no
+  admin account yet" although one existed. It now uses the app's
+  `db.session()` and stops on an error (`732ab60`).
+- **`backup.sh` and `restore.sh`, B2 region.**
+  - `backup.sh` signed every request for `us-east-005`; `restore.sh` set
+    no region.
+  - Both now take the region from `B2_ENDPOINT`, so a bucket in any B2
+    region works. The default is unchanged.
+  - Not proven against real B2; tested with sample endpoints.
+- **Test setup, not product.**
+  - The first post-reboot probe passed with no pings. The reboot had
+    cleared `/tmp`, removing the stand-in ping server.
+  - `healthcheck.sh` still exits 0 when a ping can't be delivered. That's
+    fine for a dead-man check: a missing ping is what raises the alert.
+  - With the stand-in restarted, both pings arrived.
+
+Not tested here:
+- a real VPS;
+- Let's Encrypt;
+- Tailscale (stub);
+- Resend, B2 and Healthchecks.io themselves;
+- the B2 lifecycle rule.
+
 ## Release rehearsal, 2026-10-31 (final release heads)
 
 The release as it will ship, on a fresh **disposable** Ubuntu 24.04 host
@@ -50,7 +106,7 @@ Found during the rehearsal:
     created as root. The health job withheld the web ping and logged
     `web /health FAILED`: the dead-man alert behaving as designed.
   - With the right CA trusted, both pings arrived.
-- **Documentation, fixed in `FIRST_DEPLOY.md` step 13.** `install.sh`
+- **Documentation, fixed in `FIRST_DEPLOY.md` (now handled by `golive.sh` gate 4).** `install.sh`
   enables `sniper-reconcile.timer`. Without Stripe keys that job refuses to
   run (`missing required env var(s): STRIPE_SECRET_KEY`). In a pilot with no
   billing, disable the timer and skip the reconcile check, or the check
@@ -102,7 +158,7 @@ container.
 | TLS certificate | Caddy's local CA (`local_certs`, test-only edit) for `app.tryflipfirst.test` | Let's Encrypt for `app.tryflipfirst.com` once DNS points at the server — **not testable without DNS** |
 | Tailscale | stub command — `tailscale.com` is blocked from this sandbox | real install + `tailscale up --ssh`; **not tested** |
 | SSH after ufw | test allowed SSH from the Docker bridge only, standing in for Tailscale | public SSH stays blocked; you reach the server over Tailscale |
-| Backups to B2, restore drill | not run (no B2 bucket or age key) | `FIRST_DEPLOY.md` step 11 |
+| Backups to B2, restore drill | not run (no B2 bucket or age key) | `FIRST_DEPLOY.md`, Backups; rehearsed against an S3 stand-in on 2026-10-31 (above) |
 | Email (Resend), Healthchecks pings | 2026-10-30: not run. 2026-10-31: local SMTP and HTTP sinks (test-only) | the real services, steps 10 and 13 |
 | Hardware | container on a 4-CPU sandbox | 1–2 vCPU / 2 GB VPS (measured footprint fits) |
 
