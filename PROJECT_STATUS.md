@@ -1,13 +1,108 @@
 # FlipFirst project status and owner-action package
 
-Checkpoint: 2026-10-30. `main` = `b0d6ee4`. Open work is a stack of four
-pull requests, merged in this order:
-1. PR #11 (`ae5308d`), ready for your approval.
-2. PR #12 (`5c6b2f2`).
-3. PR #13, Analyze and workspace (`feat/flipfirst-analyze`).
-4. PR #14, seller and dealer inventory (`feat/flipfirst-seller-inventory`). Evidence labels: **VERIFIED** (run here),
-**SIMULATED** (fixtures / stand-ins / disposable host), **ESTIMATED**,
-**NOT TESTED**, **BLOCKED**.
+Checkpoint: 2026-10-31. `main` = `b0d6ee4` (unchanged). Open work is a stack
+of four pull requests, merged strictly in this order (final heads under
+"Release" below):
+1. PR #11 — real-data readiness (`ae5308d`)
+2. PR #12 — first live data, compliance, launch prep (`5c6b2f2`)
+3. PR #13 — FlipFirst Analyze and the private deal workspace
+   (`feat/flipfirst-analyze`)
+4. PR #14 — dealer inventory, CSV import, buyer reports, cost model
+   (`feat/flipfirst-seller-inventory`)
+
+Evidence labels: **VERIFIED** (run here), **SIMULATED** (fixtures /
+stand-ins / disposable host), **ESTIMATED**, **NOT TESTED**, **BLOCKED**.
+
+## Release: merge procedure, migrations, rollback
+
+**Merge procedure.** Each step happens only after you approve that PR's
+exact head SHA. Never squash or force-push, and never bypass branch
+protection: protection requires PRs, the three CI checks and admin
+enforcement, with 0 approving reviews required.
+1. Re-check the PR: its head equals the approved SHA, the three required
+   checks are green on that SHA, and `main` is unchanged.
+2. Merge with a merge commit pinned to the SHA:
+   `gh api -X PUT repos/Orangi3/car-sniper-saas/pulls/N/merge -f merge_method=merge -f sha=SHA`.
+3. CI runs on `main` by itself; wait for it to go green.
+4. Retarget the next PR: `gh api -X PATCH repos/Orangi3/car-sniper-saas/pulls/N+1 -f base=main`.
+5. Check that its diff is only its own commits (commit and file counts match
+   what it showed before).
+6. Check that `main`'s tree equals the merged PR's head:
+   `git diff --quiet <merged head> origin/main`.
+7. If the trees are equal, the next PR's merge result is exactly its own
+   head's tree. The push-triggered CI run on that head already tested that
+   tree, so no new run and no close/reopen are needed.
+8. If `main` moved for any other reason, bring the branch up to date with
+   GitHub's update-branch endpoint
+   (`gh api -X PUT repos/Orangi3/car-sniper-saas/pulls/N+1/update-branch -f expected_head_sha=SHA`).
+   That creates a new head, starts CI normally, and the new head is what you
+   approve.
+9. To repeat a flaky check on the same head, re-run that SHA's push workflow
+   run (`gh api -X POST repos/Orangi3/car-sniper-saas/actions/runs/RUN_ID/rerun`).
+
+**Migrations.**
+- #11 and #12 add none.
+- #13 adds `0019_opportunities` (new table) and
+  `0020_listings_lower_ymm_index` (new index on `listings`).
+- #14 adds `0021_seller_profiles_and_reports` (two new tables).
+- All three are `CREATE … IF NOT EXISTS`, paired for SQLite and PostgreSQL
+  (`scripts/check_migrations.py` ok), and none alters or deletes existing
+  data.
+- The 0020 index build briefly blocks writes to `listings` on PostgreSQL.
+  At pilot size that takes well under a second; at hundreds of thousands of
+  rows, run it during a quiet period.
+
+**Rollback** (VERIFIED on SQLite).
+- `deploy/sync.sh --rollback` returns to the previous release's code.
+  Startup only checks that the migrations *that code* knows about are
+  applied, so newer tables don't stop it. PR #12's head (`5c6b2f2`) started
+  against a database migrated through 0021: `/health` 200, `/login` 200.
+- Older code ignores the new tables. Dealer listings stay marked as dealer
+  listings, without the business name.
+- Dropping the new tables is not needed for a rollback, and it would delete
+  users' saved deals, dealer approvals and reports. Do it only on your
+  explicit decision, after a backup.
+
+## Beta readiness: what works with no paid data (VERIFIED in tests, SIMULATED cars)
+
+| # | Capability | Without paid data | Evidence |
+|---|---|---|---|
+| 1 | Enter a vehicle by hand or by VIN | yes (VIN decode: NHTSA, free) | `test_analyze`, browser journey |
+| 2 | Evaluate costs and risks | yes: costs, break-even, maximum offer, risks, missing information. With fewer than three comparables a market value is **"no defensible value"**; profit then uses the user's own resale estimate, labeled as theirs | `test_analyze`, `test_beta_journey` |
+| 3 | Save an opportunity | yes, private to the user | same |
+| 4 | Compare deals | yes, 2–3 side by side | browser journey |
+| 5 | Record an actual purchase and sale | yes, labeled "recorded by you, not verified" | same |
+| 6 | Submit a seller-owned listing | yes; needs working email for contact confirmation and `SNIPER_SELLER_SUBMISSIONS=1`; findable under **Discover → FlipFirst sellers** | `test_seller_listings`, `test_beta_journey`, UI flows |
+| 7 | Import authorized dealer inventory | yes, once you approve the dealer | `test_seller_inventory`, local browser check |
+| 8 | Report suspicious inventory | yes; you resolve reports from the command line | same |
+
+Not available without licensed data:
+- market values for most cars at launch;
+- Discover's external listings;
+- alerts on external listings.
+
+**Shortest path to a real test (one flipper, one seller):**
+1. You approve the four merges, in order.
+2. You approve the infrastructure request (below). The server is set up
+   with `FIRST_DEPLOY.md`.
+3. On the server: Resend `SMTP_*`, `SNIPER_SELLER_SUBMISSIONS=1`,
+   `ALLOW_REGISTRATION=0`, `BILLING_ORIGIN=https://app.tryflipfirst.com`.
+4. Issue two invitations: `python -m invites issue --note "flipper: NAME"`
+   and `--note "seller: NAME"`.
+5. The seller signs up and confirms their email. A dealer is approved only
+   after you check the business (`approve-dealer`). They list one or more
+   cars.
+6. The flipper:
+   - analyzes a car they're really considering, using their own resale
+     estimate, and saves it;
+   - opens the seller's car from **Discover → FlipFirst sellers**, then
+     uses **Analyze with my numbers**;
+   - emails the seller and records what happens.
+7. After a week: `python -m pilot_report` (counts only) and a short call
+   with each person.
+
+Your decision: have a lawyer review the privacy, tester and seller terms
+before inviting anyone outside your own circle.
 
 ## Critical path
 
