@@ -36,6 +36,10 @@ set -euo pipefail
 : "${B2_APPLICATION_KEY:?B2_APPLICATION_KEY required}"
 : "${B2_ENDPOINT:?B2_ENDPOINT required}"
 : "${AGE_RECIPIENT:?AGE_RECIPIENT required (PUBLIC age recipient, age1…)}"
+# The signing region is the endpoint's (s3.<region>.backblazeb2.com), so a
+# bucket in any B2 region works with only B2_ENDPOINT set.
+B2_REGION=$(sed -nE 's#^https?://s3\.([a-z0-9-]+)\.backblazeb2\.com/?$#\1#p' <<<"$B2_ENDPOINT")
+B2_REGION=${B2_REGION:-us-east-005}
 
 # Defense in depth — refuse to run if the AGE_RECIPIENT value smells
 # like a private key. age private keys start with "AGE-SECRET-KEY-".
@@ -99,7 +103,7 @@ echo "▸ $(date -u +%FT%TZ) wrote ${SIZE} bytes, sha256=${SHA}" | tee -a "$LOG"
 # locally so the rest of the host never sees AWS-named credentials.
 AWS_ACCESS_KEY_ID="$B2_KEY_ID" \
 AWS_SECRET_ACCESS_KEY="$B2_APPLICATION_KEY" \
-AWS_DEFAULT_REGION=us-east-005 \
+AWS_DEFAULT_REGION="$B2_REGION" \
 aws --endpoint-url "$B2_ENDPOINT" \
     s3 cp "$OUT" "s3://${B2_BUCKET}/$(basename "$OUT")" \
     --no-progress 2>>"$LOG"

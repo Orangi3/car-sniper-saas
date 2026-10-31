@@ -136,3 +136,32 @@ def test_app_modules_load_under_the_shipped_env_template(tmp_path):
     r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr[-800:]
+
+
+def test_backup_and_restore_sign_for_the_endpoints_b2_region(tmp_path):
+    import subprocess
+    for name in ("backup.sh", "restore.sh"):
+        text = (DEPLOY / name).read_text()
+        derive = "\n".join(l for l in text.splitlines() if l.startswith("B2_REGION="))
+        assert "AWS_DEFAULT_REGION=us-east" not in text, name   # no hard-coded region
+        assert text.count('AWS_DEFAULT_REGION="$B2_REGION"') == text.count("aws --endpoint-url"), name
+        for endpoint, region in (("https://s3.us-west-004.backblazeb2.com", "us-west-004"),
+                                 ("https://s3.eu-central-003.backblazeb2.com/", "eu-central-003"),
+                                 ("https://s3.us-east-005.backblazeb2.com", "us-east-005"),
+                                 ("http://127.0.0.1:5000", "us-east-005")):
+            out = subprocess.run(["bash", "-c", f'B2_ENDPOINT="{endpoint}"\n{derive}\necho "$B2_REGION"'],
+                                 capture_output=True, text=True, check=True).stdout.strip()
+            assert out == region, (name, endpoint, out)
+
+
+def test_golive_checks_settings_by_name_and_never_prints_their_values():
+    import subprocess
+    text = (DEPLOY / "golive.sh").read_text()
+    subprocess.run(["bash", "-n", str(DEPLOY / "golive.sh")], check=True)
+    # values are read only into comparisons and the public origin, never echoed
+    assert not re.search(r'(echo|printf|pass|fail)[^\n]*\$\(val (?!BILLING_ORIGIN)', text)
+    for k in ("SMTP_PASSWORD", "B2_APPLICATION_KEY", "AGE_RECIPIENT", "HEALTHCHECK_BACKUP_URL"):
+        assert k in text, k
+    assert 'grep -q "invitation only"' in text           # sign-up probe checks why it was refused
+    assert "disable -q --now sniper-reconcile.timer" in text
+    assert "STRIPE_SECRET_KEY" in text                   # the free pilot refuses billing keys
