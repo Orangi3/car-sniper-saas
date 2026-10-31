@@ -123,12 +123,41 @@ this step produces.
 
 ## 2. First SSH (still over public IP, briefly)
 
+**Check the server is yours and dedicated before anything else.**
+1. Confirm in the provider's dashboard that this IP belongs to your server.
+2. Open its web console (Vultr: the server → View Console). Log in there
+   once, so you know you can get back in if SSH is ever cut off.
+3. In that console, run
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` and note the
+   fingerprint (`SHA256:…`).
+
 ```bash
-ssh root@<VPS_IP>
+ssh -o StrictHostKeyChecking=ask root@<VPS_IP>
 ```
 
-If that prompts for a password, your key wasn't installed — fix the key
-in the Hetzner console and try again. Don't fall back to passwords.
+At "Are you sure you want to continue connecting", paste that fingerprint
+instead of typing `yes`. ssh connects only if it matches. If it says the host
+key *changed*, stop: the server was rebuilt, or this isn't your server.
+
+If it prompts for a password, your key wasn't installed. Fix the key in the
+provider's console and try again. Don't fall back to passwords.
+
+Read-only inspection, so nothing is installed over another workload. It
+changes nothing and doesn't print the contents of `/etc/sniper/env`:
+
+```bash
+. /etc/os-release; echo "$PRETTY_NAME"; free -m | sed -n 2p; df -h / | tail -1
+ss -tulpnH; systemctl list-units --type=service --state=running --no-legend --plain
+ufw status; tailscale status 2>&1 | head -3; ls -ld /opt/sniper /etc/sniper 2>&1
+```
+
+Install only on Ubuntu 24.04 with about 1.9 GB of RAM or more, and nothing
+listening besides `sshd`, the system resolver and time service, and (if
+already set up) `tailscaled`. If FlipFirst's files are already there, an
+earlier install ran: re-running `install.sh` keeps `/etc/sniper/env`.
+Anything else (a web server, a database, containers, unknown services):
+don't install here. Never wipe or reinstall a server until you've confirmed
+nothing on it is needed.
 
 Inside the VPS:
 
@@ -143,23 +172,32 @@ exit  # back to your Mac
 From your Mac:
 
 ```bash
-# scp the current tree (uses git ls-files, so .env / *.db / .venv etc.
-# are NOT included). One-time only — after this, sync.sh handles deploys.
-cd ~/Desktop/sniper
-tar --files-from <(git ls-files) -czf /tmp/sniper-bootstrap.tgz .
+# The committed tree of the approved commit only (git archive): untracked
+# and ignored files (.env, keys, *.db, .venv, .git) can't be included. It
+# stops if HEAD isn't APPROVED_SHA or a file install.sh needs is missing.
+# One-time only: after this, sync.sh handles deploys.
+git fetch origin && git switch --detach APPROVED_SHA
+bash deploy/bootstrap_archive.sh APPROVED_SHA     # -> /tmp/sniper-bootstrap.tgz
 scp /tmp/sniper-bootstrap.tgz root@<VPS_IP>:/tmp/
 rm /tmp/sniper-bootstrap.tgz
+```
 
-ssh root@<VPS_IP>
-mkdir -p /tmp/sniper-bootstrap && cd /tmp/sniper-bootstrap
-tar -xzf /tmp/sniper-bootstrap.tgz
+On the server:
+
+```bash
+mkdir -p /tmp/sniper-bootstrap && tar -xzf /tmp/sniper-bootstrap.tgz -C /tmp/sniper-bootstrap
 ```
 
 ---
 
 ## 3. Run `install.sh`
 
-Still as root on the VPS:
+Only on a dedicated Ubuntu 24.04 server (the inspection in §2). Safer order:
+bring Tailscale up first (§4) and run `install.sh` over that session, so the
+firewall closes public SSH only after Tailscale SSH works
+(`FIRST_DEPLOY.md` step 3).
+
+As root on the VPS:
 
 ```bash
 cd /tmp/sniper-bootstrap

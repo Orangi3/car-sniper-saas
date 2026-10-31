@@ -444,7 +444,7 @@ result). Approving it authorizes exactly:
 | 2 | Register `tryflipfirst.com` at an at-cost registrar, only if you don't own it | ~$1 ($11–20 a year) | let it lapse |
 | 3 | DNS: `A` `app.tryflipfirst.com` → the VPS; Resend's SPF and DKIM `TXT` and bounce `MX` for `app.tryflipfirst.com`; `_dmarc.app` `TXT` | $0 | delete the records |
 | 4 | One Tailscale Standard seat. The free Personal plan is for non-commercial use only. Standard rose from $6 to $8 per user in April 2026 (price trackers; Tailscale's page couldn't be read from here) | $8 | cancel the seat |
-| 5 | On the VPS: `install.sh`, `tailscale up --ssh`, settings in `/etc/sniper/env`, `sync.sh --apply`, your admin account, `golive.sh` | $0 | `sync.sh --rollback`, or rebuild the VPS |
+| 5 | On the VPS: `install.sh`, `tailscale up --ssh`, settings in `/etc/sniper/env`, `sync.sh --apply`, your admin account, `golive.sh` | $0 | `sync.sh --rollback`; rebuilding the VPS erases it, so only after a final backup |
 | 6 | Restore drill on your computer | $0 | — |
 
 **Expected total:** ~$19–21 a month (VPS $10–12 + Tailscale $8 + domain ~$1), plus a one-time ~$11–20 if you register the domain.
