@@ -36,7 +36,7 @@ open each page before you sign up.
 |---|---|---|---|
 | VPS, 2 GB RAM, 1 vCPU, 50 GB disk, US region | $10–12 | 2 TB transfer included; then $0.005–0.01/GB | DigitalOcean Basic and Akamai/Linode $12, Vultr Regular $10. The pilot uses ~10–30 GB a month. Hetzner's US prices reportedly rose in June 2026 (~$20 for 2 GB); recheck before choosing it |
 | Domain (.com) | ~$0.95–1.70 | — | $11.17–19.98 a year at renewal: at-cost registrars (Cloudflare, Porkbun) ~$11–12; Namecheap renews at ~$20. The .com wholesale price rises on 1 Nov 2026 |
-| Resend email | $0 | 3,000 a month **and 100 a day**; no overage — extra mail is refused until Pro ($20/mo) | a pilot sends a few emails a day (contact confirmations, password resets) |
+| Resend email | $0 | 3,000 a month **and 100 a day**; no overage — extra mail is refused until Pro ($20/mo) | the only email FlipFirst sends is the seller contact confirmation (at most 5 per seller a day) |
 | Backblaze B2 encrypted backups | $0 | first 10 GB free; then $6.95/TB-month; downloads free up to 3× what you store | nightly dumps at pilot size stay far under 10 GB; the lifecycle rule (step 11) keeps it bounded |
 | Healthchecks.io | $0 | 20 checks (you use 3) | — |
 | Tailscale | $0, or ~$8 | Personal plan is free; one Standard seat ~$8/mo | the Personal plan may be for personal, non-business use: read its terms. If it doesn't fit, pay for one seat |
