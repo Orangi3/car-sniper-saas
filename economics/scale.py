@@ -22,7 +22,7 @@ from model import (CASES, DROPLET_4GB, MANAGED_PG, MC_BASIC_MONTHLY, MC_FSBO_PER
 # SOURCED (third-party summaries, 2026-10-30; verify)
 RESEND_FREE_EMAILS, RESEND_PRO = 3000, 20.0      # Resend free tier / Pro per month
 # ASSUMPTIONS
-SMALL_VPS = 12.0          # 1–2 vCPU, 2 GB, PostgreSQL on the same host (FIRST_DEPLOY.md: $5–12)
+SMALL_VPS = 12.0          # 1–2 vCPU, 2 GB, PostgreSQL on the same host (FIRST_DEPLOY.md: $10–12)
 DOMAIN = 1.25             # ~$15 a year
 EMAILS_PER_USER = 3       # sign-in help, seller confirmations, notices; alerts go by push
 USERS = (10, 100, 1000, 5000, 10000)

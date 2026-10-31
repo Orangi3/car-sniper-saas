@@ -83,6 +83,10 @@ seller listings.
    their territory.
 4. Testers start on Free: trusted and risk feeds, deal pages, save /
    contacted / passed stages. Saved searches and alerts wait for Gate 2.
+   Before any licensed data exists, the first real test
+   (`FIRST_REAL_TEST.md`) uses only FlipFirst seller listings. Its one
+   buyer is set to Lite by hand, because only paid plans show a seller's
+   contact email; with no market values, no alert can fire.
 
 **Feedback and false-positive reports**
 - In the app: deal stages (above) — counted weekly by `pilot_report`.
