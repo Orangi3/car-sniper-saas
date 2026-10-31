@@ -10,12 +10,12 @@ Nothing here is automatic. Each step is yours to approve and run.
 
 | Account | Cost | Used for |
 |---|---|---|
-| The domain `tryflipfirst.com` (planned app host: `app.tryflipfirst.com`) | ~$10–20/yr if not yet registered | `app` → server |
-| VPS: Ubuntu 24.04, ≥1 vCPU, ≥2 GB RAM, ≥25 GB disk, US region | ~$5–12/mo (check provider) | everything |
-| Tailscale (free personal plan) | $0 | SSH without an open port |
+| The domain `tryflipfirst.com` (planned app host: `app.tryflipfirst.com`) | ~$11–20/yr if not yet registered | `app` → server |
+| VPS: Ubuntu 24.04, ≥1 vCPU, ≥2 GB RAM, ≥25 GB disk, US region | ~$10–12/mo | everything |
+| Tailscale (free Personal plan; check its terms fit your use — costs below) | $0 | SSH without an open port |
 | Resend (free plan: 3,000/mo, 100/day) | $0 | seller verification email |
-| Backblaze B2 | ~$0–1/mo at this size | encrypted off-server backups |
-| Healthchecks.io (free plan) | $0 | alerts when something stops |
+| Backblaze B2 | $0 under 10 GB stored | encrypted off-server backups |
+| Healthchecks.io (free plan: 20 checks) | $0 | alerts when something stops |
 
 On your Mac: `brew install rsync age` (macOS's built-in rsync may lack
 options `sync.sh` uses), plus Tailscale.
@@ -27,20 +27,28 @@ the app under a 20-client load used ~220 MB. 2 GB leaves headroom; add a
 
 ## Monthly cost for the Tuscaloosa pilot (ESTIMATED)
 
-Nothing has been purchased. Prices are list prices from earlier research or
-the providers' free plans, not re-verified today — check each pricing page
-before you sign up.
+Nothing has been purchased. Prices are list prices from the providers'
+pricing pages as summarized by web search on 2026-10-31; the pages
+themselves could not be opened from the build sandbox. They are not quotes:
+open each page before you sign up.
 
-| Item | Per month | Note |
-|---|---|---|
-| VPS: Ubuntu 24.04, 1–2 vCPU, 2 GB RAM, PostgreSQL on the same host | ~$5–12 | measured footprint fits (above); add a 1 GB swap file |
-| Domain | ~$1 (≈ $10–20 a year) | only if you don't own one; DNS stays at your registrar |
-| Tailscale, Healthchecks.io, Resend email | $0 | free plans |
-| Backblaze B2 encrypted backups | ~$0–1 | a few GB |
-| eBay Browse API | $0 | no fee published; production approval required (`EBAY_SETUP.md`) |
-| **Total, eBay-only pilot** | **~$6–14** | |
-| MarketCheck private sellers — only if chosen | ≥ $299 + per-call fees | unverified; get a written quote and permission first |
-| Twilio SMS | not needed | push alerts use ntfy (free) |
+| Item | Per month | Free-plan limit and overage | Note |
+|---|---|---|---|
+| VPS, 2 GB RAM, 1 vCPU, 50 GB disk, US region | $10–12 | 2 TB transfer included; then $0.005–0.01/GB | DigitalOcean Basic and Akamai/Linode $12, Vultr Regular $10. The pilot uses ~10–30 GB a month. Hetzner's US prices reportedly rose in June 2026 (~$20 for 2 GB); recheck before choosing it |
+| Domain (.com) | ~$0.95–1.70 | — | $11.17–19.98 a year at renewal: at-cost registrars (Cloudflare, Porkbun) ~$11–12; Namecheap renews at ~$20. The .com wholesale price rises on 1 Nov 2026 |
+| Resend email | $0 | 3,000 a month **and 100 a day**; no overage — extra mail is refused until Pro ($20/mo) | a pilot sends a few emails a day (contact confirmations, password resets) |
+| Backblaze B2 encrypted backups | $0 | first 10 GB free; then $6.95/TB-month; downloads free up to 3× what you store | nightly dumps at pilot size stay far under 10 GB; the lifecycle rule (step 11) keeps it bounded |
+| Healthchecks.io | $0 | 20 checks (you use 3) | — |
+| Tailscale | $0, or ~$8 | Personal plan is free; one Standard seat ~$8/mo | the Personal plan may be for personal, non-business use: read its terms. If it doesn't fit, pay for one seat |
+| Let's Encrypt certificate | $0 | 5 identical certificates per week | keep Caddy's data directory if you rebuild the server, or a rebuild loop can be refused for days |
+| eBay Browse API | $0 | — | no fee published; production approval required (`EBAY_SETUP.md`) |
+| **Total, pilot with no paid data** | **~$11–14** (~$19–22 with a Tailscale seat) | | the first real test (`FIRST_REAL_TEST.md`) uses only FlipFirst seller listings |
+| MarketCheck private sellers — only if chosen | ≥ $299 + per-call fees | — | unverified; get a written quote and permission first |
+| Twilio SMS | not needed | — | push alerts use ntfy (free) |
+
+Not included: the provider's own server backups (optional; DigitalOcean
+charges +20%, ~$2.40/mo; the B2 dumps already cover the database), legal
+review, and your time for support (testers email you directly).
 
 ## Pilot posture (settings in `/etc/sniper/env`)
 
@@ -50,14 +58,18 @@ before you sign up.
   until `EBAY_COMMERCIAL_AGREEMENT` records eBay's approval
   (`EBAY_SETUP.md` step 7).
 - Invited accounts are on Free: no alerts until Gate 2
-  (`PILOT_TUSCALOOSA.md`).
+  (`PILOT_TUSCALOOSA.md`). One exception: in the first real test
+  (`FIRST_REAL_TEST.md`) you set the buyer to Lite by hand, because only
+  paid plans show a seller's contact email. Alerts still need a market
+  value, and a one-seller test with no licensed data has none.
 - Validation runs go in `/opt/sniper/shared/validation/` (writable by the
   app user, outside the release directory, not served by Caddy); purge each
   one after its review.
 - What runs: `sniper-web` (gunicorn, 2 workers), `sniper-scheduler`
   (polling), `sniper-worker` (valuation and notification jobs),
   `sniper-backup.timer` (nightly), `sniper-healthcheck.timer`,
-  `sniper-reconcile.timer` (billing state), and Caddy for HTTPS. All are
+  `sniper-reconcile.timer` (billing state; off until you add Stripe
+  keys, step 13), and Caddy for HTTPS. All are
   systemd units installed by `deploy/install.sh`; the scheduler and timers
   are enabled by hand (steps 7, 11, 13).
 
@@ -105,11 +117,16 @@ before you sign up.
 12. **First real seller** — `SELLER_PILOT.md`. Switch to mode B first
     (`DEPLOY.md` → Operating modes): `SNIPER_SELLER_SUBMISSIONS=1`,
     restart `sniper-web`.
-13. **Monitoring** — create 4 checks in Healthchecks.io (web, pipeline:
-    period 5 min, grace 15 min; backup: 1 day; reconcile: 1 h), put the
-    ping URLs in `/etc/sniper/env`, then
+13. **Monitoring** — create 3 checks in Healthchecks.io (web, pipeline:
+    period 5 min, grace 15 min; backup: 1 day), put the ping URLs in
+    `/etc/sniper/env`, then
     `systemctl enable --now sniper-healthcheck.timer`. A missing ping
     emails you.
+    Billing is off in the pilot, so also run
+    `systemctl disable --now sniper-reconcile.timer`. `install.sh` enables
+    it, but without Stripe keys the job refuses to run (seen on the
+    disposable host), so the timer would fail every hour. When you add
+    Stripe keys, re-enable it and add a fourth check (reconcile: 1 h).
 
 Rollback at any time: `bash deploy/sync.sh --rollback root@sniper-staging`
 (proven; older code runs on the newer schema because migrations are
@@ -149,8 +166,9 @@ additive). Rolling back to a release from before session hashing
    SMTP_PASSWORD=<the API key>
    SMTP_FROM=FlipFirst <no-reply@app.tryflipfirst.com>
    ```
-   `systemctl restart sniper-web`. If your VPS provider blocks port 587,
-   use `SMTP_PORT=2587` (also STARTTLS).
+   `systemctl restart sniper-web`. Many VPS providers block outbound ports
+   25, 465 and 587 on new accounts; if yours does, use `SMTP_PORT=2587`
+   (also STARTTLS).
 5. Test (step 10). In Gmail, "Show original" must say `SPF: PASS`,
    `DKIM: PASS`. A seller seeing "we couldn't send the email right now"
    means the server couldn't reach or log in to Resend:
