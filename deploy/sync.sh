@@ -252,9 +252,12 @@ fi
 # ---------------------------------------------------------------------------
 # Normal deploy path
 # ---------------------------------------------------------------------------
+# rsync sends the working-tree copy of every tracked file, so an uncommitted
+# edit would ship under HEAD's name. Refuse before touching the host.
 if ! git diff --quiet HEAD; then
-    echo "⚠ working tree has uncommitted changes; deploying the committed HEAD only."
-    echo "  (rsync ships git ls-files which is committed state.)"
+    echo "STOP: tracked files have uncommitted changes, and rsync would send them as release $SHA." >&2
+    echo "      Commit or stash them (git status), then run sync.sh again." >&2
+    exit 4
 fi
 
 echo "▸ Deploy plan:"

@@ -5,10 +5,12 @@
 # Usage:
 #   curl ... | bash      # NO. Don't curl-pipe-shell secrets-adjacent stuff.
 #
-# Instead, on the new VPS:
-#   ssh root@<vps-ip>             # public IP, first time only; see STAGING_RUNBOOK.md
-#   git clone <local-repo-bundle> /tmp/sniper-bootstrap
-#   sudo bash /tmp/sniper-bootstrap/deploy/install.sh
+# Instead (FIRST_DEPLOY.md step 3): on your Mac,
+#   bash deploy/bootstrap_archive.sh APPROVED_SHA    # committed tree only
+#   scp /tmp/sniper-bootstrap.tgz root@<vps-ip>:/tmp/
+# then on the new, dedicated VPS:
+#   mkdir -p /tmp/sniper-bootstrap && tar -xzf /tmp/sniper-bootstrap.tgz -C /tmp/sniper-bootstrap
+#   sudo STAGING_HOSTNAME=<host> bash /tmp/sniper-bootstrap/deploy/install.sh
 #
 # What it does (idempotent):
 #   1. apt update + upgrade + base tools
@@ -46,7 +48,8 @@ fi
 # The stack (Python 3.12, PostgreSQL 16, systemd units) is tested on 24.04
 # only; stop before installing anything on another release.
 if [[ "$(lsb_release -rs)" != "24.04" ]]; then
-    echo "install.sh targets Ubuntu 24.04 LTS (this host: $(lsb_release -ds)). Recreate the server with 24.04."
+    echo "install.sh targets Ubuntu 24.04 LTS (this host: $(lsb_release -ds)). Nothing was changed."
+    echo "Use a server with 24.04; reinstall this one only after confirming nothing on it is needed."
     exit 1
 fi
 
