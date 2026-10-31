@@ -28,6 +28,11 @@ POLICY = {
     ("GET", "/api/me/profit_settings"): "user", ("GET", "/api/me/usage"): "user",
     ("GET", "/api/me/territory"): "user", ("POST", "/api/me/territory"): "user",
     ("GET", "/api/seller/contact"): "user", ("POST", "/api/seller/contact"): "user",
+    # Analyze and the private workspace: every plan (daily analysis cap per plan)
+    ("POST", "/api/analyze"): "user", ("POST", "/api/analyze/vin"): "user",
+    ("GET", "/api/opportunities"): "user", ("POST", "/api/opportunities"): "user",
+    ("GET", "/api/opportunities/<int:oid>"): "user", ("PATCH", "/api/opportunities/<int:oid>"): "user",
+    ("DELETE", "/api/opportunities/<int:oid>"): "user",
     ("POST", "/api/seller/contact/verify"): "user",
     ("GET", "/api/seller/listings"): "user", ("POST", "/api/seller/listings"): "user",
     ("PATCH", "/api/seller/listings/<int:sid>"): "user",
@@ -76,7 +81,7 @@ NO_ALLOWED_CALL = {k for k in POLICY if k[0] != "GET"} | {
 
 
 def _url(rule):
-    return (rule.replace("<path:cid>", "test:abc").replace("<int:sid>", "1")
+    return (rule.replace("<path:cid>", "test:abc").replace("<int:sid>", "1").replace("<int:oid>", "1")
                 .replace("<vin>", "1HGCM82633A004352"))
 
 

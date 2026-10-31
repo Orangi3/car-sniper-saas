@@ -6,7 +6,8 @@ already keeps. Read-only; prints counts, never names, emails or listings.
     python -m pilot_report --days 14 --json
 
 Sections: testers (invitations, accounts, sign-ins), engagement (deal
-actions by stage), alerts (matches, notifications delivered / failed),
+actions by stage), analyze (analyses run, deals saved to the workspace, by
+stage, outcomes recorded), alerts (matches, notifications delivered / failed),
 supply (listings by source, valued, trusted candidates), seller listings,
 and reviewed outcomes (evaluation labels). "Signed in" counts testers whose
 last sign-in falls in the window — the app records sign-ins, not page
@@ -71,6 +72,19 @@ def report(days: int = 7) -> dict:
                 "trusted_candidates": _count(conn, "SELECT COUNT(*) FROM near_misses WHERE refreshed_at >= ? "
                                                    "AND trust = 'trusted' AND discount_pct >= 10", (since,)),
             },
+            "analyze": {
+                "analyses": _count(conn, "SELECT COUNT(*) FROM usage_events WHERE kind = 'analysis' "
+                                         "AND created_at >= ?", (since,)),
+                "testers_analyzing": _count(conn, "SELECT COUNT(DISTINCT user_id) FROM usage_events "
+                                                  "WHERE kind = 'analysis' AND created_at >= ?",
+                                            (since,)),
+                "deals_saved": _count(conn, "SELECT COUNT(*) FROM opportunities WHERE created_at >= ?",
+                                      (since,)),
+                "deals_by_stage": _groups(conn, "SELECT status, COUNT(*) FROM opportunities "
+                                                "GROUP BY status"),
+                "outcomes_recorded": _count(conn, "SELECT COUNT(*) FROM opportunities "
+                                                  "WHERE sale_price IS NOT NULL"),
+            },
             "seller_listings_by_status": _groups(conn, "SELECT status, COUNT(*) FROM seller_listings "
                                                        "GROUP BY status"),
             "reviewed_outcomes": _groups(conn, "SELECT outcome_label, COUNT(*) FROM eval_observations "
@@ -82,7 +96,7 @@ def report(days: int = 7) -> dict:
 
 def _print(r: dict) -> None:
     print(f"Pilot report — last {r['window_days']} days (since {r['since']} UTC)")
-    for section in ("testers", "engagement", "alerts", "supply"):
+    for section in ("testers", "engagement", "analyze", "alerts", "supply"):
         print(f"\n{section}")
         for k, v in r[section].items():
             print(f"  {k}: {v}")

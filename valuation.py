@@ -327,7 +327,14 @@ def _mad_filter(pairs: list[tuple[float, float, dict]]) -> tuple[list, int]:
     return kept, len(pairs) - len(kept)
 
 
+MAX_SLOPE_POINTS = 200    # pairwise slopes are O(n²); Analyze runs this inside a request
+
+
 def theil_sen_slope(points: list[tuple[float, float]]) -> Optional[float]:
+    if len(points) > MAX_SLOPE_POINTS:        # an even spread across the mileage range
+        pts = sorted(points)
+        step = len(pts) / MAX_SLOPE_POINTS
+        points = [pts[int(i * step)] for i in range(MAX_SLOPE_POINTS)]
     slopes = []
     for i in range(len(points)):
         for j in range(i + 1, len(points)):

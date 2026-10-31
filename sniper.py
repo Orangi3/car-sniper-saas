@@ -316,6 +316,15 @@ MILEAGE_SUSPECT_MIN_AGE = 4
 MILEAGE_SUSPECT_MAX_AGE = 25         # collector cars often are driven little
 
 
+def mileage_suspect(year, odometer) -> bool:
+    """Far fewer miles than normal driving for the car's age (see above)."""
+    if not year or odometer is None:
+        return False
+    age = datetime.now(timezone.utc).year - int(year)
+    return (MILEAGE_SUSPECT_MIN_AGE <= age <= MILEAGE_SUSPECT_MAX_AGE
+            and odometer / age < MILEAGE_SUSPECT_PER_YEAR)
+
+
 def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str, list[str]]:
     """(trust, flags). 'trusted' = no blocking flag AND medium+ confidence.
     Risky listings stay visible, labeled; they're just kept out of the
@@ -343,11 +352,8 @@ def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str
         flags.append("seller_type_unknown")     # can't confirm a private seller
     if not l.get("odometer"):
         flags.append("mileage_unknown")
-    elif l.get("year"):
-        age = datetime.now(timezone.utc).year - int(l["year"])
-        if (MILEAGE_SUSPECT_MIN_AGE <= age <= MILEAGE_SUSPECT_MAX_AGE
-                and l["odometer"] / age < MILEAGE_SUSPECT_PER_YEAR):
-            flags.append("mileage_suspect")
+    elif mileage_suspect(l.get("year"), l["odometer"]):
+        flags.append("mileage_suspect")
     if l.get("relist_of"):
         flags.append("relisted")
     if v.confidence in ("low", "insufficient"):

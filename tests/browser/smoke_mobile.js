@@ -68,7 +68,65 @@ const fail = msg => {
                       "Price history", "price change", "not completed sales"])
     if (!detail.includes(want)) fail("deal analysis missing: " + want);
   await page.screenshot({ path: SHOTS + "/m-detail.png", fullPage: true });
-  await page.click("[data-back]");
+
+  // Analyze: a Discover deal, with my numbers, then the private workspace
+  await page.click(".only-mobile[data-analyze]");
+  await page.waitForSelector("#az");
+  if ((await page.inputValue("#a-asking_price")) !== "7600") fail("Analyze not prefilled from the deal");
+  await page.selectOption("#a-title_status", "clean");
+  await page.selectOption("#a-condition", "runs_drives");
+  await page.click("#az details summary");             // costs start folded away
+  await page.fill("#a-c_mechanical", "600");
+  await page.click("#a-run");
+  await page.waitForSelector("#a-result .decision", { timeout: 8000 }).catch(() => fail("no analysis result"));
+  const an = await text("#a-result");
+  for (const want of ["Break-even resale", "Maximum offer", "Vehicle identity", "Price vs. market", "Low case",
+                      "Comparable vehicles", "Risk factors", "Data used"])
+    if (!an.includes(want)) fail("analysis missing: " + want);
+  if (!/Strong candidate|Worth investigating/.test(an)) fail("unexpected decision: " + an.slice(0, 200));
+  await page.screenshot({ path: SHOTS + "/m-analyze.png", fullPage: true });
+  await page.click("#a-save");
+  await page.waitForSelector("#o-notes");
+  await page.fill("#o-notes", "Tires at 4/32; no codes; title in hand");
+  await page.click("#o-notes-save");
+  await page.waitForSelector("#o-notes-msg:text-is('Saved.')");     // no waitForFunction: the CSP forbids eval
+  await page.fill("#o-purchase_price", "7300"); await page.fill("#o-purchased_on", "2026-10-01");
+  await page.fill("#o-sale_price", "9400"); await page.fill("#o-sold_on", "2026-10-21");
+  await page.selectOption("#o-stage", "sold");
+  await page.click("#o-out-save");
+  await page.waitForSelector("#main :text('Realized profit')");
+  await page.screenshot({ path: SHOTS + "/m-workspace-deal.png", fullPage: true });
+
+  // a car FlipFirst has no comparables for: no value is invented
+  await page.goto(BASE + "/m#/analyze");
+  await page.waitForSelector("#az");
+  await page.click("#a-clear"); await page.waitForSelector("#az");
+  await page.fill("#a-year", "2014"); await page.fill("#a-make", "Ford"); await page.fill("#a-model", "Fusion");
+  await page.fill("#a-mileage", "140000"); await page.fill("#a-asking_price", "4200");
+  await page.click("#a-run");
+  await page.waitForSelector("#a-result .decision");
+  const none = await text("#a-result");
+  if (!none.includes("Insufficient evidence") || !none.includes("Not enough data to value this car")) fail("no-data car not labeled");
+  if (!none.includes("Money in")) fail("no-data car missing the money-in breakdown");
+  await page.click("#a-save"); await page.waitForSelector("#o-notes");
+
+  // the workspace list and a side-by-side comparison
+  await page.goto(BASE + "/m#/saved"); await page.waitForSelector(".w-pick");
+  if (!(await text("#main")).includes("Your track record")) fail("track record not shown after a recorded sale");
+  const boxes = await page.$$(".w-pick");
+  if (boxes.length !== 2) fail("expected 2 saved deals, got " + boxes.length);
+  for (const bx of boxes) await bx.check();
+  await page.click("#w-compare"); await page.waitForSelector("table.compare");
+  if (!(await text("table.compare")).includes("Break-even resale")) fail("comparison table incomplete");
+  await page.screenshot({ path: SHOTS + "/m-compare.png", fullPage: true });
+
+  // six tabs fit a 320 px phone without sideways scrolling
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(BASE + "/m#/analyze"); await page.waitForSelector("#az");
+  const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  if (over > 0) fail("page scrolls sideways at 320 px by " + over + " px");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(BASE + "/m#/discover/trusted"); await page.waitForSelector("article[data-cid]");
 
   // flagged tab is labeled
   await page.goto(BASE + "/m#/discover/risk");

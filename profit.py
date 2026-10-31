@@ -45,6 +45,11 @@ DEFAULTS: dict = {
     "misc": 0.0,
 }
 
+# A resale estimate the user typed is their expected SALE price, so like
+# completed sales it gets no asking-to-sale haircut (Analyze labels it).
+USER_ESTIMATE = "user_estimate"
+SALE_PRICE_EVIDENCE = ("confirmed_sales", USER_ESTIMATE)
+
 _BOUNDS = {
     "negotiation_pct": (0, 60), "asking_to_sale_pct": (0, 40),
     "sales_tax_pct": (0, 15), "title_registration": (0, 5000),
@@ -117,6 +122,39 @@ def load_user_settings(conn, user_id: Optional[int]) -> dict:
         return {}
 
 
+def _buy_costs(price: float, a: dict, discount_pct: float,
+               distance_mi: Optional[float]) -> tuple[float, dict]:
+    """Purchase price after `discount_pct` and every cost of buying, fixing
+    and reselling the car (holding excluded: it depends on days held)."""
+    acq = price * (1 - discount_pct / 100.0)
+    c: dict[str, float] = {}
+    if a["sales_tax_pct"] is not None:
+        c["sales_tax_pct"] = acq * a["sales_tax_pct"] / 100.0
+    if a["title_registration"] is not None:
+        c["title_registration"] = a["title_registration"]
+    for k in ("transport", "mechanical", "recon", "selling_fees", "misc"):
+        if a[k]:
+            c[k] = a[k]
+    if a["transport_per_mile"] and distance_mi:
+        c["transport_per_mile"] = 2 * distance_mi * a["transport_per_mile"]
+    return acq, c
+
+
+def cost_basis(price: float, settings: Optional[dict] = None,
+               distance_mi: Optional[float] = None) -> dict:
+    """Base-case money in, without any resale value: what break-even and
+    maximum-offer figures are solved from. Same arithmetic as compute()'s
+    base scenario."""
+    a = merged(settings)
+    acq, costs = _buy_costs(price, a, a["negotiation_pct"], distance_mi)
+    holding = a["holding_per_day"] * a["days_to_sell"]
+    return {"acquisition": acq, "costs": costs, "holding": holding,
+            "invested": acq + sum(costs.values()) + holding,
+            "fixed_costs": sum(v for k, v in costs.items() if k != "sales_tax_pct"),
+            "tax_rate": (a["sales_tax_pct"] or 0.0) / 100.0,
+            "days_to_sell": a["days_to_sell"]}
+
+
 def compute(price: float, value_low: Optional[float], value_mid: Optional[float],
             value_high: Optional[float], evidence_class: Optional[str],
             settings: Optional[dict] = None, scenarios: bool = True,
@@ -134,18 +172,7 @@ def compute(price: float, value_low: Optional[float], value_mid: Optional[float]
              "base": (neg, 1.0), "optimistic": (min(60.0, neg + spread), 0.5)}
 
     def buy_costs(discount_pct: float) -> tuple[float, dict]:
-        acq = price * (1 - discount_pct / 100.0)
-        c: dict[str, float] = {}
-        if a["sales_tax_pct"] is not None:
-            c["sales_tax_pct"] = acq * a["sales_tax_pct"] / 100.0
-        if a["title_registration"] is not None:
-            c["title_registration"] = a["title_registration"]
-        for k in ("transport", "mechanical", "recon", "selling_fees", "misc"):
-            if a[k]:
-                c[k] = a[k]
-        if a["transport_per_mile"] and distance_mi:
-            c["transport_per_mile"] = 2 * distance_mi * a["transport_per_mile"]
-        return acq, c
+        return _buy_costs(price, a, discount_pct, distance_mi)
 
     not_included: list[str] = []
     if a["sales_tax_pct"] is None:
@@ -159,7 +186,7 @@ def compute(price: float, value_low: Optional[float], value_mid: Optional[float]
     invested = acquisition + total_costs
 
     haircut = (a["asking_to_sale_pct"] / 100.0
-               if evidence_class and evidence_class != "confirmed_sales" else 0.0)
+               if evidence_class and evidence_class not in SALE_PRICE_EVIDENCE else 0.0)
     dealer_cut = (max(0.0, min(1.0, dealer_share or 0.0)) * a["dealer_to_private_pct"] / 100.0
                   if evidence_class == "asking_comparables" else 0.0)
     haircut = min(0.9, haircut + dealer_cut)
@@ -192,7 +219,7 @@ def compute(price: float, value_low: Optional[float], value_mid: Optional[float]
               "dealer_to_private_pct", "sales_tax_pct", "title_registration", "transport",
               "transport_per_mile", "mechanical", "recon", "holding_per_day", "days_to_sell",
               "selling_fees", "misc"):
-        if k == "asking_to_sale_pct" and evidence_class == "confirmed_sales":
+        if k == "asking_to_sale_pct" and evidence_class in SALE_PRICE_EVIDENCE:
             continue
         if k == "dealer_to_private_pct" and not dealer_cut:
             continue
@@ -219,7 +246,9 @@ def compute(price: float, value_low: Optional[float], value_mid: Optional[float]
          + (f" + {dealer_cut * 100:.1f}% because {dealer_share:.0%} of comparables were "
             "dealer retail asks" if dealer_cut else "")
          + " — the value comes from asking prices, not completed sales")
-        if haircut else "Resale = market value from completed sales",
+        if haircut else ("Resale = your own resale estimate, not a market value"
+                         if evidence_class == USER_ESTIMATE
+                         else "Resale = market value from completed sales"),
         "Profit = resale − purchase − costs. Estimate only; not guaranteed.",
     ] + ([
         f"Scenarios: conservative pays {shape['conservative'][0]:g}% under asking and "
