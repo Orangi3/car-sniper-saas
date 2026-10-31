@@ -63,6 +63,36 @@ enforcement, with 0 approving reviews required.
   users' saved deals, dealer approvals and reports. Do it only on your
   explicit decision, after a backup.
 
+## Security review of PRs #13–#14 (independent reviewer, 2026-10-31)
+
+8 confirmed defects, all fixed, each with a regression test. 0 open.
+
+| # | Finding | PR | Fix |
+|---|---|---|---|
+| 1 | A cosmetic-only cost dropped the $500 repair allowance and counted as a repair estimate (a car needing work could rate "strong") | #13 | costs layered on the effective assumptions; only mechanical counts |
+| 2 | `remove_missing` withdrew a car whose row was rejected | #14 | every VIN the file mentions counts as present |
+| 3 | Dealer imports used up the private sellers' daily cap | #14 | dealers are outside that count |
+| 4 | Withdrawals ran after creates, so a dealer at its limit couldn't refresh | #14 | withdrawals first; dealer daily cap = 2 × live limit |
+| 5 | A revoked dealer kept the "approved by FlipFirst" label | #14 | the label comes from the current approval |
+| 6 | A refused `approve-dealer` deleted the existing approval | #14 | validate before any change |
+| 7 | Saving re-ran and re-counted the analysis, so the last analysis of the day couldn't be saved | #13 | `usage_events.ref`; same inputs within 30 min are free |
+| 8 | `"1e999"` / `"inf"` and a non-object `attest` returned 500 | #13, #14 | 400 |
+
+Unverified concerns, fixed anyway because cheap:
+- the ZIP, VIN and title are carried into "Analyze with my numbers";
+- stale eBay comparables are hidden in saved deals (6-hour rule);
+- the mileage slope is capped at 200 points;
+- 2 MB request limit;
+- NUL characters stripped;
+- the privacy draft names the pilot's counts.
+
+Accepted: limits are checked without a lock, so concurrent requests can
+exceed them by one or two (bounded by rate limits).
+
+Clean per the reviewer: owner scoping (404 for other users), no HTTP route
+to approve dealers or resolve reports, whitelisted SQL column names,
+escaped rendering, account deletion covering the new tables.
+
 ## Beta readiness: what works with no paid data (VERIFIED in tests, SIMULATED cars)
 
 | # | Capability | Without paid data | Evidence |
@@ -151,16 +181,25 @@ legal review of legal/ drafts ──► publish links ──► invitations
 | Disposable-host deployment | SIMULATED — see `DEPLOY_TEST_REPORT.md` |
 | Real listings, real deals, real users | NOT TESTED — BLOCKED on #3 |
 
-## Verified — Analyze, workspace, original inventory (PRs #13, #14)
+## Verified — final release candidate (2026-10-31)
+
+Final heads:
+- PR #11: `ae5308d22dbd0721d64b5cb879a7d857ea791804`
+- PR #12: `5c6b2f28b8c971379406cd10c1b9e28f9330618c`
+- PR #13: `9b169635af20bbdf4debe4626df705bb9f8c3470`
+- PR #14: the commit that adds this checkpoint (its SHA is shown on the PR)
 
 | Check | Result |
 |---|---|
-| SQLite suite (#14 code, includes #13) | VERIFIED — 595 passed, 2 skipped (the skips need PostgreSQL) |
-| PostgreSQL 16 suite (#14 code) | VERIFIED — 597 passed |
-| CI on #13 head `8ce3c01` | VERIFIED — 6/6 (sqlite, postgres, browser-smoke; push and pull_request runs) |
-| Browser, Playwright 1.47.2 (CI's version) | VERIFIED: the Analyze journey in `smoke_mobile.js`; `ui_flows.js` (incl. no overflow at 375–1440 px); a local check of a dealer CSV import |
-| Analyze speed on 50,000 SIMULATED listings | MEASURED — 41 ms per analysis on SQLite, 59 ms on PostgreSQL (with the 0020 index) |
-| Real vehicles, real sellers, real users | NOT TESTED — no licensed data or sellers yet |
+| Full SQLite suite, #14 code (contains #13) | VERIFIED — 611 passed, 2 skipped (the two need PostgreSQL), 0 failed |
+| Full PostgreSQL 16 suite, #14 code | VERIFIED — 613 passed, 0 skipped, 0 failed |
+| Full SQLite suite, #13 code alone | VERIFIED — 592 passed, 2 skipped |
+| GitHub CI on #13 `9b16963` and on #14 `ffdd7e5` | VERIFIED — 6/6 each (tests-sqlite, tests-postgres, browser-smoke; push and pull_request runs). The checkpoint commit on #14 changes only this file |
+| Browser, Playwright 1.47.2 (CI's version) | VERIFIED — `smoke_mobile.js`: Analyze journey, workspace, compare, sellers tab, no sideways scroll at 320 px. `ui_flows.js`: invites, seller wizard, account, ops, no overflow at 375–1440 px. Local dealer CSV import check |
+| Migrations | VERIFIED — `check_migrations.py` ok. Rollback to the previous release against a 0021 schema: starts, `/health` 200 |
+| Valuation benchmark | VERIFIED — no drift (39 SIMULATED cases: 11 TP, 1 FP, 27 TN, 0 FN) |
+| Analyze speed on 50,000 SIMULATED listings | MEASURED — 41 ms per analysis on SQLite, 59 ms on PostgreSQL |
+| Real vehicles, real sellers, real users | NOT TESTED — no licensed data, sellers or users yet |
 
 ## Task register — Analyze, workspace, original inventory (branch `feat/flipfirst-analyze`)
 
@@ -188,6 +227,11 @@ Operating cost is per month at pilot scale.
 ## Owner-action package
 
 **Merge authorization**
+- Reply with the exact SHA, one PR at a time, in order: "approve PR #11 at
+  ae5308d22dbd0721d64b5cb879a7d857ea791804", then (after it merges and #12
+  is re-checked) "approve PR #12 at 5c6b2f28b8c971379406cd10c1b9e28f9330618c",
+  then "approve PR #13 at 9b169635af20bbdf4debe4626df705bb9f8c3470", then #14
+  at its final head.
 - PR #11: reply "approve PR #11 at ae5308d22dbd0721d64b5cb879a7d857ea791804"; it
   will be merged with a standard merge commit, pinned to that SHA, only if
   CI is still green.
