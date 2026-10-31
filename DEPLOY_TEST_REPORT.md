@@ -69,6 +69,19 @@ New checks:
 | All gates, with an admin present | 9 gates, plus "an admin account exists" and the test email |
 | After the reboot, with the stand-in ping server restarted | both probes pinged |
 
+### Hardening round (`f344f26`, fresh disposable host)
+
+The run at `f344f26` repeated everything above, and every check passed. New
+checks:
+
+| Check | Result |
+|---|---|
+| `B2_ENDPOINT=http://s3.us-east-005.backblazeb2.com` | `golive.sh` stops at gate 1 ("B2_ENDPOINT must start with https://"). `sniper-backup.service` also refuses it, before any request |
+| Admin account demoted to an ordinary user | `golive.sh` stops at gate 9: "no admin account" |
+| `golive.sh` with no `--test-email` | exits 2 with the usage |
+| Loopback stand-in endpoints (`http://127.0.0.1:…`) | accepted, as intended for tests |
+| After the reboot, with the stand-in ping server restarted | both probes pinged |
+
 ## Release rehearsal, 2026-10-31 (final release heads)
 
 The release as it will ship, on a fresh **disposable** Ubuntu 24.04 host

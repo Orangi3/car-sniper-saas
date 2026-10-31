@@ -221,7 +221,7 @@ with regression tests in `tests/test_deploy_config.py`.
 | 3 | Gate 8 rejected `ufw allow in on tailscale0`, which opens nothing to the internet | low | rules bound to `tailscale0` don't count |
 | 4 | Settings in single quotes failed the checks, although systemd accepts them (fails closed) | low | both quote styles are stripped |
 | 5 | `restore.sh` printed the verification database URL with any password in it | low (existing; your terminal only) | password masked |
-| 6 | `B2_ENDPOINT` isn't required to be HTTPS | info | none. The template is HTTPS, dumps are encrypted before upload, and the secret key is never sent |
+| 6 | `B2_ENDPOINT` wasn't required to be HTTPS. Re-assessed in the next round as a genuine issue (below) | **medium** | fixed in `f344f26` |
 | 7 | `install.sh` installs Tailscale with its official `curl … \| sh` script | info (existing, outside this PR) | none. Tailscale's signed apt repository would be stricter |
 
 No secret values are printed:
@@ -239,6 +239,30 @@ Assumptions:
   DigitalOcean, Akamai/Linode and Vultr;
 - ufw and the `tailscale` command come from `install.sh`;
 - Caddy redirects HTTP with a 308.
+
+### Second round (2026-10-31, at `682f220`): transport and gates
+
+- **The HTTPS issue is genuine.**
+  - Over `http://`, every backup request would carry the B2 key ID and a
+    signature that can be replayed for about 15 minutes. Bucket and file
+    names would be visible. The secret key itself is never sent.
+  - Worse, the restore drill could be served a forged "backup". Anyone can
+    encrypt one to the public `AGE_RECIPIENT`, and pg_restore would load
+    attacker-written SQL on your computer.
+  - With HTTPS, the AWS CLI verifies B2's certificate, which closes this.
+- **Fixed in `f344f26`, with tests:**
+  - `backup.sh` and `restore.sh` refuse a non-`https://` endpoint. Only a
+    loopback stand-in for tests is allowed, the same rule the mailer applies
+    to SMTP.
+  - `golive.sh` gate 1 enforces the same rule for `B2_ENDPOINT` and the
+    three Healthchecks URLs (a ping URL over HTTP would leak too).
+- **Gates that only warned now fail:**
+  - a missing admin account fails gate 9;
+  - `--test-email` is required;
+  - `install.sh` stops on anything but Ubuntu 24.04, before installing
+    anything.
+- **Copy:** the seller's price-change toast no longer claims buyers are
+  notified. No pilot plan sends price-drop alerts.
 
 ## Beta readiness: what works with no paid data (VERIFIED in tests, SIMULATED cars)
 
@@ -358,12 +382,23 @@ Operating cost is per month at pilot scale.
 
 ## Owner-action package (A–F)
 
-Nothing below has been done for you. I have no access to your accounts,
-your computer or a server: no computer is connected to this session, and
-the build sandbox's network policy blocks lookups of `tryflipfirst.com`. So
-whether a VPS, the domain or its DNS already exist is **unknown to me**.
-Tell me what exists, or allow those hosts in the environment's network
-settings. Silence is never taken as consent.
+Nothing below has been done for you. Silence is never taken as consent.
+
+**What already exists is unknown to me** (checked 2026-10-31):
+- No computer of yours is connected to this session.
+- The repo has no deployment records. Its secret and variable names can't
+  be read through this session's GitHub access.
+- The network policy blocks lookups of `tryflipfirst.com`,
+  `app.tryflipfirst.com`, `rdap.verisign.com` and `dns.google`.
+- No file in your Google Drive mentions `tryflipfirst`. I searched names
+  only and opened nothing.
+
+So tell me in one reply:
+- whether the domain is registered, and where;
+- whether a server exists: provider, Ubuntu version, RAM, public IP;
+- whether Resend, B2, Healthchecks.io or Tailscale accounts exist.
+
+Or allow those hosts under Network access in the environment settings.
 
 ### Smallest path to live (one real seller, one real buyer)
 
@@ -408,20 +443,27 @@ result). Approving it authorizes exactly:
 | 1 | Buy one VPS: Ubuntu 24.04, 2 GB RAM, 1 vCPU, ≥ 25 GB, US region, your SSH key. Skip if a suitable one exists | $10–12 | destroy it; billing stops |
 | 2 | Register `tryflipfirst.com` at an at-cost registrar, only if you don't own it | ~$1 ($11–20 a year) | let it lapse |
 | 3 | DNS: `A` `app.tryflipfirst.com` → the VPS; Resend's SPF and DKIM `TXT` and bounce `MX` for `app.tryflipfirst.com`; `_dmarc.app` `TXT` | $0 | delete the records |
-| 4 | One Tailscale paid seat. The free Personal plan is for non-commercial use only, per Tailscale's pricing page | ~$6–8 | cancel the seat |
+| 4 | One Tailscale Standard seat. The free Personal plan is for non-commercial use only. Standard rose from $6 to $8 per user in April 2026 (price trackers; Tailscale's page couldn't be read from here) | $8 | cancel the seat |
 | 5 | On the VPS: `install.sh`, `tailscale up --ssh`, settings in `/etc/sniper/env`, `sync.sh --apply`, your admin account, `golive.sh` | $0 | `sync.sh --rollback`, or rebuild the VPS |
 | 6 | Restore drill on your computer | $0 | — |
 
-**Expected total:** ~$19–22 a month, plus the domain if you don't own it.
+**Expected total:** ~$19–21 a month (VPS $10–12 + Tailscale $8 + domain ~$1), plus a one-time ~$11–20 if you register the domain.
 List prices are from web-search summaries of the providers' pages
 (2026-10-31), not quotes.
 - Free plans: Resend, B2 under 10 GB, Healthchecks.io, Let's Encrypt.
-- Cheaper (~$11–14), with a trade-off: no Tailscale, and SSH open only to
-  your own IP with keys only.
-  - Port 22 becomes reachable from that one address. If your IP is shared
-    (mobile or carrier networks), that's many people.
-  - If your IP changes, you need the provider's web console.
-  - Not rehearsed. `golive.sh` gate 8 would flag the open port.
+- **Recommended: the Tailscale seat ($8).** It keeps the rehearsed setup,
+  with no public SSH port.
+- Cheaper alternatives (~$11–13), neither built nor rehearsed:
+  - **WireGuard (free, comparable security).** SSH listens only on the
+    tunnel. One UDP port is open, and it ignores unauthenticated packets. It
+    needs `install.sh` and `golive.sh` changes and key handling: about a day
+    of work, plus a rehearsal.
+  - **SSH open only to your IP, keys only (weaker).**
+    - Port 22 becomes reachable from that one address. If your IP is
+      shared (mobile or carrier networks), that's many people.
+    - If your IP changes, you need the provider's web console.
+    - `golive.sh` gate 8 refuses the open port.
+- One-time costs: the domain, only if not yet registered.
 
 **Not authorized by it:** invitations; publishing the legal documents; any
 other paid plan (Resend Pro, provider backups); Stripe or data-provider
@@ -463,7 +505,7 @@ credentials; other DNS records or firewall changes.
 | Resend | `SMTP_PASSWORD` (sending-only key) and the DNS records | free: 3,000/mo, 100/day |
 | Backblaze B2 | `B2_KEY_ID`, `B2_APPLICATION_KEY`, `B2_ENDPOINT`; a second, read-only key for restore drills | free under 10 GB |
 | Healthchecks.io | the three `HEALTHCHECK_*_URL`s | free: 20 checks |
-| Tailscale | admin access over SSH | one seat, ~$6–8/mo |
+| Tailscale | admin access over SSH | one Standard seat, $8/mo |
 | age (on your Mac) | `AGE_RECIPIENT`; the private key stays on your Mac | free |
 
 Never paste a value into chat or Git. `golive.sh` checks the settings by
@@ -471,20 +513,32 @@ name and never prints them.
 
 ### D. Legal approval
 
-- **Review `legal/`:**
-  - documents: privacy policy, beta-tester terms, seller terms, terms of
-    service, valuation disclaimer;
-  - fill every `[…]`: operator, address, privacy email, hosting provider,
-    deletion days;
-  - decide every `[LEGAL REVIEW]` and `[owner: confirm]` item.
-- **The first test with two people you know, before review,** is your
-  decision. The app doesn't show these documents yet. Email each person
-  theirs and keep the written "I agree" (`FIRST_REAL_TEST.md`).
-- **Seller terms say contact is shown to "buyers on paid plans".** The
-  pilot buyer is on Lite, granted free by you. Confirm that wording covers
-  a granted plan. Either way, the seller is told in writing.
-- **Before more testers:** links to the published documents in the app,
-  after review (not built).
+Minimum before the first two real people. The drafts are in `legal/`, and
+none is published.
+1. Fill in the operator identity everywhere: legal entity, address,
+   privacy/contact email, effective date. Seven placeholders are in the
+   privacy policy alone.
+2. Name your hosting provider in the privacy policy's list of service
+   providers.
+3. Confirm the retention choices marked `[owner: confirm]`:
+   - listing reports kept with the reporter's account;
+   - web-server log retention;
+   - the deletion-confirmation period (`[…30…]` days).
+4. Confirm the seller-terms wording for a buyer you give Lite for free.
+   It's marked `[LEGAL REVIEW]` in `SELLER_TERMS.md`.
+5. Then either a lawyer reviews the `[LEGAL REVIEW]` items (14 markers
+   across the drafts), or you decide to run the first test with two people you know
+   before that review.
+
+**Recording acceptance** (the app shows no terms yet):
+- Email each person the documents that apply. Name the version: the date
+  and the commit of `legal/` you sent.
+- Keep their "I agree" reply.
+- Log the date, person, documents and version in your own records, not in
+  the app.
+
+This review is not legal advice, and no automated review makes the drafts
+compliant.
 
 ### E. Pilot authorization
 
