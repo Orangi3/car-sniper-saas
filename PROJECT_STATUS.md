@@ -1,7 +1,10 @@
 # FlipFirst project status and owner-action package
 
-Checkpoint: 2026-10-31, release handoff. `main` = `b0d6ee4` (unchanged).
-Open work is a stack of pull requests, merged strictly in this order:
+Checkpoint: 2026-10-31, go-live preparation. `main` = `b0d6ee4` (unchanged).
+Nothing is merged or deployed, and nothing has been bought or sent.
+
+The release is five stacked pull requests, merged strictly in this order
+under one approval (A, below):
 1. PR #11 — real-data readiness:
    `ae5308d22dbd0721d64b5cb879a7d857ea791804`
 2. PR #12 — first live data, compliance, launch prep:
@@ -10,10 +13,14 @@ Open work is a stack of pull requests, merged strictly in this order:
    `9b169635af20bbdf4debe4626df705bb9f8c3470`
 4. PR #14 — dealer inventory, CSV import, buyer reports, cost model:
    `b3084a2a0f7538e0a2f9c0bd1474de38785505f6`
-5. PR #15 — release handoff. It holds this checkpoint, the release check
-   script, the first real test runbook, the rehearsal results and the
-   checked costs: documentation plus one read-only script. Its head is
-   shown on the PR.
+5. PR #15 — release handoff: docs plus the read-only merge checker:
+   `9faac0b222f3d03807ed8e980d6486a12f57e3be`
+
+PR #16 comes after the five and needs its own approval. It adds:
+- the gated go-live script (`deploy/golive.sh`);
+- the B2 region fix;
+- this checkpoint;
+- the pilot docs.
 
 Evidence labels: **VERIFIED** (run here), **SIMULATED** (fixtures /
 stand-ins / disposable host), **ESTIMATED**, **NOT TESTED**, **BLOCKED**.
@@ -23,8 +30,8 @@ stand-ins / disposable host), **ESTIMATED**, **NOT TESTED**, **BLOCKED**.
 **Merge checklist.**
 
 Rules:
-- Each merge happens only after you approve that PR's exact head SHA, one
-  PR at a time.
+- Merges happen only with your approval: the consolidated approval of the
+  five exact heads (A, below), or one PR at a time.
 - Normal merge commits only: never squash, rebase or force-push, and never
   bypass branch protection.
 - Protection requires a PR and the three CI checks (tests-sqlite,
@@ -35,7 +42,7 @@ Rules:
 never merges, retargets or pushes. It prints `READY` with the exact merge
 command, or `STOP` with the reason.
 
-For each PR, in order, after "approve PR #N at SHA":
+For each PR, in order:
 1. Retarget it to `main` (from #12 on):
    `gh api -X PATCH repos/Orangi3/car-sniper-saas/pulls/N -f base=main`.
 2. `scripts/release_check.sh pre N SHA main COMMITS FILES` (table below)
@@ -55,7 +62,9 @@ For each PR, in order, after "approve PR #N at SHA":
 
    Re-run it until CI on `main` finishes; it stops while checks are
    pending.
-5. Stop and report. The next PR waits for its own approval.
+5. Report. Under the consolidated approval, go on to the next PR only if
+   every check still holds; otherwise stop. Approving one PR at a time
+   means stopping after each merge.
 
 | PR | Approve | `pre` arguments |
 |---|---|---|
@@ -63,7 +72,8 @@ For each PR, in order, after "approve PR #N at SHA":
 | #12 | `5c6b2f28b8c971379406cd10c1b9e28f9330618c` | `pre 12 5c6b2f28b8c971379406cd10c1b9e28f9330618c main 9 44` |
 | #13 | `9b169635af20bbdf4debe4626df705bb9f8c3470` | `pre 13 9b169635af20bbdf4debe4626df705bb9f8c3470 main 3 27` |
 | #14 | `b3084a2a0f7538e0a2f9c0bd1474de38785505f6` | `pre 14 b3084a2a0f7538e0a2f9c0bd1474de38785505f6 main 10 19` |
-| #15 | its head, shown on the PR | `pre 15 HEAD main COMMITS FILES`, with the counts the PR shows before #14 merges |
+| #15 | `9faac0b222f3d03807ed8e980d6486a12f57e3be` | `pre 15 9faac0b222f3d03807ed8e980d6486a12f57e3be main 4 8` |
+| #16 | separate approval, after the five | `pre 16 HEAD main COMMITS FILES`, with the counts the PR shows before #15 merges |
 
 Why CI doesn't need to run again after a retarget:
 - after each merge, `main`'s files equal the merged head's (`post` checks
@@ -82,6 +92,28 @@ its counts are off. Then:
 To repeat a flaky check on the same head, re-run that SHA's push workflow
 run: `gh api -X POST repos/Orangi3/car-sniper-saas/actions/runs/RUN_ID/rerun`.
 Never close and reopen a PR to trigger CI.
+
+**Stop immediately, merge nothing more, and report** if any of these
+happens:
+- a head isn't the approved SHA;
+- `main` moved for any other reason;
+- a required check fails or stays red;
+- a diff's commit or file count differs from the table;
+- a merge would conflict;
+- a migration number repeats or `check_migrations.py` fails on `main`;
+- `main`'s files differ from the merged head's;
+- anything changes the risk assessment.
+
+**Merge simulation (VERIFIED, 2026-10-31).** All five merges were run
+locally, in order, as real merge commits on a copy of `main`:
+- each result is exactly the tree CI tested on that PR's head;
+- there are no conflicts;
+- the commit and file counts match the table;
+- the final tree is `7b562ac2224561d6b5feac932049bea2efbdb162`, #15's head
+  tree.
+
+So after the five merges, `git rev-parse origin/main^{tree}` must print
+exactly that.
 
 `release_check.sh` was VERIFIED against the live PRs, read-only:
 - `pre 11 … main 7 35` → READY;
@@ -115,6 +147,20 @@ host, 2026-10-31).
 - Dropping the new tables is not needed for a rollback, and it would delete
   users' saved deals, dealer approvals and reports. Do it only on your
   explicit decision, after a backup.
+
+## Release manifest
+
+| Item | Value |
+|---|---|
+| Release (five PRs merged) | `main` after #15's merge commit; its tree must be `7b562ac2224561d6b5feac932049bea2efbdb162`. The commit SHA is known only after the merge (a merge commit differs from the PR head) |
+| Production candidate | `main` after PR #16 merges, so `golive.sh` and the B2 region fix ship. Without #16, deploy the five-PR `main` with #15's 13 manual steps |
+| Schema | through `0021_seller_profiles_and_reports` (22 migrations, 0000–0021) |
+| Settings, by name only (`/etc/sniper/env`) | `DATABASE_URL`, `BILLING_ORIGIN`, `SNIPER_TRUSTED_PROXIES`, `ALLOW_REGISTRATION=0`, `SNIPER_COMMERCIAL_MODE=1`, `SNIPER_SELLER_SUBMISSIONS=1`, `SMTP_HOST`/`PORT`/`USER`/`PASSWORD`/`FROM`, `B2_BUCKET`/`KEY_ID`/`APPLICATION_KEY`/`ENDPOINT`, `AGE_RECIPIENT`, `HEALTHCHECK_WEB_URL`/`PIPELINE_URL`/`BACKUP_URL`. `STRIPE_*` and data-provider keys stay empty |
+| Services | `sniper-web` (gunicorn, 2 workers, 127.0.0.1:8765), `sniper-worker`, `sniper-scheduler`, `sniper-migrate` at boot, PostgreSQL 16, Caddy, fail2ban |
+| Timers | `sniper-backup.timer` 04:23 UTC; `sniper-healthcheck.timer` every 5 min; `sniper-reconcile.timer` **off** (no billing) |
+| Backups | nightly `pg_dump` → zstd → age (public key on the server) → B2, kept 30 days; the last 3 nights also on the server; a restore drill monthly, off the server |
+| Health | `GET /health` through Caddy; health pings for web and pipeline (`preflight --target internal`) and backup; `golive.sh` re-checks everything |
+| Rollback | `deploy/sync.sh --rollback` (rehearsed; older code runs on the newer schema). Whole server: final backup, remove the `A` record, destroy the VPS |
 
 ## Security review of PRs #13–#14 (independent reviewer, 2026-10-31)
 
@@ -167,13 +213,14 @@ Not available without licensed data:
 **Shortest path to a real test (one flipper, one seller):**
 `FIRST_REAL_TEST.md` has the steps and pass checks. The whole flow was
 rehearsed on the disposable host. In short:
-1. You approve the merges, in order.
-2. You approve the infrastructure request (below) and set the server up
-   with `FIRST_DEPLOY.md`.
-3. On the server: Resend `SMTP_*`, `SNIPER_SELLER_SUBMISSIONS=1`,
-   `ALLOW_REGISTRATION=0`, `BILLING_ORIGIN=https://app.tryflipfirst.com`.
-4. Issue two invitations. The seller confirms their email and lists one car
-   they may sell.
+1. You approve the five-PR release (A), then PR #16.
+2. You approve the infrastructure request (B) and run `FIRST_DEPLOY.md`.
+   Its step 7, `golive.sh`, checks the settings, HTTPS, backup, monitoring
+   and firewall.
+3. You approve the test (E). The seller and buyer accept the reviewed
+   terms in writing. You issue two invitations and send the drafted
+   messages.
+4. The seller confirms their email and lists one car they may sell.
 5. You set the buyer to Lite by hand, because only paid plans show a
    seller's contact email.
 6. The buyer:
@@ -181,7 +228,7 @@ rehearsed on the disposable host. In short:
      says there is no market value;
    - analyzes it with their own resale estimate;
    - saves and compares deals;
-   - emails the seller.
+   - marks the car Contacted and emails the seller.
 7. You check `pilot_report`, listing reports, the logs and Healthchecks.
    Then have a short call with each person.
 
@@ -191,31 +238,25 @@ before inviting anyone outside your own circle.
 ## Critical path
 
 ```
-owner approves #11 ──► merge #11 ──► retarget #12 to main ──► CI ──► owner approves #12 ──► merge
-      └─► then the same for #13 (Analyze, workspace), #14 (seller and dealer inventory) and #15 (release handoff), in that order
-MarketCheck written agreement ─┐
-   or eBay written permission ─┴─► first live test (FIRST_LIVE_TEST.md) ──► Gate 0 ──► Gate 1 ──► 10 testers
-VPS + domain + email + backups (owner) ──► deploy (FIRST_DEPLOY.md) ───────┘            └──► Gate 2 alerts
-      └─► first real buyer-and-seller test (FIRST_REAL_TEST.md; no paid data needed)
-legal review of legal/ drafts ──► publish links ──► invitations
+you approve the five-PR release (A) ──► #11 → #12 → #13 → #14 → #15 merged with checks ──► you approve PR #16 ──► merged
+accounts (C) + infrastructure (B) ──► FIRST_DEPLOY.md: install, settings, sync --apply, admin, golive.sh, restore drill
+legal decision (D) + pilot approval (E) ──► first real buyer-and-seller test (FIRST_REAL_TEST.md; no paid data)
+MarketCheck / eBay / VinAudit written permission (F) ──► FIRST_LIVE_TEST.md ──► Gate 0 ──► Gate 1 ──► 10 testers ──► Gate 2 alerts
 ```
 
 ## Checklist
 
 | # | Task | Priority | Status | Depends on | Evidence | Next action |
 |---|---|---|---|---|---|---|
-| 1 | Merge PR #11 | CRITICAL | ready | your approval | CI 6/6 at `ae5308d`; `clean`; protection on | you approve; merge checklist above |
-| 2 | Merge PR #12 | CRITICAL | ready after #1 | #1 | CI 6/6 at `5c6b2f2`; full suites, browser, simulation (below) | retarget, `pre`, you approve, merge |
-| 2a | Merge PR #13 (Analyze + private workspace) | HIGH | ready after #2 | #2 | CI 6/6 at `9b16963`; `tests/test_analyze.py`; full suites; browser journey | same checklist |
-| 2b | Merge PR #14 (dealer inventory, CSV import, reports) | HIGH | ready after #2a | #2a | CI 6/6 at `b3084a2`; `tests/test_seller_inventory.py`; full suites; UI flows | same checklist |
-| 2d | Merge PR #15 (release handoff: docs + read-only script) | HIGH | open | #2b | CI on its head | same checklist |
-| 2e | First real buyer-and-seller test | HIGH | prepared | #2d merged; server; your legal decision | whole flow rehearsed on the disposable host (`DEPLOY_TEST_REPORT.md`) | `FIRST_REAL_TEST.md` |
+| 1 | Merge the five-PR release (#11–#15) | CRITICAL | ready | your approval (A) | CI 6/6 on every head; all `clean`; no reviews or open threads; merge simulation gives the tested trees | merge checklist above |
+| 2 | Merge PR #16 (go-live script, B2 region fix, docs) | HIGH | open | #1 | `golive.sh` rehearsed (`DEPLOY_TEST_REPORT.md`); CI on its head | your separate approval |
+| 2e | First real buyer-and-seller test | HIGH | prepared | #2; server; legal decision (D); pilot approval (E) | whole flow rehearsed on the disposable host | `FIRST_REAL_TEST.md` |
 | 2c | Recruit the first sellers | HIGH | drafted | legal review of seller terms; server live | `outreach/SELLER_RECRUITING.md` (not sent) | approve the messages; visit 10 lots |
 | 3 | Licensed listing source | CRITICAL BLOCKER | BLOCKED | provider | `outreach/MARKETCHECK_REQUEST.md`, `EBAY_SETUP.md` ready | you send both requests |
 | 4 | Licensed market value | CRITICAL BLOCKER | BLOCKED | #3 (MarketCheck comparables / Price API, or eBay permission), or VinAudit values alone | `DATA_PROVIDER_DECISION.md`; `outreach/VINAUDIT_REQUEST.md` (not sent) | in the same requests; VinAudit optional |
 | 5 | First live test | CRITICAL | ready to run | #3 | harness VERIFIED against a stand-in only | `FIRST_LIVE_TEST.md` |
-| 6 | Production server | HIGH | prepared | your approval + purchase | the final release rehearsed on a disposable host, 2026-10-31: install, upgrade, HTTPS, rollback, first-test flow (`DEPLOY_TEST_REPORT.md`) | infrastructure request below |
-| 7 | Email, backups, monitoring | HIGH | prepared | #6, accounts | `FIRST_DEPLOY.md` steps 10, 11, 13; SMTP and health pings proven against local stand-ins only | create accounts |
+| 6 | Production server | HIGH | prepared; existence of a VPS, domain or DNS unknown to me | your approval (B) + purchase | install, upgrade, HTTPS, rollback, `golive.sh`, backup → restore drill, reboot: all SIMULATED on a disposable host (`DEPLOY_TEST_REPORT.md`) | B and C below |
+| 7 | Email, backups, monitoring | HIGH | prepared | #6, accounts (C) | STARTTLS + AUTH email, encrypted backup and restore, health pings: proven against stand-ins only | `golive.sh` gates 5–7 on the real server |
 | 8 | Legal drafts | HIGH | drafted | lawyer | `legal/` (not published) | review, fill `[…]`, publish links |
 | 9 | eBay data deletion rule (C2) | HIGH if eBay | not built | eBay's written terms | `COMPLIANCE.md` | build after eBay answers |
 | 10 | eBay account-deletion notifications (C4) | HIGH if eBay | not built | eBay's answer on exemption | `COMPLIANCE.md` | build or claim exemption |
@@ -225,26 +266,9 @@ legal review of legal/ drafts ──► publish links ──► invitations
 | 14 | Close stale PRs #2, #3, #4 | OPTIONAL | — | — | each 0 commits ahead of `main` | close on GitHub |
 | 15 | Self-serve account deletion | OPTIONAL | not built | after pilot | in-app listing reports are built (PR #14); you delete accounts on request (`accounts delete`) | post-pilot |
 
-## Verified this round (PR #12 branch before push)
-
-| Check | Result |
-|---|---|
-| SQLite suite | VERIFIED — 552 passed, 2 skipped |
-| PostgreSQL suite | VERIFIED — 550 passed (before the review-fix commit; targeted PostgreSQL tests after it: 28 passed; CI runs the full suite on the head) |
-| Browser smoke + UI flows (Playwright 1.47.2) | VERIFIED — pass; new "Check the mileage" label rendered on a SIMULATED listing |
-| Production simulation (real PostgreSQL and processes, stand-in provider) | SIMULATED — 19/19 |
-| Benchmark | SIMULATED — 39 cases: 11 TP, 27 TN, 1 FP (known trim mislabel), 0 FN; no drift |
-| Migrations, `pip-audit` | VERIFIED — ok; no known vulnerabilities |
-| Disposable-host deployment | SIMULATED — see `DEPLOY_TEST_REPORT.md` |
-| Real listings, real deals, real users | NOT TESTED — BLOCKED on #3 |
-
 ## Verified — final release candidate (2026-10-31)
 
-Final heads:
-- PR #11: `ae5308d22dbd0721d64b5cb879a7d857ea791804`
-- PR #12: `5c6b2f28b8c971379406cd10c1b9e28f9330618c`
-- PR #13: `9b169635af20bbdf4debe4626df705bb9f8c3470`
-- PR #14: `b3084a2a0f7538e0a2f9c0bd1474de38785505f6`
+Final heads: as listed at the top (#11–#15).
 
 | Check | Result |
 |---|---|
@@ -257,6 +281,8 @@ Final heads:
 | Valuation benchmark | VERIFIED — no drift (39 SIMULATED cases: 11 TP, 1 FP, 27 TN, 0 FN) |
 | Analyze speed on 50,000 SIMULATED listings | MEASURED — 41 ms per analysis on SQLite, 59 ms on PostgreSQL |
 | Release rehearsal on a disposable Ubuntu 24.04 host (PostgreSQL 16, Caddy, systemd), 2026-10-31 | SIMULATED — install at `5c6b2f2`, upgrade to `b3084a2` (0019–0021 on PostgreSQL), HTTPS and headers, rollback and roll forward, and the first buyer-and-seller flow: all pass (`DEPLOY_TEST_REPORT.md`) |
+| Go-live rehearsal on a fresh disposable host, 2026-10-31 (PR #16 at `732ab60`) | SIMULATED, with stand-ins for Resend, B2 and Healthchecks.io. `golive.sh` stops at gate 1 when settings are missing and at gate 8 on an extra open port, then passes all 9 gates. Also passing: the test email over STARTTLS + AUTH; backup, pipeline and web pings; the restore drill; the reboot (`DEPLOY_TEST_REPORT.md`) |
+| GitHub, 2026-10-31 | VERIFIED — #11–#15 heads as listed, all `clean`, CI 6/6 each, 0 reviews, comments or unresolved threads; `main` `b0d6ee4`; protection requires the 3 checks, includes admins, no force-push |
 | Real vehicles, real sellers, real users | NOT TESTED — no licensed data, sellers or users yet |
 
 ## Task register — Analyze, workspace, original inventory (branch `feat/flipfirst-analyze`)
@@ -282,149 +308,175 @@ Operating cost is per month at pilot scale.
 | T13 | Phone verification by text | 2 | 2 | 3 | 2 | per message + number | SMS provider | — | 0.8 | defer |
 | T14 | Aggregate analytics from users' recorded outcomes | 3 | 4 | 3 | 4 | $0 | consent, volume | — | 1.7 | defer: outcomes stay private to each user |
 
-## Owner-action package
+## Owner-action package (A–F)
 
-**Merge authorization.** Approve one PR at a time, in order, each with its
-exact SHA:
-1. "approve PR #11 at ae5308d22dbd0721d64b5cb879a7d857ea791804"
-2. "approve PR #12 at 5c6b2f28b8c971379406cd10c1b9e28f9330618c"
-3. "approve PR #13 at 9b169635af20bbdf4debe4626df705bb9f8c3470"
-4. "approve PR #14 at b3084a2a0f7538e0a2f9c0bd1474de38785505f6"
-5. "approve PR #15 at <its head>"
+Nothing below has been done for you. I have no access to your accounts,
+your computer or a server: no computer is connected to this session, and
+the build sandbox's network policy blocks lookups of `tryflipfirst.com`. So
+whether a VPS, the domain or its DNS already exist is **unknown to me**.
+Tell me what exists, or allow those hosts in the environment's network
+settings. Silence is never taken as consent.
 
-Each merge follows the merge checklist at the top of this file. After each
-one I stop and report, and the next waits for your approval. If a PR's head
-or diff isn't what you approved, nothing is merged and I report the
-difference.
+### A. Release authorization — one reply covers the five PRs
 
-**Written provider approval** (drafts only; nothing has been sent):
-- MarketCheck: send `outreach/MARKETCHECK_REQUEST.md` (contact form on
-  marketcheck.com or info@marketcheck.com). Save the written answer.
-- eBay: `EBAY_SETUP.md` → steps 1–6, including the price-estimate permission
-  request. Save the written answer.
-- Optional, market values only: `outreach/VINAUDIT_REQUEST.md`. It's an
-  alternative to MarketCheck's Price API.
+> approve release sequence: #11 ae5308d22dbd0721d64b5cb879a7d857ea791804,
+> #12 5c6b2f28b8c971379406cd10c1b9e28f9330618c,
+> #13 9b169635af20bbdf4debe4626df705bb9f8c3470,
+> #14 b3084a2a0f7538e0a2f9c0bd1474de38785505f6,
+> #15 9faac0b222f3d03807ed8e980d6486a12f57e3be
 
-No adapter is built for any of them until its written answer allows
-display to subscribers and storage in saved deals.
+- It covers only those five commits, in that order, with normal merge
+  commits and the checks in "Merge checklist" above.
+- If a head, a diff or the risk changes, nothing more is merged and I
+  report the difference.
+- PR #16 (the go-live script and the B2 region fix) is **not** part of it.
+  Approve it separately: "approve PR #16 at <its head>", after the five
+  merge.
 
-**Account creation** (all free to open):
-- eBay developer account and Sandbox keys; eBay Partner Network;
-- Resend; Backblaze B2; Healthchecks.io; Tailscale;
-- a VPS provider account;
-- the domain registrar for `tryflipfirst.com`, if not yet registered.
+### B. Infrastructure authorization — "approve infrastructure request"
 
-**Payment** (only after you approve each):
-- VPS $10–12/mo;
-- domain ~$11–20/yr;
-- a MarketCheck plan only after its written answer and quote
-  (`economics/scale.md`; ESTIMATES).
+You carry it out with `FIRST_DEPLOY.md` (8 steps; `golive.sh` checks the
+result). Approving it authorizes exactly:
 
-**Credentials.** Never in chat or Git. Keep them only in `/etc/sniper/env`
-on the server, or in a `chmod 600` file on your computer:
-- eBay: `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`, `EBAY_EPN_CAMPAIGN_ID`,
-  `EBAY_COMMERCIAL_AGREEMENT`;
-- MarketCheck: `MARKETCHECK_API_KEY`, `MARKETCHECK_COMMERCIAL_AGREEMENT`;
-- `SMTP_*`; `B2_*`, `AGE_RECIPIENT`; `HEALTHCHECK_*`.
-
-**Legal review**: `legal/` — every `[LEGAL REVIEW]` and `[…]`.
-
-### Infrastructure request — one approval: "approve infrastructure request"
-
-You carry it out: I have no access to your accounts or to a server. Every
-step is in `FIRST_DEPLOY.md`. The steps were rehearsed on a disposable host
-except where marked under Risks. Approving it authorizes exactly:
-
-| # | Action | Cost | Undo |
+| # | Action | Cost a month | Undo |
 |---|---|---|---|
-| 1 | Open free accounts: a VPS provider, Resend, Backblaze B2, Healthchecks.io, Tailscale | $0 | close them |
-| 2 | Register `tryflipfirst.com` at an at-cost registrar, if you don't own it | ~$11–20 a year | let it lapse |
-| 3 | Buy one VPS: Ubuntu 24.04, 2 GB RAM, 1 vCPU, ≥ 25 GB disk, US region, your SSH key | $10–12 a month | destroy it; billing stops |
-| 4 | DNS records: `A` `app.tryflipfirst.com` → the VPS; Resend's SPF and DKIM `TXT` and bounce `MX` for `app.tryflipfirst.com`; `_dmarc.app` `TXT` | $0 | delete the records |
-| 5 | On the VPS: `install.sh`, then `tailscale up --ssh`. It sets up PostgreSQL 16, Caddy with Let's Encrypt, ufw (80 and 443 only), fail2ban, log rotation and the systemd units | $0 | rebuild or destroy the VPS |
-| 6 | Secrets, only in `/etc/sniper/env`: `SMTP_*` (Resend), `B2_*`, `AGE_RECIPIENT`, `HEALTHCHECK_*` | $0 | delete the lines; revoke the keys |
-| 7 | Deploy merged `main` (`sync.sh --apply`); start the worker and scheduler; disable the billing reconcile timer | $0 | `sync.sh --rollback` |
-| 8 | Backups: a private B2 bucket with the lifecycle rule; an age keypair, private key off the server; the nightly timer; one restore drill | $0 under 10 GB | delete the bucket |
-| 9 | Monitoring: 3 Healthchecks.io checks and the health timer | $0 | delete the checks |
-| 10 | For the first real test: `SNIPER_SELLER_SUBMISSIONS=1` | $0 | set `0`, restart `sniper-web` |
+| 1 | Buy one VPS: Ubuntu 24.04, 2 GB RAM, 1 vCPU, ≥ 25 GB, US region, your SSH key. Skip if a suitable one exists | $10–12 | destroy it; billing stops |
+| 2 | Register `tryflipfirst.com` at an at-cost registrar, only if you don't own it | ~$1 ($11–20 a year) | let it lapse |
+| 3 | DNS: `A` `app.tryflipfirst.com` → the VPS; Resend's SPF and DKIM `TXT` and bounce `MX` for `app.tryflipfirst.com`; `_dmarc.app` `TXT` | $0 | delete the records |
+| 4 | One Tailscale paid seat. The free Personal plan is for non-commercial use only, per Tailscale's pricing page | ~$6–8 | cancel the seat |
+| 5 | On the VPS: `install.sh`, `tailscale up --ssh`, settings in `/etc/sniper/env`, `sync.sh --apply`, your admin account, `golive.sh` | $0 | `sync.sh --rollback`, or rebuild the VPS |
+| 6 | Restore drill on your computer | $0 | — |
 
-**Expected cost:** ~$11–14 a month, plus the domain if you don't own it.
-With a paid Tailscale seat it is ~$19–22. The costs table is in
-`FIRST_DEPLOY.md`: list prices as of 2026-10-31, not quotes.
+**Expected total:** ~$19–22 a month, plus the domain if you don't own it.
+List prices are from web-search summaries of the providers' pages
+(2026-10-31), not quotes.
+- Free plans: Resend, B2 under 10 GB, Healthchecks.io, Let's Encrypt.
+- Cheaper (~$11–14), with a trade-off: no Tailscale, and SSH open only to
+  your own IP with keys only.
+  - Port 22 becomes reachable from that one address. If your IP is shared
+    (mobile or carrier networks), that's many people.
+  - If your IP changes, you need the provider's web console.
+  - Not rehearsed. `golive.sh` gate 8 would flag the open port.
 
-**Not authorized by it:**
-- invitations;
-- publishing the legal documents;
-- any paid plan: Resend Pro, a Tailscale seat, provider backups;
-- Stripe or data-provider credentials;
-- other DNS records or firewall changes.
+**Not authorized by it:** invitations; publishing the legal documents; any
+other paid plan (Resend Pro, provider backups); Stripe or data-provider
+credentials; other DNS records or firewall changes.
 
 **Risks, and what limits each:**
-- **SSH lockout** when ufw closes public SSH. The Tailscale steps are not
-  proven here. Keep the first session open until `ssh root@sniper-staging`
-  works over Tailscale. The provider's web console is the fallback.
-- **Certificate.** Let's Encrypt issuance is untested, because it needs
-  real DNS.
-  - Create the `A` record first and wait for `dig` (step 2).
+- **SSH lockout** when ufw closes public SSH. Keep the first session open
+  until `ssh root@sniper-staging` works over Tailscale. The provider's web
+  console is the fallback.
+- **Certificate.** Let's Encrypt is untested here (it needs real DNS).
+  - Create the `A` record first and wait for `dig`.
   - Caddy retries a failure without burning the production rate limit.
-  - Don't rebuild the server in a loop: the limit is 5 identical
-    certificates a week.
-- **Email.**
-  - Many VPS providers block outbound ports 25, 465 and 587 on new
-    accounts. If yours does, use `SMTP_PORT=2587`.
-  - Until Resend shows the domain as verified, seller confirmations fail.
-    Step 2 of the first test catches this.
-  - The free plan refuses mail beyond 100 a day.
-- **Backups.** Uploading to B2 and restoring from B2 have not been run. The
-  restore drill (step 11) must pass before anyone is invited.
-- **Server size.** A real 1–2 vCPU VPS hasn't been measured. In the
-  container the stack used ~450 MB idle and ~670 MB under a 20-client load.
-  Add the 1 GB swap file.
-- **Newer Caddy.** The VPS gets Caddy from Caddy's repository, newer than
-  the tested 2.6.2. The Caddyfile uses only basic directives.
+  - Don't rebuild in a loop: the limit is 5 identical certificates a week.
+- **Email.** Many VPS providers block outbound ports 25, 465 and 587 on new
+  accounts; if yours does, use `SMTP_PORT=2587`. Seller confirmations fail
+  until Resend shows the domain verified. `golive.sh --test-email` catches
+  both.
+- **Backups.** Real B2 is untested. The backup and the restore drill ran end
+  to end against an S3 stand-in (`DEPLOY_TEST_REPORT.md`). Gate 6 and your
+  restore drill must pass on the real bucket before anyone is invited.
+- **Server size.** A real 1–2 vCPU VPS hasn't been measured; the stack fits
+  2 GB in the container. Add the 1 GB swap file.
 - **Cost creep.** Each paid add-on needs its own approval.
 
 **Roll back:**
 - **Application:** `bash deploy/sync.sh --rollback root@sniper-staging`
   (rehearsed). Older code runs on the newer schema.
 - **Whole server:** take a final backup, remove the `A` record, destroy the
-  VPS. Billing stops.
-- **Data:** the B2 bucket holds the encrypted dumps. Delete it only when you
-  decide to delete the pilot data under the privacy policy.
-- **Email:** remove the domain in Resend and its DNS records.
+  VPS.
+- **Data:** delete the B2 bucket only when you decide to delete the pilot
+  data under the privacy policy.
 
-**Minimum budget, same security and backups (~$11–13 a month):**
-- VPS: the cheapest 2 GB plan of the listed providers ($10–12). Not 1 GB:
-  a deploy briefly runs two web instances.
-- Domain: an at-cost registrar, ~$11 a year.
-- Free plans: Resend, B2 (under 10 GB), Healthchecks.io, Let's Encrypt.
-- No provider backup add-on. The encrypted B2 dumps and the monthly restore
-  drill cover the database. The server rebuilds from Git plus
-  `/etc/sniper/env`, so keep a copy of that file in your password manager.
-- Tailscale's Personal plan ($0), if its terms fit your use. If they don't,
-  one paid seat (~$8) keeps the same security.
+### C. External accounts — you create them; values go only to your password manager and `/etc/sniper/env`
+
+| Account | Gives | Cost |
+|---|---|---|
+| VPS provider | the server (skip if you have one) | $10–12/mo |
+| Domain registrar | `tryflipfirst.com` (skip if owned) | $11–20/yr |
+| Resend | `SMTP_PASSWORD` (sending-only key) and the DNS records | free: 3,000/mo, 100/day |
+| Backblaze B2 | `B2_KEY_ID`, `B2_APPLICATION_KEY`, `B2_ENDPOINT`; a second, read-only key for restore drills | free under 10 GB |
+| Healthchecks.io | the three `HEALTHCHECK_*_URL`s | free: 20 checks |
+| Tailscale | admin access over SSH | one seat, ~$6–8/mo |
+| age (on your Mac) | `AGE_RECIPIENT`; the private key stays on your Mac | free |
+
+Never paste a value into chat or Git. `golive.sh` checks the settings by
+name and never prints them.
+
+### D. Legal approval
+
+- **Review `legal/`:**
+  - documents: privacy policy, beta-tester terms, seller terms, terms of
+    service, valuation disclaimer;
+  - fill every `[…]`: operator, address, privacy email, hosting provider,
+    deletion days;
+  - decide every `[LEGAL REVIEW]` and `[owner: confirm]` item.
+- **The first test with two people you know, before review,** is your
+  decision. The app doesn't show these documents yet. Email each person
+  theirs and keep the written "I agree" (`FIRST_REAL_TEST.md`).
+- **Seller terms say contact is shown to "buyers on paid plans".** The
+  pilot buyer is on Lite, granted free by you. Confirm that wording covers
+  a granted plan. Either way, the seller is told in writing.
+- **Before more testers:** links to the published documents in the app,
+  after review (not built).
+
+### E. Pilot authorization
+
+1. Approve the first real test: one seller you know who has a car they may
+   sell, and one buyer.
+2. Issue the two invitations and send the messages in `FIRST_REAL_TEST.md`
+   yourself. They're drafted, not sent.
+3. Set the buyer to Lite by hand (step 4). Only paid plans show seller
+   contact. Lite can't send alerts while no car has a valuation:
+   - alerts need a "trusted" valuation;
+   - saved searches stay in conservative mode on Lite;
+   - a one-seller test has no comparables.
+4. After the test: `pilot_report`, feedback, then decide on more testers.
+
+### F. Data-provider outreach — drafts only, nothing sent
+
+Each asks for written permission for:
+- commercial SaaS use;
+- listing access (where relevant);
+- valuations and figures derived from them;
+- customer display;
+- storage and retention;
+- API usage and limits;
+- pilot pricing.
+
+The drafts:
+- MarketCheck: `outreach/MARKETCHECK_REQUEST.md`;
+- eBay: `EBAY_SETUP.md` steps 1–6, including the price-estimate
+  permission;
+- VinAudit (values only): `outreach/VINAUDIT_REQUEST.md`.
+
+No integration is built until an answer allows display to subscribers and
+storage in saved deals. Until then the pilot runs on first-party seller
+listings and the buyer's own numbers.
 
 ## Resume instructions
 
-- Stack, in merge order:
+- Stack, in merge order, each stacked on the one before:
 
-  | PR | Branch | Stacked on |
+  | PR | Branch | Head |
   |---|---|---|
-  | #11 | `feat/flipfirst-real-data-readiness` | `main` |
-  | #12 | `feat/flipfirst-first-live-data` | #11 |
-  | #13 | `feat/flipfirst-analyze` | #12 |
-  | #14 | `feat/flipfirst-seller-inventory` | #13 |
-  | #15 | `feat/flipfirst-release-handoff` | #14 |
+  | #11 | `feat/flipfirst-real-data-readiness` | `ae5308d` |
+  | #12 | `feat/flipfirst-first-live-data` | `5c6b2f2` |
+  | #13 | `feat/flipfirst-analyze` | `9b16963` |
+  | #14 | `feat/flipfirst-seller-inventory` | `b3084a2` |
+  | #15 | `feat/flipfirst-release-handoff` | `9faac0b` |
+  | #16 | `feat/flipfirst-golive` | see the PR; not in the five-PR approval |
 
-- Re-check any PR with `gh api repos/Orangi3/car-sniper-saas/pulls/N`, or
-  run `scripts/release_check.sh pre …`.
-- Merging: follow the merge checklist at the top, one approval at a time.
+- Before merging anything, re-check: `scripts/release_check.sh pre …`
+  (table above). The merge simulation in "Release manifest" must still give
+  the same trees.
+- After an approval, follow the merge checklist. Stop at the first failed
+  check and report it.
 - Tests:
   - SQLite: `python -m pytest -q`;
   - PostgreSQL: `SNIPER_TEST_PG_URL=… python -m pytest -q`;
-  - browser: the browser-smoke steps in `.github/workflows/ci.yml`.
-- Browser tests locally: use Playwright **1.47.2**, the version CI pins.
-  Newer versions hide CSP problems; 1.63 passed a test that 1.47.2 failed.
-- Next, in order:
-  - after the merges and the server: `FIRST_REAL_TEST.md`;
-  - whichever provider answers first: `FIRST_LIVE_TEST.md`.
+  - browser: the browser-smoke steps in `.github/workflows/ci.yml`, with
+    Playwright **1.47.2**, the version CI pins.
+- Deployment: `FIRST_DEPLOY.md` (8 steps), then `FIRST_REAL_TEST.md`.
+- When a provider answers: `FIRST_LIVE_TEST.md`.
