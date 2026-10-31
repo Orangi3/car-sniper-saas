@@ -64,8 +64,8 @@ Profit figures are estimates from asking-price comparables, not outcomes.
 
 The harness answers "does the pipeline find real deals in real data?"
 before any customer sees a result. It never touches the production database
-or notifications (details in the module docstring; `EBAY_SETUP.md` step 8
-for the server command).
+or notifications (details in the module docstring; exact commands in
+`FIRST_LIVE_TEST.md`).
 
 1. **Run** — `python -m validate_deals run --sources ebay --zip 35401
    --radius 150 --polls 4 --interval 1800 --out <dir>`: bounded polls of

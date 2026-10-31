@@ -36,3 +36,13 @@ def test_provider_matrix_applies_rights_gate():
     for n in pm.P:
         assert set(pm.P[n]) == set(pm.CRITERIA)
         assert all(tag in ("V", "E") and 0 <= sc <= 5 for sc, tag, _ in pm.P[n].values())
+
+
+def test_scale_table_is_current_and_sane():
+    import scale
+    p = Path(__file__).resolve().parent.parent / "economics" / "scale.md"
+    assert p.read_text() == scale.render(), "run: python economics/scale.py > economics/scale.md"
+    be = [scale.breakeven(price, "marketcheck") for price in scale.PRICES]
+    assert be == sorted(be, reverse=True)                     # higher price, fewer users needed
+    for n in scale.USERS:
+        assert scale.fixed(n, "free_data") < scale.fixed(n, "marketcheck")

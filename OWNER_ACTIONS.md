@@ -9,7 +9,8 @@ what unblocks the most.
 | Action | How | Unlocks |
 |---|---|---|
 | **A. Protect `main`** | GitHub → Settings → Branches → add rule for `main`: require a pull request, require status checks `tests-sqlite`, `tests-postgres`, `browser-smoke`; block force pushes; do not allow bypass | Makes "agents never merge" enforced, not promised (`AGENTS.md`) |
-| **B. Apply for eBay production access (the shortest path to real listings)** | `EBAY_SETUP.md` steps 1–6: developer account, Sandbox check with `python -m validate_deals` (fake data, proves the keys), eBay Partner Network campaign, Buy API production application describing FlipFirst exactly, keyset activation (account-deletion notifications or exemption). Never paste keys into chat or Git | eBay's approval is what authorizes real eBay listings in a paid product; then `EBAY_COMMERCIAL_AGREEMENT` and the first real `validate_deals` run (step 8) |
+| **B. Send the MarketCheck inquiry (§ 1)** | Email it from your own address; nothing is bought by asking | One written answer can unlock both licensed private-party listings and licensed market values — the two things a real deal needs (`DATA_PROVIDER_DECISION.md`) |
+| **B2. Apply to eBay, asking for price-estimate permission** | `EBAY_SETUP.md`: developer account, Sandbox rehearsal (`FIRST_LIVE_TEST.md` § 2), eBay Partner Network campaign, production-access request with the business description and permission request. Never paste keys into chat or Git | eBay's licence bars modeling prices of eBay items without written permission; only that permission makes eBay usable for FlipFirst |
 | **C. Same for MarketCheck** (after #3) | add secret `MARKETCHECK_API_KEY`, run the workflow with `marketcheck_fsbo` | Live FSBO field mapping + listing count for the territory (one call ≈ $0.01). The probe stores nothing; it does not replace the written agreement for production use |
 | **D. Accept or change the launch-stage thresholds** | Read `CURRENT_STATE.md` §5 and edit the numbers | Fixes the bar before data arrives |
 | **E. Email for seller verification** | Step by step (Resend, ~15 min, $0): `FIRST_DEPLOY.md` → Email setup. In general: use a transactional provider that lets you send from your own domain over SMTP (e.g. Amazon SES, Postmark, Resend, Mailgun — compare their current pricing pages yourself; free-tier terms change and are not assumed here). Verify your domain with it (SPF + DKIM DNS records, plus a DMARC record), create SMTP credentials, then put `SMTP_HOST`, `SMTP_PORT=587` (or 465), `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM="FlipFirst <no-reply@yourdomain>"` in `/etc/sniper/env` and restart `sniper-web`. A personal mailbox's SMTP only works if `SMTP_FROM` is that same mailbox address. Confirm: Sell → "Email me a confirmation link" arrives in a Gmail and an Outlook inbox (not spam), and the message headers show `spf=pass dkim=pass`. Certificates are always verified; a 503 "couldn't send the email" means check `journalctl -u sniper-web` for the logged reason (never the password) | Seller listings publish only after the seller confirms their email; without SMTP nothing publishes. See `SELLER_PILOT.md` |
@@ -37,47 +38,10 @@ Never set `MARKETCHECK_COMMERCIAL_AGREEMENT` or `EBAY_COMMERCIAL_AGREEMENT`
 (or enable a source in commercial mode) without the signed permission or
 written approval it represents.
 
-## 1. Draft inquiry to MarketCheck
+## 1. Inquiry to MarketCheck
 
-> **Subject:** Commercial use of the Private Party (FSBO) API for a consumer alert service — pilot pricing
->
-> Hello MarketCheck team,
->
-> I'm building FlipFirst, a low-cost subscription service ($3–5/month) that
-> alerts individual used-car buyers in the US when private-party vehicles in
-> their area are listed below market value. We'd like to use your Private
-> Party Search API (`/v2/search/car/fsbo/active`) as our primary data source
-> and want to make sure our use is permitted before subscribing.
->
-> How we would use the data:
-> - One central query per territory (ZIP + radius), every 15–60 minutes;
->   our subscribers never query you directly.
-> - We would store listing records (price, year/make/model, mileage,
->   location, listing URL, first/last seen) and a price history for each
->   listing for up to [30/60/90] days, to detect new listings and price drops.
-> - We would show subscribers limited listing details with a link to the
->   original listing, plus our own valuation, and send push/SMS alerts.
-> - We would not resell, redistribute in bulk, or train AI models on the data.
->
-> Questions:
-> 1. Does your standard subscription permit this use (storage for alerting
->    and price history, display to paying subscribers)? If not, what
->    agreement or tier is required?
-> 2. Retention, caching, attribution and display requirements for FSBO
->    records, the listing URL and photos.
-> 3. Which marketplaces feed FSBO data, and roughly how many active listings
->    are within 100 miles of ZIP 35401 (Tuscaloosa, AL) in the $2,000–$15,000
->    range?
-> 4. Refresh latency: how soon after a private seller posts does a listing
->    appear, and are price changes reflected on the same record?
-> 5. Which fields indicate first-seen / last-seen dates and previous price on
->    FSBO results, and the recommended sort for "newest first"?
-> 6. Is there startup, pilot or evaluation pricing below the Basic plan, or a
->    trial that includes the FSBO endpoint?
->
-> Thank you — happy to share more about the product.
->
-> [Your name] · FlipFirst · [email] · [phone]
+Ready to send: `outreach/MARKETCHECK_REQUEST.md` (where to send it, the
+message, and what to do with the reply).
 
 Similar questions apply to any alternative provider (e.g. Vehicle
 Acquisition Network): ask where their FSBO data comes from and whether they

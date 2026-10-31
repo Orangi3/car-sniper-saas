@@ -42,8 +42,8 @@ P = {
     },
     "eBay Browse API": {
         "private_party_coverage": (2, "E", "some private sellers; auctions/BIN, not classifieds"),
-        "commercial_rights": (2, "V", "Buy API production use needs EPN application, eBay "
-                                      "approval and contracts; approval not guaranteed"),
+        "commercial_rights": (2, "V", "Buy API approval + contracts, AND written permission: "
+                                      "the licence bars modeling prices of eBay items"),
         "freshness": (4, "V", "live API"),
         "geo_filtering": (4, "V", "pickupPostalCode/pickupRadius filters (documented)"),
         "field_richness": (3, "V", "title, price, location, seller account type; YMM parsed"),

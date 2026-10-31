@@ -10,7 +10,7 @@ Nothing here is automatic. Each step is yours to approve and run.
 
 | Account | Cost | Used for |
 |---|---|---|
-| A domain you control | you may already own one | `car.<yourdomain>` → server |
+| The domain `tryflipfirst.com` (planned app host: `app.tryflipfirst.com`) | ~$10–20/yr if not yet registered | `app` → server |
 | VPS: Ubuntu 24.04, ≥1 vCPU, ≥2 GB RAM, ≥25 GB disk, US region | ~$5–12/mo (check provider) | everything |
 | Tailscale (free personal plan) | $0 | SSH without an open port |
 | Resend (free plan: 3,000/mo, 100/day) | $0 | seller verification email |
@@ -65,12 +65,12 @@ before you sign up.
 
 1. **Server.** Create the VPS (Ubuntu 24.04, your SSH key, US region).
    Note its IP.
-2. **DNS.** At your registrar add an `A` record `car` → the IP. Wait until
-   `dig +short car.<yourdomain>` prints it.
+2. **DNS.** At your registrar add an `A` record `app` → the IP. Wait until
+   `dig +short app.tryflipfirst.com` prints it.
 3. **Connect + copy the release** (STAGING_RUNBOOK §2, "Repository to
    host"): `ssh root@<IP>`; from the Mac, `tar` + `scp` the tree.
 4. **Install** (as root on the server, keep this session open):
-   `STAGING_HOSTNAME=car.<yourdomain> bash /tmp/sniper-bootstrap/deploy/install.sh`
+   `STAGING_HOSTNAME=app.tryflipfirst.com bash /tmp/sniper-bootstrap/deploy/install.sh`
    then `tailscale up --ssh --hostname=sniper-staging`.
    From the Mac, in a *second* terminal: `ssh root@sniper-staging` must
    work before you close the first. (ufw now blocks public SSH.)
@@ -90,12 +90,12 @@ before you sign up.
 7. **Start background services:**
    `systemctl enable --now sniper-worker sniper-scheduler`
 8. **HTTPS** — Caddy fetches the certificate on the first request once DNS
-   points at the server. Check: `curl -I https://car.<yourdomain>/health`
+   points at the server. Check: `curl -I https://app.tryflipfirst.com/health`
    → `200` and a `strict-transport-security` header.
    **Not yet proven:** real certificate issuance (needs real DNS).
 9. **Health + admin** — `bash deploy/sync.sh --status root@sniper-staging`;
    create your admin account (STAGING_RUNBOOK §7, proven); sign in at
-   `https://car.<yourdomain>/m`.
+   `https://app.tryflipfirst.com/m`.
 10. **Email** — see "Email setup" below; then Sell →
     "Email me a confirmation link" must arrive in Gmail *and* Outlook.
 11. **Backups** — create the B2 bucket + keys and an age keypair (below),
@@ -134,11 +134,11 @@ additive). Rolling back to a release from before session hashing
 
 ## Email setup (Resend, ~15 min, $0)
 
-1. Sign up at resend.com → Domains → Add `car.<yourdomain>` (a subdomain
+1. Sign up at resend.com → Domains → Add `app.tryflipfirst.com` (a subdomain
    keeps your main domain's email reputation separate).
 2. Copy the DNS records it shows (SPF `TXT`, DKIM `TXT`, MX for bounces)
    into your registrar; add a DMARC record
-   `_dmarc.car` `TXT` `v=DMARC1; p=none; rua=mailto:<you>`.
+   `_dmarc.app` `TXT` `v=DMARC1; p=none; rua=mailto:<you>`.
    Wait for Resend to show the domain as verified.
 3. API Keys → create a key with **sending access only**, for that domain.
 4. In `/etc/sniper/env`:
@@ -147,7 +147,7 @@ additive). Rolling back to a release from before session hashing
    SMTP_PORT=587
    SMTP_USER=resend
    SMTP_PASSWORD=<the API key>
-   SMTP_FROM=FlipFirst <no-reply@car.yourdomain>
+   SMTP_FROM=FlipFirst <no-reply@app.tryflipfirst.com>
    ```
    `systemctl restart sniper-web`. If your VPS provider blocks port 587,
    use `SMTP_PORT=2587` (also STARTTLS).
