@@ -12,7 +12,7 @@ Nothing here is automatic. Each step is yours to approve and run.
 |---|---|---|
 | The domain `tryflipfirst.com` (planned app host: `app.tryflipfirst.com`) | ~$11–20/yr if not yet registered | `app` → server |
 | VPS: Ubuntu 24.04, ≥1 vCPU, ≥2 GB RAM, ≥25 GB disk, US region | ~$10–12/mo | everything |
-| Tailscale (free Personal plan; check its terms fit your use — costs below) | $0 | SSH without an open port |
+| Tailscale, one paid seat (the free Personal plan is for non-commercial use only) | ~$6–8/mo | SSH without an open port |
 | Resend (free plan: 3,000/mo, 100/day) | $0 | seller verification email |
 | Backblaze B2 | $0 under 10 GB stored | encrypted off-server backups |
 | Healthchecks.io (free plan: 20 checks) | $0 | alerts when something stops |
@@ -37,12 +37,12 @@ open each page before you sign up.
 | VPS, 2 GB RAM, 1 vCPU, 50 GB disk, US region | $10–12 | 2 TB transfer included; then $0.005–0.01/GB | DigitalOcean Basic and Akamai/Linode $12, Vultr Regular $10. The pilot uses ~10–30 GB a month. Hetzner's US prices reportedly rose in June 2026 (~$20 for 2 GB); recheck before choosing it |
 | Domain (.com) | ~$0.95–1.70 | — | $11.17–19.98 a year at renewal: at-cost registrars (Cloudflare, Porkbun) ~$11–12; Namecheap renews at ~$20. The .com wholesale price rises on 1 Nov 2026 |
 | Resend email | $0 | 3,000 a month **and 100 a day**; no overage — extra mail is refused until Pro ($20/mo) | the only email FlipFirst sends is the seller contact confirmation (at most 5 per seller a day) |
-| Backblaze B2 encrypted backups | $0 | first 10 GB free; then $6.95/TB-month; downloads free up to 3× what you store | nightly dumps at pilot size stay far under 10 GB; the lifecycle rule (step 11) keeps it bounded |
+| Backblaze B2 encrypted backups | $0 | first 10 GB free; then $6.95/TB-month; downloads free up to 3× what you store | nightly dumps at pilot size stay far under 10 GB; the lifecycle rule (Backups, below) keeps it bounded |
 | Healthchecks.io | $0 | 20 checks (you use 3) | — |
-| Tailscale | $0, or ~$8 | Personal plan is free; one Standard seat ~$8/mo | the Personal plan may be for personal, non-business use: read its terms. If it doesn't fit, pay for one seat |
+| Tailscale | ~$6–8 | one paid seat | Tailscale's pricing page says the free Personal plan is only for non-commercial use, so FlipFirst needs a paid seat. The price is from search summaries: check it |
 | Let's Encrypt certificate | $0 | 5 identical certificates per week | keep Caddy's data directory if you rebuild the server, or a rebuild loop can be refused for days |
 | eBay Browse API | $0 | — | no fee published; production approval required (`EBAY_SETUP.md`) |
-| **Total, pilot with no paid data** | **~$11–14** (~$19–22 with a Tailscale seat) | | the first real test (`FIRST_REAL_TEST.md`) uses only FlipFirst seller listings |
+| **Total, pilot with no paid data** | **~$19–22** | | ~$11–14 without Tailscale, if you open SSH only to your own IP (a trade-off: `PROJECT_STATUS.md` → B). The first real test (`FIRST_REAL_TEST.md`) uses only FlipFirst seller listings |
 | MarketCheck private sellers — only if chosen | ≥ $299 + per-call fees | — | unverified; get a written quote and permission first |
 | Twilio SMS | not needed | — | push alerts use ntfy (free) |
 
@@ -69,64 +69,105 @@ review, and your time for support (testers email you directly).
   (polling), `sniper-worker` (valuation and notification jobs),
   `sniper-backup.timer` (nightly), `sniper-healthcheck.timer`,
   `sniper-reconcile.timer` (billing state; off until you add Stripe
-  keys, step 13), and Caddy for HTTPS. All are
+  keys, "Billing later"), and Caddy for HTTPS. All are
   systemd units installed by `deploy/install.sh`; the scheduler and timers
-  are enabled by hand (steps 7, 11, 13).
+  are enabled by `golive.sh` (step 7).
 
-## The 13 steps
+## The steps
 
-1. **Server.** Create the VPS (Ubuntu 24.04, your SSH key, US region).
-   Note its IP.
-2. **DNS.** At your registrar add an `A` record `app` → the IP. Wait until
-   `dig +short app.tryflipfirst.com` prints it.
-3. **Connect + copy the release** (STAGING_RUNBOOK §2, "Repository to
-   host"): `ssh root@<IP>`; from the Mac, `tar` + `scp` the tree.
-4. **Install** (as root on the server, keep this session open):
-   `STAGING_HOSTNAME=app.tryflipfirst.com bash /tmp/sniper-bootstrap/deploy/install.sh`
-   then `tailscale up --ssh --hostname=sniper-staging`.
-   From the Mac, in a *second* terminal: `ssh root@sniper-staging` must
-   work before you close the first. (ufw now blocks public SSH.)
-   **Not yet proven:** the Tailscale steps (unavailable in the test
-   environment). If the second session fails, fix it from the first one
-   or the provider's web console; don't close the first session.
-5. **Secrets** — on the server: `nano /etc/sniper/env` (file is
-   `root:sniper 0600`; one `KEY=value` per line, comments on their own
-   line). `DATABASE_URL` and `BILLING_ORIGIN` are already filled in.
-   Add now: `SMTP_*` (step 10), `B2_*` + `AGE_RECIPIENT` (step 11),
-   `HEALTHCHECK_*` (step 13). Never paste these into chat or git.
-6. **Deploy + migrate** — from the Mac, in the repo at the merged `main`:
+**First, the accounts.** Keep every value in your password manager, never
+in chat or Git:
+- **Resend:** add the domain `app.tryflipfirst.com` (its DNS records go in
+  step 2) and create a sending-only API key, which becomes `SMTP_PASSWORD`
+  ("Email setup" below).
+- **Backblaze B2:**
+  - a private bucket;
+  - a write-only key for the server (`B2_KEY_ID`, `B2_APPLICATION_KEY`);
+  - a read-only key for restore drills;
+  - the bucket's endpoint from its page (`B2_ENDPOINT`).
+
+  See "Backups" below.
+- **age:** on your Mac, `age-keygen -o ~/.config/sniper-staging.age.key`.
+  Its public line (`age1…`) is `AGE_RECIPIENT`. The private key never leaves
+  your Mac.
+- **Healthchecks.io:** 3 checks, which give `HEALTHCHECK_WEB_URL`,
+  `HEALTHCHECK_PIPELINE_URL` and `HEALTHCHECK_BACKUP_URL`:
+  - web and pipeline: period 5 min, grace 15 min;
+  - backup: period 1 day.
+- **Tailscale:** an account with your Mac signed in. Business use needs a
+  paid seat (costs above).
+
+1. **Server.** Create the VPS (Ubuntu 24.04, 2 GB, your SSH key, US
+   region). Note its IP.
+2. **DNS.** At your registrar, add an `A` record `app` → the IP, plus
+   Resend's records for `app.tryflipfirst.com` ("Email setup"). Wait until
+   `dig +short app.tryflipfirst.com` prints the IP.
+3. **Copy the release and install** (STAGING_RUNBOOK §2, "Repository to
+   host").
+   - From the Mac, `tar` + `scp` the tree to the server.
+   - As root on the server, keep this session open and run
+     `STAGING_HOSTNAME=app.tryflipfirst.com bash /tmp/sniper-bootstrap/deploy/install.sh`,
+     then `tailscale up --ssh --hostname=sniper-staging`.
+   - From the Mac, in a *second* terminal, `ssh root@sniper-staging` must
+     work before you close the first, because ufw now blocks public SSH.
+   - **Not yet proven:** the Tailscale steps. If the second session fails,
+     run `ufw allow in on tailscale0` in the first one. It opens nothing to
+     the internet, and `golive.sh` accepts it. The provider's web console
+     is the fallback.
+4. **Settings.** On the server, run `nano /etc/sniper/env`.
+   - The file is `root:sniper 0600`: one `KEY=value` per line, comments on
+     their own line. `DATABASE_URL` and `BILLING_ORIGIN` are already filled
+     in.
+   - Add the values from your password manager: `SMTP_*`, `B2_*`,
+     `AGE_RECIPIENT` and the three `HEALTHCHECK_*_URL`s.
+   - Set `SNIPER_SELLER_SUBMISSIONS=1`.
+   - `B2_ENDPOINT` and the Healthchecks URLs must start with `https://`.
+     The backup and restore scripts and `golive.sh` refuse plain HTTP,
+     because the keys and ping URLs would travel in clear text.
+   - Leave `STRIPE_*` empty: the pilot has no billing.
+5. **Deploy + migrate.** From the Mac, in the repo at the merged `main`:
    `bash deploy/sync.sh --apply root@sniper-staging`.
-   It installs dependencies, migrates PostgreSQL, health-checks a canary,
-   flips `current`, restarts and waits for `sniper-web healthy`. Any
-   failure stops before the flip (proven with a wrong DB password).
-7. **Start background services:**
-   `systemctl enable --now sniper-worker sniper-scheduler`
-8. **HTTPS** — Caddy fetches the certificate on the first request once DNS
-   points at the server. Check: `curl -I https://app.tryflipfirst.com/health`
-   → `200` and a `strict-transport-security` header.
-   **Not yet proven:** real certificate issuance (needs real DNS).
-9. **Health + admin** — `bash deploy/sync.sh --status root@sniper-staging`;
-   create your admin account (STAGING_RUNBOOK §7, proven); sign in at
-   `https://app.tryflipfirst.com/m`.
-10. **Email** — see "Email setup" below; then Sell →
-    "Email me a confirmation link" must arrive in Gmail *and* Outlook.
-11. **Backups** — create the B2 bucket + keys and an age keypair (below),
-    then `systemctl enable --now sniper-backup.timer` and run one now:
-    `systemctl start sniper-backup.service && journalctl -u sniper-backup -n 5`
-    → `backup OK`. Then do one restore drill from the Mac (below).
-12. **First real seller** — `SELLER_PILOT.md`. Switch to mode B first
-    (`DEPLOY.md` → Operating modes): `SNIPER_SELLER_SUBMISSIONS=1`,
-    restart `sniper-web`.
-13. **Monitoring** — create 3 checks in Healthchecks.io (web, pipeline:
-    period 5 min, grace 15 min; backup: 1 day), put the ping URLs in
-    `/etc/sniper/env`, then
-    `systemctl enable --now sniper-healthcheck.timer`. A missing ping
-    emails you.
-    Billing is off in the pilot, so also run
-    `systemctl disable --now sniper-reconcile.timer`. `install.sh` enables
-    it, but without Stripe keys the job refuses to run (seen on the
-    disposable host), so the timer would fail every hour. When you add
-    Stripe keys, re-enable it and add a fourth check (reconcile: 1 h).
+   - It installs dependencies, migrates PostgreSQL, health-checks a canary,
+     flips `current`, and waits for `sniper-web healthy`.
+   - Any failure stops before the flip (proven with a wrong DB password).
+6. **Admin.** Create your admin account (STAGING_RUNBOOK §7, proven).
+7. **Go live.** On the server:
+   `sudo bash /opt/sniper/current/deploy/golive.sh --test-email you@example.com`.
+   It runs nine gates and stops at the first problem with the fix; re-run it
+   after fixing. `--test-email` (your own address) is required. The gates, in
+   order:
+   1. settings, checked by name (values are never printed), with HTTPS-only
+      endpoints;
+   2. the release is in place;
+   3. services restarted, and enabled at boot;
+   4. billing reconciliation off;
+   5. HTTPS with a real certificate, HSTS, the HTTP redirect, and sign-up
+      refused without an invitation;
+   6. one encrypted backup uploaded, nightly timer on;
+   7. health probes pinged, 5-minute timer on;
+   8. only 80 and 443 open, Tailscale connected;
+   9. preflight ready, an admin exists (required), and the test email is
+      accepted.
+
+   **Proven** on the disposable host with stand-ins (`DEPLOY_TEST_REPORT.md`).
+   **Not yet proven:** a real Let's Encrypt certificate, and Resend, B2 and
+   Healthchecks.io themselves. Gate 5 assumes the server can reach its own
+   public address. That holds at DigitalOcean, Akamai/Linode and Vultr,
+   where the public IP sits on the server itself.
+
+   Then check the test email arrived. In Gmail, "Show original" must say
+   `SPF: PASS` and `DKIM: PASS`.
+8. **Restore drill.** On the Mac, with the read-only B2 key and the age
+   private key, run `bash deploy/restore.sh` ("Backups" below). Do it again
+   monthly.
+
+**Billing later.** When you add Stripe keys:
+- re-enable `sniper-reconcile.timer`;
+- add a fourth Healthchecks check (reconcile: 1 h).
+
+`golive.sh` refuses to run while `STRIPE_SECRET_KEY` is set, because it sets
+up the free pilot. `install.sh` enables the reconcile timer, but without
+Stripe keys that job refuses to run, so the go-live turns the timer off.
 
 Rollback at any time: `bash deploy/sync.sh --rollback root@sniper-staging`
 (proven; older code runs on the newer schema because migrations are
@@ -169,7 +210,7 @@ additive). Rolling back to a release from before session hashing
    `systemctl restart sniper-web`. Many VPS providers block outbound ports
    25, 465 and 587 on new accounts; if yours does, use `SMTP_PORT=2587`
    (also STARTTLS).
-5. Test (step 10). In Gmail, "Show original" must say `SPF: PASS`,
+5. Test (step 7, `--test-email`). In Gmail, "Show original" must say `SPF: PASS`,
    `DKIM: PASS`. A seller seeing "we couldn't send the email right now"
    means the server couldn't reach or log in to Resend:
    `journalctl -u sniper-web | grep "verification email"` shows why

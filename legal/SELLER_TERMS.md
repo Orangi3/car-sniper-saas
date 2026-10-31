@@ -8,7 +8,9 @@ By listing a vehicle you confirm, and the app records with the time:
 2. **The details are accurate** to the best of your knowledge, including
    title status (clean, rebuilt, salvage, other), mileage and known
    mechanical or cosmetic problems.
-3. **Your contact may be shown** to signed-in buyers on paid plans.
+3. **Your contact may be shown** to signed-in buyers on paid plans,
+   including pilot testers FlipFirst gives a plan to at no charge.
+   **[LEGAL REVIEW]**
 
 How listing works:
 
