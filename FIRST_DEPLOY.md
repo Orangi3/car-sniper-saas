@@ -102,18 +102,35 @@ in chat or Git:
 2. **DNS.** At your registrar, add an `A` record `app` → the IP, plus
    Resend's records for `app.tryflipfirst.com` ("Email setup"). Wait until
    `dig +short app.tryflipfirst.com` prints the IP.
-3. **Copy the release and install** (STAGING_RUNBOOK §2, "Repository to
-   host").
-   - From the Mac, `tar` + `scp` the tree to the server.
-   - As root on the server, keep this session open and run
-     `STAGING_HOSTNAME=app.tryflipfirst.com bash /tmp/sniper-bootstrap/deploy/install.sh`,
-     then `tailscale up --ssh --hostname=sniper-staging`.
-   - From the Mac, in a *second* terminal, `ssh root@sniper-staging` must
-     work before you close the first, because ufw now blocks public SSH.
-   - **Not yet proven:** the Tailscale steps. If the second session fails,
-     run `ufw allow in on tailscale0` in the first one. It opens nothing to
-     the internet, and `golive.sh` accepts it. The provider's web console
-     is the fallback.
+3. **Check the server, copy the release, Tailscale first, then install**
+   (details in STAGING_RUNBOOK §2–4).
+   - **Only a dedicated server.** `install.sh` takes over the firewall,
+     ports 80/443 and PostgreSQL. Run the read-only inspection first
+     (STAGING_RUNBOOK §2). Install only on Ubuntu 24.04 with nothing else
+     running.
+   - **Verify the host key.** Open the provider's web console (Vultr: the
+     server → View Console) and run
+     `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. When `ssh` first
+     asks "Are you sure you want to continue connecting", paste that
+     fingerprint instead of `yes`; ssh continues only if it matches.
+   - **Keep a way back in.** Confirm you can log in on that web console:
+     it still works if SSH is ever cut off.
+   - **Package the approved commit only.** On the Mac, in the repo:
+     `git fetch origin && git switch --detach APPROVED_SHA && bash deploy/bootstrap_archive.sh APPROVED_SHA`
+     → `ok: /tmp/sniper-bootstrap.tgz holds … files`. It packs the
+     committed tree only, never `.env`, keys, databases or `.venv`. Then
+     `scp /tmp/sniper-bootstrap.tgz root@SERVER_IP:/tmp/`.
+   - **Tailscale before the firewall.** As root on the server:
+     `curl -fsSL https://tailscale.com/install.sh | sh && tailscale up --ssh --hostname=sniper-staging`.
+     Then from the Mac, `tailscale ssh root@sniper-staging true` must
+     succeed.
+   - **Install over Tailscale.** From the Mac, `tailscale ssh root@sniper-staging`,
+     then:
+     `mkdir -p /tmp/sniper-bootstrap && tar -xzf /tmp/sniper-bootstrap.tgz -C /tmp/sniper-bootstrap && STAGING_HOSTNAME=app.tryflipfirst.com bash /tmp/sniper-bootstrap/deploy/install.sh`.
+     ufw then closes public SSH, but you are already on Tailscale. If a
+     new Tailscale session can't connect, run `ufw allow in on tailscale0`
+     in this one. It opens nothing to the internet.
+   - **Not yet proven:** the Tailscale steps on a real server.
 4. **Settings.** On the server, run `nano /etc/sniper/env`.
    - The file is `root:sniper 0600`: one `KEY=value` per line, comments on
      their own line. `DATABASE_URL` and `BILLING_ORIGIN` are already filled
@@ -125,8 +142,14 @@ in chat or Git:
      The backup and restore scripts and `golive.sh` refuse plain HTTP,
      because the keys and ping URLs would travel in clear text.
    - Leave `STRIPE_*` empty: the pilot has no billing.
-5. **Deploy + migrate.** From the Mac, in the repo at the merged `main`:
+5. **Deploy + migrate.** From the Mac, in the repo at the approved commit
+   (`git rev-parse HEAD` prints it):
    `bash deploy/sync.sh --apply root@sniper-staging`.
+   - It refuses to run with uncommitted edits to tracked files.
+   - The first `ssh` to `sniper-staging` asks you to confirm its host key.
+     Run `tailscale status` first: if `sniper-staging` is listed as your
+     device, the connection is already authenticated by Tailscale, and
+     confirming is safe.
    - It installs dependencies, migrates PostgreSQL, health-checks a canary,
      flips `current`, and waits for `sniper-web healthy`.
    - Any failure stops before the flip (proven with a wrong DB password).
