@@ -111,7 +111,9 @@ in chat or Git:
    - From the Mac, in a *second* terminal, `ssh root@sniper-staging` must
      work before you close the first, because ufw now blocks public SSH.
    - **Not yet proven:** the Tailscale steps. If the second session fails,
-     fix it from the first one or from the provider's web console.
+     run `ufw allow in on tailscale0` in the first one. It opens nothing to
+     the internet, and `golive.sh` accepts it. The provider's web console
+     is the fallback.
 4. **Settings.** On the server, run `nano /etc/sniper/env`.
    - The file is `root:sniper 0600`: one `KEY=value` per line, comments on
      their own line. `DATABASE_URL` and `BILLING_ORIGIN` are already filled
@@ -143,7 +145,9 @@ in chat or Git:
 
    **Proven** on the disposable host with stand-ins (`DEPLOY_TEST_REPORT.md`).
    **Not yet proven:** a real Let's Encrypt certificate, and Resend, B2 and
-   Healthchecks.io themselves.
+   Healthchecks.io themselves. Gate 5 assumes the server can reach its own
+   public address. That holds at DigitalOcean, Akamai/Linode and Vultr,
+   where the public IP sits on the server itself.
 
    Then check the test email arrived. In Gmail, "Show original" must say
    `SPF: PASS` and `DKIM: PASS`.

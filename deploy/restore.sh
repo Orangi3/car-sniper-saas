@@ -122,7 +122,7 @@ AWS_DEFAULT_REGION="$B2_REGION" \
 fi
 [[ -n "$NAMED" ]] || { echo "no backups found in s3://${B2_BUCKET}"; exit 1; }
 echo "▸ Selected backup object: $NAMED"
-echo "▸ Verification DB:        $VERIFICATION_DATABASE_URL"
+echo "▸ Verification DB:        $(sed -E 's#(://[^:/@]*):[^@/]*@#\1:***@#' <<<"$VERIFICATION_DATABASE_URL")"   # password masked
 
 WORK=$(mktemp -d -t sniper_restore.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT

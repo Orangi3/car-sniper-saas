@@ -165,3 +165,72 @@ def test_golive_checks_settings_by_name_and_never_prints_their_values():
     assert 'grep -q "invitation only"' in text           # sign-up probe checks why it was refused
     assert "disable -q --now sniper-reconcile.timer" in text
     assert "STRIPE_SECRET_KEY" in text                   # the free pilot refuses billing keys
+
+
+# ---------- regressions from the PR #16 security review (2026-10-31) ----------
+
+def _bash_function(script: str, name: str) -> str:
+    """The text of one shell function from a deploy script, to run on its own."""
+    lines = (DEPLOY / script).read_text().splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith(f"{name}()"))
+    out = [lines[start]]
+    while out[-1].rstrip().endswith("\\"):
+        out.append(lines[start + len(out)])
+    return "\n".join(out)
+
+
+def test_golive_test_email_needs_an_address_instead_of_looping():
+    import subprocess
+    r = subprocess.run(["bash", str(DEPLOY / "golive.sh"), "--test-email"],
+                       capture_output=True, text=True, timeout=10)
+    assert r.returncode == 2 and "needs an address" in r.stdout
+
+
+def test_golive_reads_settings_the_way_systemd_does(tmp_path):
+    import subprocess
+    env = tmp_path / "env"
+    env.write_text("A=\"quoted\"\nB='single'\nC=first\nC=last\nD=\n#E=commented\n")
+    code = (f'ENV_FILE={env}\n{_bash_function("golive.sh", "val")}\n'
+            'for k in A B C D E; do printf "%s=[%s] " "$k" "$(val $k)"; done')
+    out = subprocess.run(["bash", "-c", code], capture_output=True, text=True, check=True).stdout
+    assert out.split() == ["A=[quoted]", "B=[single]", "C=[last]", "D=[]", "E=[]"]
+
+
+def test_golive_counts_only_rules_open_to_the_internet():
+    import subprocess
+    status = """Status: active
+
+To                         Action      From
+--                         ------      ----
+80/tcp                     ALLOW       Anywhere
+443/tcp                    ALLOW       Anywhere
+Anywhere on tailscale0     ALLOW       Anywhere
+80/tcp (v6)                ALLOW       Anywhere (v6)
+443/tcp (v6)               ALLOW       Anywhere (v6)
+Anywhere (v6) on tailscale0 ALLOW      Anywhere (v6)
+"""
+    fn = _bash_function("golive.sh", "extra_rules")
+    def extra(text):
+        return subprocess.run(["bash", "-c", f"{fn}\nextra_rules"], input=text,
+                              capture_output=True, text=True, check=True).stdout.strip()
+    assert extra(status) == ""
+    assert extra(status + "22/tcp                     ALLOW       203.0.113.5\n") == "22/tcp"
+    assert extra(status + "OpenSSH                    ALLOW       Anywhere\n") == "OpenSSH"
+
+
+def test_golive_proves_each_healthchecks_url_without_putting_it_on_a_command_line():
+    text = (DEPLOY / "golive.sh").read_text()
+    assert "-K - <<<" in _bash_function("golive.sh", "ping_ok")       # URL on stdin, not argv
+    for k in ("HEALTHCHECK_WEB_URL", "HEALTHCHECK_PIPELINE_URL", "HEALTHCHECK_BACKUP_URL"):
+        assert k in text.split("gate \"7/9")[1].split("gate \"8/9")[0], k
+
+
+def test_restore_drill_masks_a_password_in_the_database_url():
+    import subprocess
+    line = next(l for l in (DEPLOY / "restore.sh").read_text().splitlines() if "Verification DB:" in l)
+    cmd = line.split("$(", 1)[1].rsplit(")", 1)[0]          # the masking pipeline
+    for url, shown in (("postgresql://postgres:s3cret@127.0.0.1/drill", "postgresql://postgres:***@127.0.0.1/drill"),
+                       ("postgresql://localhost/drill", "postgresql://localhost/drill")):
+        out = subprocess.run(["bash", "-c", f'VERIFICATION_DATABASE_URL="{url}"; {cmd}'],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        assert out == shown and "s3cret" not in out

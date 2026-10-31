@@ -18,7 +18,8 @@ PY=/opt/sniper/.venv/bin/python3
 TEST_EMAIL=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --test-email) TEST_EMAIL="${2:-}"; shift 2 ;;
+        --test-email) [[ $# -ge 2 && -n $2 ]] || { echo "--test-email needs an address"; exit 2; }
+                      TEST_EMAIL=$2; shift 2 ;;
         -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
         *) echo "unknown option: $1 (see --help)"; exit 2 ;;
     esac
@@ -29,7 +30,13 @@ gate() { echo; echo "▸ $*"; }
 pass() { echo "  ✓ $*"; }
 fail() { echo "  ✗ $*"; echo; echo "STOPPED. Fix the item above, then run golive.sh again."; exit 1; }
 # a setting's value as systemd reads it (last line wins); never echoed
-val() { local v; v=$(sed -n "s/^$1=//p" "$ENV_FILE" | tail -1); v=${v%\"}; v=${v#\"}; printf '%s' "$v"; }
+val() { local v; v=$(sed -n "s/^$1=//p" "$ENV_FILE" | tail -1); v=${v%[\"\']}; v=${v#[\"\']}; printf '%s' "$v"; }
+# does a Healthchecks URL accept a ping? (the URL reaches curl on stdin, not argv)
+ping_ok() { local u; u=$(val "$1"); curl -fsS -m 10 -o /dev/null -K - <<<"url = \"$u\"" 2>/dev/null; }
+# `ufw status` rules other than 80 and 443; rules bound to tailscale0 are
+# reachable only over the tailnet, so they don't count
+extra_rules() { sed -n '/^--/,$p' | tail -n +2 | grep -v ' on tailscale0' | awk 'NF {print $1}' \
+    | grep -vxE '(80|443)(/tcp)?' | sort -u | tr '\n' ' '; }
 app() {     # python as the app user, with the app's environment
     systemd-run --pipe --wait --quiet --collect --uid=sniper -p EnvironmentFile="$ENV_FILE" \
         -p WorkingDirectory="$APP" "$PY" "$@"
@@ -110,11 +117,14 @@ for _ in 1 2 3 4; do      # the pipeline probe needs one scheduler tick after th
     systemctl start sniper-healthcheck.service 2>/dev/null && { ok=1; break; }; sleep 20
 done
 [[ -n $ok ]] || fail "the health probe failed: journalctl -u sniper-healthcheck -n 20"
-pass "web and pipeline probes passed and pinged Healthchecks; every 5 minutes from now"
+for k in HEALTHCHECK_WEB_URL HEALTHCHECK_PIPELINE_URL HEALTHCHECK_BACKUP_URL; do
+    ping_ok "$k" || fail "$k doesn't accept a ping: copy it again from Healthchecks.io"
+done
+pass "web and pipeline probes passed; all three Healthchecks URLs accept pings; probes every 5 minutes from now"
 
 gate "8/9 firewall and admin access"
 ufw status | grep -q '^Status: active' || fail "ufw is not active (deploy/install.sh step 9)"
-extra=$(ufw status | sed -n '/^--/,$p' | tail -n +2 | awk 'NF {print $1}' | grep -vxE '(80|443)(/tcp)?' | sort -u | tr '\n' ' ')
+extra=$(ufw status | extra_rules)
 [[ -z $extra ]] || fail "ufw allows more than 80 and 443: $extra(SSH goes over Tailscale; remove with ufw delete)"
 tailscale status >/dev/null 2>&1 || fail "Tailscale isn't connected: tailscale up --ssh --hostname=sniper-staging"
 pass "only 80 and 443 open to the internet; Tailscale connected"
