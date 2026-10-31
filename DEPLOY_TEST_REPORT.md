@@ -56,6 +56,19 @@ Not tested here:
 - Resend, B2 and Healthchecks.io themselves;
 - the B2 lifecycle rule.
 
+### After the PR #16 security review (`9cbbab1`, fresh disposable host)
+
+The run at `9cbbab1` repeated everything above, and every check passed.
+New checks:
+
+| Check | Result |
+|---|---|
+| A Healthchecks URL that doesn't answer | stops at gate 7: "HEALTHCHECK_BACKUP_URL doesn't accept a ping", without printing the URL |
+| `ufw allow in on tailscale0` | accepted; all gates pass |
+| `--test-email` without an address | exits 2 at once (it used to loop) |
+| All gates, with an admin present | 9 gates, plus "an admin account exists" and the test email |
+| After the reboot, with the stand-in ping server restarted | both probes pinged |
+
 ## Release rehearsal, 2026-10-31 (final release heads)
 
 The release as it will ship, on a fresh **disposable** Ubuntu 24.04 host

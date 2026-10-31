@@ -1,26 +1,42 @@
 # FlipFirst project status and owner-action package
 
-Checkpoint: 2026-10-31, go-live preparation. `main` = `b0d6ee4` (unchanged).
-Nothing is merged or deployed, and nothing has been bought or sent.
+Checkpoint: 2026-10-31, release merged. Nothing is deployed, and nothing
+has been bought or sent.
 
-The release is five stacked pull requests, merged strictly in this order
-under one approval (A, below):
-1. PR #11 — real-data readiness:
-   `ae5308d22dbd0721d64b5cb879a7d857ea791804`
-2. PR #12 — first live data, compliance, launch prep:
-   `5c6b2f28b8c971379406cd10c1b9e28f9330618c`
-3. PR #13 — FlipFirst Analyze and the private deal workspace:
-   `9b169635af20bbdf4debe4626df705bb9f8c3470`
-4. PR #14 — dealer inventory, CSV import, buyer reports, cost model:
-   `b3084a2a0f7538e0a2f9c0bd1474de38785505f6`
-5. PR #15 — release handoff: docs plus the read-only merge checker:
-   `9faac0b222f3d03807ed8e980d6486a12f57e3be`
+**Release:** `main` = `f5286f115691cd27e07a8ab10f126941c501d61f` (tree
+`7b562ac2224561d6b5feac932049bea2efbdb162`). It holds PRs #11–#15, merged
+under your approval of their exact heads, each with a normal merge commit:
 
-PR #16 comes after the five and needs its own approval. It adds:
-- the gated go-live script (`deploy/golive.sh`);
-- the B2 region fix;
-- this checkpoint;
-- the pilot docs.
+| PR | Approved head | Merge commit on `main` |
+|---|---|---|
+| #11 real-data readiness | `ae5308d22dbd0721d64b5cb879a7d857ea791804` | `9e941cf3542e301b6ef78b16cbb0f38635525d14` |
+| #12 first live data, compliance | `5c6b2f28b8c971379406cd10c1b9e28f9330618c` | `af819a1c719079c61ed6f5dda51cf1fd7af736f7` |
+| #13 Analyze, deal workspace | `9b169635af20bbdf4debe4626df705bb9f8c3470` | `7e830afc951ffacb66b9cf1c0f81ba39b142c96e` |
+| #14 dealer inventory, reports | `b3084a2a0f7538e0a2f9c0bd1474de38785505f6` | `d71c6a4fd12d5085b81d14a6acceb0e33ba43d77` |
+| #15 release handoff | `9faac0b222f3d03807ed8e980d6486a12f57e3be` | `f5286f115691cd27e07a8ab10f126941c501d61f` |
+
+Before each merge, VERIFIED:
+- the head was exactly the approved SHA;
+- the PR was `clean`;
+- the diff had the expected size;
+- the required checks were green;
+- the local merge result was exactly the head's tested tree.
+
+After each merge, VERIFIED:
+- `main` merged that head and had exactly its files;
+- CI on `main` was green.
+
+Final `main`:
+- its tree is the predicted one;
+- its first-parent history is exactly the five merge commits;
+- `check_migrations` passes, through 0021;
+- all three required checks are green;
+- protection is unchanged.
+
+**Next:** PR #16 needs your separate approval. It holds:
+- the gated go-live script and the B2 region fix;
+- the fixes from its security review (below);
+- this checkpoint and the pilot docs.
 
 Evidence labels: **VERIFIED** (run here), **SIMULATED** (fixtures /
 stand-ins / disposable host), **ESTIMATED**, **NOT TESTED**, **BLOCKED**.
@@ -152,7 +168,7 @@ host, 2026-10-31).
 
 | Item | Value |
 |---|---|
-| Release (five PRs merged) | `main` after #15's merge commit; its tree must be `7b562ac2224561d6b5feac932049bea2efbdb162`. The commit SHA is known only after the merge (a merge commit differs from the PR head) |
+| Release (five PRs merged) | `f5286f115691cd27e07a8ab10f126941c501d61f`, tree `7b562ac2224561d6b5feac932049bea2efbdb162` (VERIFIED) |
 | Production candidate | `main` after PR #16 merges, so `golive.sh` and the B2 region fix ship. Without #16, deploy the five-PR `main` with #15's 13 manual steps |
 | Schema | through `0021_seller_profiles_and_reports` (22 migrations, 0000–0021) |
 | Settings, by name only (`/etc/sniper/env`) | `DATABASE_URL`, `BILLING_ORIGIN`, `SNIPER_TRUSTED_PROXIES`, `ALLOW_REGISTRATION=0`, `SNIPER_COMMERCIAL_MODE=1`, `SNIPER_SELLER_SUBMISSIONS=1`, `SMTP_HOST`/`PORT`/`USER`/`PASSWORD`/`FROM`, `B2_BUCKET`/`KEY_ID`/`APPLICATION_KEY`/`ENDPOINT`, `AGE_RECIPIENT`, `HEALTHCHECK_WEB_URL`/`PIPELINE_URL`/`BACKUP_URL`. `STRIPE_*` and data-provider keys stay empty |
@@ -191,6 +207,38 @@ exceed them by one or two (bounded by rate limits).
 Clean per the reviewer: owner scoping (404 for other users), no HTTP route
 to approve dealers or resolve reports, whitelisted SQL column names,
 escaped rendering, account deletion covering the new tables.
+
+## Security review of PR #16 (2026-10-31, at `f875ada`)
+
+Scope: `deploy/golive.sh`, the `backup.sh` and `restore.sh` changes, secret
+handling, and the infrastructure the script assumes. Fixed in `9cbbab1`,
+with regression tests in `tests/test_deploy_config.py`.
+
+| # | Finding | Severity | Fix |
+|---|---|---|---|
+| 1 | Gate 7 said the probes "pinged Healthchecks", but `healthcheck.sh` ignores a failed ping, so a mistyped ping URL passed. Monitoring still fails safe: Healthchecks alerts when pings stop | medium | each of the three URLs must accept a ping. The URL goes to curl on stdin, never on a command line |
+| 2 | `--test-email` with no address looped forever | low | exits 2 with a message |
+| 3 | Gate 8 rejected `ufw allow in on tailscale0`, which opens nothing to the internet | low | rules bound to `tailscale0` don't count |
+| 4 | Settings in single quotes failed the checks, although systemd accepts them (fails closed) | low | both quote styles are stripped |
+| 5 | `restore.sh` printed the verification database URL with any password in it | low (existing; your terminal only) | password masked |
+| 6 | `B2_ENDPOINT` isn't required to be HTTPS | info | none. The template is HTTPS, dumps are encrypted before upload, and the secret key is never sent |
+| 7 | `install.sh` installs Tailscale with its official `curl … \| sh` script | info (existing, outside this PR) | none. Tailscale's signed apt repository would be stricter |
+
+No secret values are printed:
+- settings are read only into comparisons;
+- the only value printed is the public origin;
+- failure messages name settings, never their values;
+- PostgreSQL errors name the host and user, never the password;
+- only the test email address appears on a command line.
+
+The script edits nothing in `/etc/sniper/env` and touches nothing off the
+server. Re-running it restarts the app, a few seconds of downtime.
+
+Assumptions:
+- the server can reach its own public address (gate 5). True at
+  DigitalOcean, Akamai/Linode and Vultr;
+- ufw and the `tailscale` command come from `install.sh`;
+- Caddy redirects HTTP with a 308.
 
 ## Beta readiness: what works with no paid data (VERIFIED in tests, SIMULATED cars)
 
@@ -248,7 +296,7 @@ MarketCheck / eBay / VinAudit written permission (F) ──► FIRST_LIVE_TEST.m
 
 | # | Task | Priority | Status | Depends on | Evidence | Next action |
 |---|---|---|---|---|---|---|
-| 1 | Merge the five-PR release (#11–#15) | CRITICAL | ready | your approval (A) | CI 6/6 on every head; all `clean`; no reviews or open threads; merge simulation gives the tested trees | merge checklist above |
+| 1 | Merge the five-PR release (#11–#15) | CRITICAL | **done** 2026-10-31 | — | `main` `f5286f1`, tree `7b562ac`, CI green | — |
 | 2 | Merge PR #16 (go-live script, B2 region fix, docs) | HIGH | open | #1 | `golive.sh` rehearsed (`DEPLOY_TEST_REPORT.md`); CI on its head | your separate approval |
 | 2e | First real buyer-and-seller test | HIGH | prepared | #2; server; legal decision (D); pilot approval (E) | whole flow rehearsed on the disposable host | `FIRST_REAL_TEST.md` |
 | 2c | Recruit the first sellers | HIGH | drafted | legal review of seller terms; server live | `outreach/SELLER_RECRUITING.md` (not sent) | approve the messages; visit 10 lots |
@@ -317,21 +365,38 @@ whether a VPS, the domain or its DNS already exist is **unknown to me**.
 Tell me what exists, or allow those hosts in the environment's network
 settings. Silence is never taken as consent.
 
-### A. Release authorization — one reply covers the five PRs
+### Smallest path to live (one real seller, one real buyer)
 
-> approve release sequence: #11 ae5308d22dbd0721d64b5cb879a7d857ea791804,
-> #12 5c6b2f28b8c971379406cd10c1b9e28f9330618c,
-> #13 9b169635af20bbdf4debe4626df705bb9f8c3470,
-> #14 b3084a2a0f7538e0a2f9c0bd1474de38785505f6,
-> #15 9faac0b222f3d03807ed8e980d6486a12f57e3be
+1. Reply "approve PR #16 at <its head>". I merge it with the checks.
+2. Tell me whether a VPS or the domain already exist, so nothing is bought
+   twice.
+3. Accounts (C): VPS (2 GB, Ubuntu 24.04, US, your SSH key), Resend, B2,
+   Healthchecks.io (3 checks), one Tailscale seat, and `age-keygen` on your
+   Mac. Values go only in your password manager.
+4. DNS: `A` `app` → the VPS, plus Resend's records and `_dmarc.app`.
+5. Server (`FIRST_DEPLOY.md` steps 3–7):
+   - `install.sh` and `tailscale up`;
+   - settings in `/etc/sniper/env`;
+   - `sync.sh --apply` from your Mac;
+   - your admin account;
+   - `golive.sh --test-email you@…`, until every gate passes.
+6. Restore drill on your Mac (`restore.sh`).
+7. Legal (D): the reviewed terms, or your decision to test with two people
+   you know. Each replies "I agree".
+8. Pilot (E):
+   - two invitations, with the drafted messages;
+   - set the buyer to Lite;
+   - run `FIRST_REAL_TEST.md`;
+   - send me the `pilot_report` output (counts only).
 
-- It covers only those five commits, in that order, with normal merge
-  commits and the checks in "Merge checklist" above.
-- If a head, a diff or the risk changes, nothing more is merged and I
-  report the difference.
-- PR #16 (the go-live script and the B2 region fix) is **not** part of it.
-  Approve it separately: "approve PR #16 at <its head>", after the five
-  merge.
+### A. Release authorization
+
+- **Done.** #11–#15 were merged on 2026-10-31 under your approval of their
+  exact heads, with every check above.
+- **PR #16** needs its own reply: "approve PR #16 at <its head>". I merge it
+  with the same checks: retarget, pre-check, merge-tree check, pinned merge
+  commit, post-check. Until then `main` has no `golive.sh`; deploy only
+  after #16 merges.
 
 ### B. Infrastructure authorization — "approve infrastructure request"
 
@@ -457,22 +522,13 @@ listings and the buyer's own numbers.
 
 ## Resume instructions
 
-- Stack, in merge order, each stacked on the one before:
-
-  | PR | Branch | Head |
-  |---|---|---|
-  | #11 | `feat/flipfirst-real-data-readiness` | `ae5308d` |
-  | #12 | `feat/flipfirst-first-live-data` | `5c6b2f2` |
-  | #13 | `feat/flipfirst-analyze` | `9b16963` |
-  | #14 | `feat/flipfirst-seller-inventory` | `b3084a2` |
-  | #15 | `feat/flipfirst-release-handoff` | `9faac0b` |
-  | #16 | `feat/flipfirst-golive` | see the PR; not in the five-PR approval |
-
-- Before merging anything, re-check: `scripts/release_check.sh pre …`
-  (table above). The merge simulation in "Release manifest" must still give
-  the same trees.
-- After an approval, follow the merge checklist. Stop at the first failed
-  check and report it.
+- `main` = `f5286f1` holds #11–#15. Open: PR #16, branch
+  `feat/flipfirst-golive`, which needs your approval.
+- To merge #16 after approval:
+  - `scripts/release_check.sh pre 16 HEAD main COMMITS FILES`;
+  - `git merge-tree --write-tree origin/main HEAD` must equal `HEAD^{tree}`;
+  - the pinned merge;
+  - `scripts/release_check.sh post HEAD`.
 - Tests:
   - SQLite: `python -m pytest -q`;
   - PostgreSQL: `SNIPER_TEST_PG_URL=… python -m pytest -q`;
