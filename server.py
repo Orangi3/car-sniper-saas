@@ -2341,6 +2341,16 @@ def api_deals():
                 "  AND (sv.status IS NULL OR sv.status <> 'passed') "
                 "ORDER BY nm.score DESC LIMIT ?",
                 (u.id, feed, limit)).fetchall()
+        elif feed == "sellers":
+            # cars listed on FlipFirst by their sellers, valued or not: at launch
+            # most have no comparables, and a listing never needs a market value
+            # to be seen (_displayable keeps only live, verified, re-confirmed ones)
+            rows = conn.execute(
+                f"SELECT {_DEAL_COLS}, sv.status AS user_status FROM listings l "
+                "LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
+                "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
+                "WHERE l.source = 'direct' AND (sv.status IS NULL OR sv.status <> 'passed') "
+                "ORDER BY l.first_seen_at DESC LIMIT ?", (u.id, limit)).fetchall()
         elif feed == "search":
             import plans
             import saved_search_alerts as ssa
@@ -2377,15 +2387,15 @@ def api_deals():
                 "WHERE sv.user_id = ? AND sv.status <> 'passed' "
                 "ORDER BY sv.updated_at DESC LIMIT ?", (u.id, limit)).fetchall()
         else:
-            return jsonify({"error": "feed must be mine|trusted|risk|search|saved"}), 400
+            return jsonify({"error": "feed must be mine|trusted|risk|sellers|search|saved"}), 400
     limits = _display_limits()
     out = [_deal_row(dict(r), psettings, plan, home_zip) for r in rows
            if _displayable(dict(r), limits)]
-    if feed in ("trusted", "risk") and home_zip and home_radius:
+    if feed in ("trusted", "risk", "sellers") and home_zip and home_radius:
         # shared feeds respect the user's territory too
         out = [d for d in out if d["distance_mi"] is not None
                and d["distance_mi"] <= home_radius]
-    if feed not in ("mine", "saved"):     # these stay newest-first
+    if feed not in ("mine", "saved", "sellers"):     # these stay newest-first
         out = _rank(out)
     return jsonify(out)
 
@@ -2431,10 +2441,29 @@ def api_deal_detail(cid: str):
         import seller_listings as sl
         with sniper.db() as conn:
             d["seller_contact"] = sl.contact_for(conn, d["composite_id"], plan)
-        d["provenance"] = ("Listed on FlipFirst by the seller. The seller's email address is "
+            dealer = sl.dealer_name(conn, d["composite_id"])     # current approval, not publish time
+        d["provenance"] = (f"Listed on FlipFirst by {dealer}, a dealer approved by FlipFirst. "
+                           "Its email address is verified; the vehicle details are "
+                           "dealer-reported and not independently verified." if dealer else
+                           "Listed on FlipFirst by the seller. The seller's email address is "
                            "verified; the vehicle details are seller-reported and not "
                            "independently verified.")
     return jsonify(d)
+
+
+@app.post("/api/deals/<path:cid>/report")
+@auth.login_required
+def api_deal_report(cid: str):
+    """A buyer reports a FlipFirst seller listing; the owner reviews it."""
+    import seller_listings as sl
+    rl = _rl_or_fail("report", 10)
+    if rl:
+        return rl
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(sl.report(auth.current_user(), cid, body.get("reason"), body.get("note"))), 201
+    except sl.SubmissionError as e:
+        return _seller_err(e)
 
 
 _DEAL_ACTIONS = {"save": "saved", "contacted": "contacted", "dismiss": "passed",
@@ -2778,10 +2807,31 @@ def _seller_err(e):
 @auth.login_required
 def api_seller_mine():
     import seller_listings as sl
-    return jsonify({"enabled": sl.enabled(), "listings": sl.mine(auth.current_user()) if sl.enabled() else [],
-                    "limits": {"active": sl.MAX_ACTIVE_PER_USER,
-                               "per_day": sl.MAX_NEW_PER_USER_PER_DAY,
-                               "confirm_days": sl.CONFIRM_DAYS}})
+    u = auth.current_user()
+    with sniper.db() as conn:
+        lim = sl.limits_for(conn, u.id)
+    return jsonify({"enabled": sl.enabled(), "listings": sl.mine(u) if sl.enabled() else [],
+                    "seller": {"kind": lim["kind"], "business_name": lim["business_name"]},
+                    "limits": {"active": lim["active"], "per_day": lim["per_day"],
+                               "confirm_days": sl.CONFIRM_DAYS,
+                               "import_rows": sl.IMPORT_MAX_ROWS}})
+
+
+@app.post("/api/seller/listings/import")
+@auth.login_required
+def api_seller_import():
+    """An approved dealer's own inventory as CSV text (the browser reads the
+    file). Size, rows, columns and every cell are checked (seller_listings)."""
+    import seller_listings as sl
+    rl = _rl_or_fail("seller_import", 6)
+    if rl:
+        return rl
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(sl.import_inventory(auth.current_user(), body.get("csv"),
+                                           body.get("attest"), bool(body.get("remove_missing"))))
+    except sl.SubmissionError as e:
+        return _seller_err(e)
 
 
 @app.post("/api/seller/listings")

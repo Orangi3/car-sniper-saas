@@ -128,6 +128,11 @@ const fail = msg => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(BASE + "/m#/discover/trusted"); await page.waitForSelector("article[data-cid]");
 
+  // FlipFirst sellers tab: seller listings are findable even without a market value
+  await page.goto(BASE + "/m#/discover/sellers");
+  await page.waitForSelector("#feed .empty, #feed article[data-cid]");
+  if (!(await text("#main")).includes("seller-reported")) fail("sellers feed not labeled seller-reported");
+
   // flagged tab is labeled
   await page.goto(BASE + "/m#/discover/risk");
   await page.waitForSelector("article[data-cid]");

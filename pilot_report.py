@@ -9,7 +9,9 @@ Sections: testers (invitations, accounts, sign-ins), engagement (deal
 actions by stage), analyze (analyses run, deals saved to the workspace, by
 stage, outcomes recorded), alerts (matches, notifications delivered / failed),
 supply (listings by source, valued, trusted candidates), seller listings,
-and reviewed outcomes (evaluation labels). "Signed in" counts testers whose
+sellers (approved dealers, sellers with live cars, new listings, buyers who
+contacted a FlipFirst seller, open buyer reports), and reviewed outcomes
+(evaluation labels). "Signed in" counts testers whose
 last sign-in falls in the window — the app records sign-ins, not page
 views. The window starts at midnight UTC `days` days ago.
 """
@@ -87,6 +89,20 @@ def report(days: int = 7) -> dict:
             },
             "seller_listings_by_status": _groups(conn, "SELECT status, COUNT(*) FROM seller_listings "
                                                        "GROUP BY status"),
+            "sellers": {
+                "approved_dealers": _count(conn, "SELECT COUNT(*) FROM seller_profiles"),
+                "accounts_with_live_listings": _count(
+                    conn, "SELECT COUNT(DISTINCT user_id) FROM seller_listings "
+                          "WHERE status IN ('pending', 'active')"),
+                "new_listings": _count(conn, "SELECT COUNT(*) FROM seller_listings WHERE created_at >= ?",
+                                       (since,)),
+                "open_reports": _count(conn, "SELECT COUNT(*) FROM listing_reports "
+                                             "WHERE resolved_at IS NULL"),
+                # buyers who marked a FlipFirst seller's car contacted or further along
+                "buyer_contacts": _count(conn, "SELECT COUNT(*) FROM saved_v2 WHERE composite_id LIKE "
+                                               "'direct:%' AND status IN ('contacted', 'negotiating', "
+                                               "'going_to_see', 'bought') AND updated_at >= ?", (since,)),
+            },
             "reviewed_outcomes": _groups(conn, "SELECT outcome_label, COUNT(*) FROM eval_observations "
                                                "WHERE is_fixture = FALSE AND outcome_label IS NOT NULL "
                                                "AND updated_at >= ? GROUP BY outcome_label", (since,)),
@@ -101,6 +117,7 @@ def _print(r: dict) -> None:
         for k, v in r[section].items():
             print(f"  {k}: {v}")
     print(f"\nseller listings: {r['seller_listings_by_status']}")
+    print(f"sellers: {r['sellers']}")
     print(f"reviewed outcomes: {r['reviewed_outcomes']}")
 
 

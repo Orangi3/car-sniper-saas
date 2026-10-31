@@ -1,6 +1,7 @@
 """
 economics/scale.py — minimum monthly operating cost at 10 / 100 / 1,000 /
-5,000 users and break-even at $2.99 / $4.99 / $9.99 a month.
+5,000 / 10,000 users, break-even at $2.99 / $4.99 / $9.99 a month, cost per
+analysis, and the load each scale implies.
 
     python economics/scale.py > economics/scale.md
 
@@ -14,8 +15,9 @@ from __future__ import annotations
 
 import math
 
-from model import (DROPLET_4GB, MANAGED_PG, STRIPE_BILLING_PCT, STRIPE_FIXED,
-                   STRIPE_PCT, data_cost)
+from model import (CASES, DROPLET_4GB, MANAGED_PG, MC_BASIC_MONTHLY, MC_FSBO_PER_CALL,
+                   MC_STANDARD_MONTHLY, STRIPE_BILLING_PCT, STRIPE_FIXED, STRIPE_PCT,
+                   data_cost)
 
 # SOURCED (third-party summaries, 2026-10-30; verify)
 RESEND_FREE_EMAILS, RESEND_PRO = 3000, 20.0      # Resend free tier / Pro per month
@@ -23,8 +25,17 @@ RESEND_FREE_EMAILS, RESEND_PRO = 3000, 20.0      # Resend free tier / Pro per mo
 SMALL_VPS = 12.0          # 1–2 vCPU, 2 GB, PostgreSQL on the same host (FIRST_DEPLOY.md: $5–12)
 DOMAIN = 1.25             # ~$15 a year
 EMAILS_PER_USER = 3       # sign-in help, seller confirmations, notices; alerts go by push
-USERS = (10, 100, 1000, 5000)
+USERS = (10, 100, 1000, 5000, 10000)
 PRICES = (2.99, 4.99, 9.99)
+# Analyze (measured 2026-10-30 on 50,000 SIMULATED listings: 41 ms SQLite,
+# 59 ms PostgreSQL per analysis; a saved analysis is ~10.7 KB)
+ANALYSES_PER_USER = 15      # ASSUMPTION per active user per month; pilot_report measures it
+SAVED_DEALS_PER_USER = 10   # ASSUMPTION
+ANALYSIS_KB = 10.7          # measured
+ANALYSIS_SECONDS = 0.06     # measured upper end (PostgreSQL)
+TIER2_SHARE = 0.6           # ASSUMPTION: analyses with too few comparables of our own
+MC_PRICE_CALL = 0.07        # SOURCED (MarketCheck Price Base, search excerpt); NOT built, needs permission
+ALERTS_PER_USER = 30        # ASSUMPTION: about one push alert a day (ntfy, $0)
 PATHS = {"marketcheck": "MarketCheck (listings + values)",
          "free_data": "eBay with permission, or sellers + free value source"}
 
@@ -34,11 +45,13 @@ def hosting(n: int) -> float:
         return SMALL_VPS                                   # one small VPS
     if n <= 1000:
         return DROPLET_4GB                                 # one 4 GB VPS
-    return 2 * DROPLET_4GB + MANAGED_PG[1]                 # two app servers + managed database
+    if n <= 5000:
+        return 2 * DROPLET_4GB + MANAGED_PG[1]             # two app servers + managed database
+    return 3 * DROPLET_4GB + MANAGED_PG[2]                 # three app servers + database with a standby
 
 
 def backups(n: int) -> float:
-    return 0.5 if n <= 100 else 1.0 if n <= 1000 else 3.0
+    return 0.5 if n <= 100 else 1.0 if n <= 1000 else 3.0 if n <= 5000 else 6.0
 
 
 def email(n: int) -> float:
@@ -56,6 +69,60 @@ def fixed(n: int, path: str) -> float:
     """Monthly costs that don't scale per paying user (monitoring and push
     on free tiers: $0)."""
     return hosting(n) + backups(n) + email(n) + DOMAIN + data(n, path)
+
+
+# What each number rests on. Nothing here is an actual operating cost:
+# FlipFirst has no production bill yet.
+KINDS = ("MEASURED", "ASSUMED", "LIST PRICE", "UNKNOWN", "NOT INCLUDED")
+INPUTS = [
+    ("Time per analysis", f"<= {ANALYSIS_SECONDS * 1000:.0f} ms", "MEASURED",
+     "50,000 SIMULATED listings, SQLite and PostgreSQL"),
+    ("Size of a saved analysis", f"{ANALYSIS_KB} KB", "MEASURED", "same run"),
+    ("Analyses per user per month", str(ANALYSES_PER_USER), "ASSUMED", "pilot_report will measure"),
+    ("Saved deals per user", str(SAVED_DEALS_PER_USER), "ASSUMED", ""),
+    ("Emails per user per month", str(EMAILS_PER_USER), "ASSUMED", ""),
+    ("Push alerts per user per month", str(ALERTS_PER_USER), "ASSUMED", "ntfy.sh, $0"),
+    ("Users per polled territory; polling interval", "150; every 30 min", "ASSUMED",
+     "model.py base case"),
+    ("Server sizing per scale", "1 small VPS up to 100 users ... 3 servers + database "
+     "standby at 10,000", "ASSUMED", "not load-tested beyond 50,000 listings"),
+    ("Analyses that would need a licensed value", f"{TIER2_SHARE:.0%}", "ASSUMED",
+     "tier 2 is not built"),
+    ("VPS (2 GB / 4 GB)", f"${SMALL_VPS:.0f} / ${DROPLET_4GB:.0f} a month", "LIST PRICE",
+     "third-party summaries"),
+    ("Managed PostgreSQL (single / with standby)", f"${MANAGED_PG[1]:.0f} / ${MANAGED_PG[2]:.0f}",
+     "LIST PRICE", "model.py"),
+    ("Resend email", f"free to {RESEND_FREE_EMAILS:,}/mo, then ${RESEND_PRO:.0f}", "LIST PRICE",
+     "third-party summary"),
+    ("Stripe", "2.9% + 30c + 0.7% Billing", "LIST PRICE", "third-party summary"),
+    ("MarketCheck Basic / Standard", f"${MC_BASIC_MONTHLY:.0f} / ${MC_STANDARD_MONTHLY:.0f} a month",
+     "LIST PRICE", "official page, search excerpt"),
+    ("MarketCheck per call (private-party search / Price)",
+     f"${MC_FSBO_PER_CALL:.2f} / ${MC_PRICE_CALL:.2f}", "LIST PRICE", "page excerpt / third-party"),
+    ("MarketCheck licence for FlipFirst's use", "-", "UNKNOWN", "needs a written agreement and quote"),
+    ("eBay permission for price estimates", "-", "UNKNOWN", "needs eBay's written answer"),
+    ("A free market-value source", "-", "UNKNOWN", "none exists yet"),
+    ("Support time, legal review, owner time, refunds, taxes", "-", "NOT INCLUDED", ""),
+]
+
+
+def components(n: int, path: str) -> dict:
+    return {"hosting": hosting(n), "backups": backups(n), "email": email(n), "domain": DOMAIN,
+            "data": data(n, path)}
+
+
+def tier2_valuations(n: int) -> float:
+    """Optional on-demand licensed valuations for Analyze (not built; needs
+    written permission): per-call fees only, plan fee not included."""
+    return n * ANALYSES_PER_USER * TIER2_SHARE * MC_PRICE_CALL
+
+
+def load(n: int) -> dict:
+    return {"analyses": n * ANALYSES_PER_USER,
+            "analysis_cpu_hours": n * ANALYSES_PER_USER * ANALYSIS_SECONDS / 3600,
+            "workspace_gb": n * SAVED_DEALS_PER_USER * ANALYSIS_KB / 1024 / 1024,
+            "emails": n * EMAILS_PER_USER, "push_alerts": n * ALERTS_PER_USER,
+            "mc_listing_calls": data_cost(n, "base")["calls"]}
 
 
 def payment_cost(price: float) -> float:
@@ -76,7 +143,7 @@ def money(x: float) -> str:
 
 def render() -> str:
     out = ["# Minimum operating cost and break-even (generated by economics/scale.py)", "",
-           "ESTIMATES from list prices — no quote has been obtained and nothing was purchased.", "",
+           "ESTIMATES from list prices and assumed usage. No quote has been obtained, nothing was purchased, and none of this is an actual operating cost (see 'What the 10,000-user estimate rests on').", "",
            "| Users | Hosting + DB | Backups | Email | Domain | Data: MarketCheck | Total, MarketCheck | "
            "Total, free data | Per user, MarketCheck | Per user, free data |",
            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
@@ -91,7 +158,61 @@ def render() -> str:
     for p in PRICES:
         out.append(f"| ${p:.2f} | {money(payment_cost(p))} | {money(p - payment_cost(p))} | "
                    f"{breakeven(p, 'marketcheck'):,} paying users | {breakeven(p, 'free_data'):,} paying users |")
-    out += ["", "Notes: a free pilot has no payment cost. \"Free data\" assumes eBay grants",
+    big = USERS[-1]
+    mc, free = components(big, "marketcheck"), components(big, "free_data")
+    mct, frt = sum(mc.values()), sum(free.values())
+    out += ["", f"## What the {big:,}-user estimate rests on", "",
+            "No figure in this file is an actual operating cost: FlipFirst has no production "
+            "bill yet. Inputs by kind:", "", "| Input | Value | Kind | Source |", "|---|---|---|---|"]
+    out += [f"| {a} | {b} | {c} | {d} |" for a, b, c, d in INPUTS]
+    share = lambda part, total: f"{100 * part / total:.0f}%"
+    out += ["", f"At {big:,} users, MarketCheck path ({money(mct)}/mo):", "",
+            "| Component | Monthly | Share | Rests on |", "|---|---:|---:|---|",
+            f"| Listing data (MarketCheck) | {money(mc['data'])} | {share(mc['data'], mct)} | list prices "
+            "+ an UNKNOWN licence + ASSUMED territories and polling |",
+            f"| Hosting and database | {money(mc['hosting'])} | {share(mc['hosting'], mct)} | list prices × "
+            "ASSUMED sizing |",
+            f"| Email, backups, domain | {money(mc['email'] + mc['backups'] + mc['domain'])} | "
+            f"{share(mc['email'] + mc['backups'] + mc['domain'], mct)} | list prices × ASSUMED volume |",
+            "", f"The no-paid-data figure ({money(frt)}/mo at {big:,} users) is **not a cost FlipFirst can "
+            "run at today**. It leaves out data entirely, because no free licensed listing or "
+            "value source exists yet: eBay's permission or a free value source is UNKNOWN. It "
+            "also excludes support, legal and owner time.", "",
+            f"Sensitivity at {big:,} users (MarketCheck path) to the data assumptions in model.py:", "",
+            "| Case | Users per territory | Poll every | Listing data | Total |", "|---|---:|---:|---:|---:|"]
+    import model as _m
+    for case in CASES:
+        d = data_cost(big, case)
+        dd = d["fixed"] + d["fees"]
+        out.append(f"| {case} | {_m.DATA[case]['subs_per_territory']} | {_m.DATA[case]['poll_minutes']} min | "
+                   f"{money(dd)} | {money(mct - mc['data'] + dd)} |")
+    out += ["", f"Optional licensed valuations (tier 2, not built) would add {money(tier2_valuations(big))}/mo "
+            f"at {ANALYSES_PER_USER} analyses per user, and twice that at {2 * ANALYSES_PER_USER}: "
+            "usage drives that cost linearly. Analyze's own compute stays negligible either way "
+            f"({load(big)['analysis_cpu_hours'] * 2:.1f} CPU-hours a month at "
+            f"{2 * ANALYSES_PER_USER} analyses per user).", ""]
+    out += ["", f"Gross margin at $4.99 if every user pays (after Stripe and the costs above):", "",
+            "| Users | MarketCheck | Free data |", "|---:|---:|---:|"]
+    net = 4.99 - payment_cost(4.99)
+    for n in USERS:
+        out.append(f"| {n:,} | {100 * (n * net - fixed(n, 'marketcheck')) / (n * 4.99):.0f}% | "
+                   f"{100 * (n * net - fixed(n, 'free_data')) / (n * 4.99):.0f}% |")
+    out += ["", f"Cost per analysis and the load each scale implies ({ANALYSES_PER_USER} analyses "
+            "per user a month — an ASSUMPTION the pilot report will replace):", "",
+            "| Users | Analyses/mo | Analyze CPU | Saved-deal storage | Emails/mo | Push alerts/mo | "
+            "MarketCheck listing calls/mo | Optional licensed valuations |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for n in USERS:
+        ld = load(n)
+        out.append(f"| {n:,} | {ld['analyses']:,} | {ld['analysis_cpu_hours']:.1f} h | "
+                   f"{ld['workspace_gb']:.2f} GB | {ld['emails']:,} | {ld['push_alerts']:,} | "
+                   f"{ld['mc_listing_calls']:,} | {money(tier2_valuations(n))} |")
+    out += ["", "An analysis against FlipFirst's own comparables costs nothing beyond hosting "
+            f"(measured {ANALYSIS_SECONDS * 1000:.0f} ms or less on 50,000 SIMULATED listings). An "
+            f"optional licensed valuation would cost ${MC_PRICE_CALL:.2f} per call (MarketCheck Price "
+            "Base, list price; not built, needs written permission), called for an estimated "
+            f"{TIER2_SHARE:.0%} of analyses.",
+            "", "Notes: a free pilot has no payment cost. \"Free data\" assumes eBay grants",
             "price-estimate permission, or seller listings valued by a source that costs nothing —",
             "neither exists yet. MarketCheck figures use list prices (Basic $299/mo, 5,000 calls;",
             "Standard $749/mo) and a third-party ~$0.01 per call; get a quote."]

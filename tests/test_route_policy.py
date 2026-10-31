@@ -38,6 +38,8 @@ POLICY = {
     ("PATCH", "/api/seller/listings/<int:sid>"): "user",
     ("DELETE", "/api/seller/listings/<int:sid>"): "user",
     ("POST", "/api/seller/listings/<int:sid>/renew"): "user",
+    ("POST", "/api/seller/listings/import"): "user",          # approved dealers only (403 otherwise)
+    ("POST", "/api/deals/<path:cid>/report"): "user",
     ("GET", "/api/billing/me"): "user", ("POST", "/api/billing/checkout"): "user",
     ("POST", "/api/billing/portal"): "user",
     # Lite and up
