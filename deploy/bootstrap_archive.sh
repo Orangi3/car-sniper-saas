@@ -12,29 +12,36 @@
 #   - the commit itself holds a file that looks like a secret (.env, a
 #     private key, a database). Templates (*.example, *.sample, *.template)
 #     are allowed.
+# The archive is written to a temporary file and renamed into place only
+# after every check passes, so OUT never holds a partial or unchecked archive.
 set -euo pipefail
 
 sha=${1:-}; out=${2:-/tmp/sniper-bootstrap.tgz}
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "usage: bash deploy/bootstrap_archive.sh APPROVED_SHA [OUT] (the full 40-character SHA)"; exit 2; }
+[[ $out == /* ]] || out="$PWD/$out"          # relative to where you ran it
 cd "$(git rev-parse --show-toplevel)"
 head=$(git rev-parse HEAD)
 [[ $head == "$sha" ]] || { echo "STOP: HEAD is $head, not the approved $sha (git checkout $sha first)"; exit 1; }
 
-rm -f "$out"
-git archive --format=tar.gz --output="$out" "$head"
-list=$(tar -tzf "$out")
-stop() { rm -f "$out"; echo "STOP: $*"; exit 1; }
+rm -f "$out"                                 # a failed run leaves no archive at all
+tmp="$out.partial.$$"
+trap 'rm -f "$tmp"' EXIT
+git archive --format=tar.gz --output="$tmp" "$head"
+list=$(tar -tzf "$tmp")
+stop() { echo "STOP: $*"; exit 1; }
 
 # everything install.sh reads from its own directory ("$HERE/...") must be there
-need=$(tar -xzOf "$out" deploy/install.sh | grep -o '"$HERE/[^"]*"' | sed 's#"$HERE/#deploy/#; s#"$##' | sort -u)
+grep -qxF deploy/install.sh <<<"$list" || stop "deploy/install.sh is missing from the archive"
+need=$(tar -xzOf "$tmp" deploy/install.sh | grep -o '"$HERE/[^"]*"' | sed 's#"$HERE/#deploy/#; s#"$##' | sort -u)
 [[ -n $need ]] || stop "could not read deploy/install.sh from the archive"
-for f in deploy/install.sh $need; do
+while IFS= read -r f; do
     grep -qxF "$f" <<<"$list" || stop "$f is missing from the archive"
-done
+done <<<"$need"
 
 # defense in depth: nothing committed that looks like a secret or a database
 bad=$(grep -E '(^|/)(\.env(\.[^/]*)?|id_(rsa|dsa|ecdsa|ed25519)|[^/]+\.(pem|key|p12|pfx|db|sqlite3?))$' <<<"$list" \
       | grep -vE '\.(example|sample|template)$' || true)
 [[ -z $bad ]] || stop "the commit holds files that look secret, so nothing was packed: $(tr '\n' ' ' <<<"$bad")"
 
+mv -f "$tmp" "$out"; trap - EXIT
 echo "ok: $out holds $(grep -vc '/$' <<<"$list") files, the committed tree of ${head:0:12} only"

@@ -132,3 +132,32 @@ def test_the_docs_use_the_committed_tree_archive():
         assert "--files-from <(git ls-files)" not in text, name      # the old command packed the whole directory
     for name in ("FIRST_DEPLOY.md", "STAGING_RUNBOOK.md"):
         assert "deploy/bootstrap_archive.sh" in docs[name], name
+
+
+def test_a_failed_write_leaves_no_archive_partial_or_stale(tmp_path):
+    big = {"assets/blob.bin": ""}
+    r = repo(tmp_path, {**COMMITTED, **big})
+    (r / "assets/blob.bin").write_bytes(os.urandom(400_000))          # incompressible
+    sh(["git", "commit", "-q", "-am", "big file"], r)
+    out = tmp_path / "out" / "boot.tgz"
+    out.parent.mkdir()
+    out.write_text("an older archive")                                 # must not survive a failed run
+    sha = sh(["git", "rev-parse", "HEAD"], r).stdout.strip()
+    res = sh(["bash", "-c", f'ulimit -f 64; exec bash "{ARCHIVE}" {sha} "{out}"'], r, check=False)
+    assert res.returncode != 0
+    assert list(out.parent.iterdir()) == [], list(out.parent.iterdir())  # no archive, no *.partial.*
+
+
+def test_install_paths_with_spaces_and_a_relative_output(tmp_path):
+    install = INSTALL + 'cp "$HERE/units with space/a.service" /etc/systemd/system/\n'
+    r = repo(tmp_path, {**COMMITTED, "deploy/install.sh": install, "deploy/units with space/a.service": "[Unit]\n"})
+    sha = sh(["git", "rev-parse", "HEAD"], r).stdout.strip()
+    (r / "deploy").mkdir(exist_ok=True)
+    res = sh(["bash", str(ARCHIVE), sha, "boot.tgz"], r / "deploy", check=False)   # relative to the cwd
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "deploy/units with space/a.service" in members(r / "deploy" / "boot.tgz")
+    (r / "deploy" / "boot.tgz").unlink()
+    sh(["git", "rm", "-q", "deploy/units with space/a.service"], r)
+    sh(["git", "commit", "-q", "-m", "drop the spaced unit"], r)
+    res = archive(r, sh(["git", "rev-parse", "HEAD"], r).stdout.strip(), tmp_path / "b.tgz")
+    assert res.returncode == 1 and "deploy/units with space/a.service is missing" in res.stdout
