@@ -146,6 +146,8 @@ def format_deal(deal: dict) -> tuple[str, str]:
     if deal.get("event") == "price_drop" and deal.get("previous_price"):
         title = (f"Price drop · {car} ${int(deal['previous_price']):,} → ${price:,} "
                  f"({disc:.0f}% below market)")
+    elif deal.get("is_auction"):                       # a bid, not a price you can pay
+        title = f"{car} · current bid ${price:,} · {disc:.0f}% below market"
     else:
         title = f"{car} · ${price:,} · {disc:.0f}% below market"
     ev = deal.get("evidence_class") or (

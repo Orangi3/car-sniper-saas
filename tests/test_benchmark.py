@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "benchmarks"))
 
 SAFETY = {"salvage", "needs_repair", "misleading_price", "suspicious_claims",
-          "sparse_data", "dealer", "unrealistic_asking"}
+          "sparse_data", "dealer", "unrealistic_asking", "misidentified_model"}
 
 
 def test_benchmark_runs_and_reports_all_metrics():

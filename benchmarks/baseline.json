@@ -1,18 +1,23 @@
 {
   "metrics": {
-    "cases": 29,
+    "cases": 38,
     "fn": 0,
     "fp": 1,
-    "tn": 18,
-    "tp": 10
+    "tn": 26,
+    "tp": 11
   },
   "outcomes": {
+    "auction-current-bid": "TN",
     "conflict-sold-vs-asking": "TN",
     "dealer-retail": "TN",
     "dollar-one": "TN",
     "dup-heavy-market": "TP",
+    "duty-class-hd-peers": "TN",
     "fair-price": "TN",
+    "front-end-damage": "TN",
+    "high-miles-beyond-comps": "TN",
     "high-miles-not-a-deal": "TN",
+    "legit-2500hd-deal": "TP",
     "legit-camry-30": "TP",
     "legit-civic-28": "TP",
     "legit-modest-22": "TP",
@@ -32,9 +37,13 @@
     "slightly-under": "TN",
     "sold-confirms-deal": "TP",
     "sparse-market": "TN",
+    "too-good-55": "TN",
     "too-good-mileage-unknown": "TN",
+    "transmission-slipping": "TN",
     "trim-matched-not-deal": "TN",
     "trim-mismatch-fp": "FP",
-    "wont-start": "TN"
+    "trim-xl-vs-lariat": "TN",
+    "wont-start": "TN",
+    "wrangler-unlimited-peers": "TN"
   }
 }

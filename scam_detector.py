@@ -41,7 +41,9 @@ PATTERNS: list[tuple[str, int, str]] = [
     (r"\bshipping\s*included\s*in\s*the\s*price\b",     25, "shipping included"),
 
     # Sob-story patterns
-    (r"\b(currently\s*)?deployed\b|\bdeployment\b",     30, "deployed military story"),
+    # not "airbags deployed" — that's damage (sources.base.NEEDS_WORK_RE)
+    (r"\b(currently\s*)?(?<!bag\s)(?<!bags\s)deployed\b(?!\s*air\s*bag)|\bdeployment\b",
+                                                        30, "deployed military story"),
     (r"\bmilitary\s*orders\b",                          25, "military orders story"),
     (r"\bmoving\s*overseas\b",                          25, "moving overseas story"),
     (r"\bdying\s*(husband|wife|father|mother)\b",       40, "dying spouse story"),

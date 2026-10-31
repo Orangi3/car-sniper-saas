@@ -9,7 +9,7 @@ KEYS = ("SNIPER_COMMERCIAL_MODE", "BILLING_ORIGIN", "STRIPE_SECRET_KEY",
         "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_STARTER", "STRIPE_PRICE_PRO",
         "B2_BUCKET", "B2_KEY_ID", "B2_APPLICATION_KEY", "AGE_RECIPIENT",
         "EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "MARKETCHECK_COMMERCIAL_AGREEMENT",
-        "SNIPER_TRUSTED_PROXIES")
+        "EBAY_COMMERCIAL_AGREEMENT", "SNIPER_TRUSTED_PROXIES")
 
 
 @pytest.fixture()
@@ -68,6 +68,7 @@ def test_licensed_fresh_source_unlocks_free_beta_but_not_paid(pf, monkeypatch):
     preflight, CONFIG = pf
     _tick(); _healthy("ebay")
     monkeypatch.setitem(CONFIG, "commercial_mode", True)
+    monkeypatch.setenv("EBAY_COMMERCIAL_AGREEMENT", "EPN approval ref")
     monkeypatch.setenv("BILLING_ORIGIN", "https://beta.example.com")
     monkeypatch.setenv("SNIPER_TRUSTED_PROXIES", "127.0.0.1,::1")
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_abc123secretvalue")
@@ -82,6 +83,7 @@ def test_behind_the_proxy_without_trusted_proxies_is_not_a_free_beta(pf, monkeyp
     preflight, CONFIG = pf
     _tick(); _healthy("ebay")
     monkeypatch.setitem(CONFIG, "commercial_mode", True)
+    monkeypatch.setenv("EBAY_COMMERCIAL_AGREEMENT", "EPN approval ref")
     monkeypatch.setenv("BILLING_ORIGIN", "https://beta.example.com")
     r = preflight.run()
     assert r["ready_for"] == "private_internal_testing"
@@ -128,6 +130,7 @@ def test_paid_beta_reachable_only_with_everything(pf, monkeypatch):
     _tick(); _healthy("ebay")
     monkeypatch.setitem(CONFIG, "commercial_mode", True)
     for k, v in {"BILLING_ORIGIN": "https://beta.example.com",
+                 "EBAY_COMMERCIAL_AGREEMENT": "EPN approval ref",
                  "SNIPER_TRUSTED_PROXIES": "127.0.0.1,::1",
                  "STRIPE_SECRET_KEY": "sk_live_x", "STRIPE_WEBHOOK_SECRET": "whsec_x",
                  "STRIPE_PRICE_STARTER": "price_a", "STRIPE_PRICE_PRO": "price_b",

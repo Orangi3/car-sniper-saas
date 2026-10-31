@@ -163,15 +163,40 @@ SALVAGE_RE = re.compile(
     r"bill\s*of\s*sale\s*only|no\s*title|without\s*(?:a\s*)?title|"
     r"title\s*(?:issue|problem)s?|parts\s*only|for\s*parts|parting\s*out|"
     r"part\s*out|parts\s*car)\b", re.IGNORECASE)
-# Runs/drives problems — still a listing, but not a resale-ready "deal"
+# Runs/drives problems and disclosed damage — still a listing, but not a
+# resale-ready "deal"
 NEEDS_WORK_RE = re.compile(
     r"\b(not\s*running|non[-\s]?runner|doesn'?t\s*run|does\s*not\s*run|"
     r"won'?t\s*(?:start|crank|run)|needs\s*(?:a\s*)?(?:motor|engine|transmission|trans)|"
     r"blown\s*(?:motor|engine|head\s*gasket)|bad\s*(?:motor|engine|transmission|trans)|"
-    r"seized|mechanic'?s?\s*special|project\s*car|as[-\s]?is\s*project|tow\s*(?:it\s*)?away)\b",
+    r"seized|mechanic'?s?\s*special|project\s*car|as[-\s]?is\s*project|tow\s*(?:it\s*)?away|"
+    r"(?:doesn'?t|does\s*not|won'?t)\s*(?:start|crank|turn\s*over)|"
+    r"needs\s*(?:some\s*)?(?:work|repairs?)|needs?\s*(?:a\s*)?head\s*gaskets?|"
+    r"head\s*gasket\s*(?:leak|issue|problem)s?|"
+    r"trans(?:mission)?\s*(?:is\s*)?slip(?:s|ping)?|slipping\s*trans(?:mission)?|"
+    r"over[\s-]?heat(?:s|ing|ed)|(?:rod|engine|motor)\s*knock(?:s|ing)?|"
+    r"burns?\s*oil|wreck(?:ed)?|"
+    r"(?:front|rear|side|body|frame|collision|accident|structural|flood)[\s-]*(?:end\s*)?damaged?"
+    r"(?![\s-]*free)|"
+    r"air\s*bags?\s*(?:deployed|went\s*off)|deployed\s*air\s*bags?)\b",
     re.IGNORECASE)
 _NEGATION_RE = re.compile(r"\b(no|not|never|non|isn'?t|wasn'?t|zero)\b[\w\s,'-]{0,14}$",
                           re.IGNORECASE)
+# "doesn't overheat", "hasn't been wrecked": a verb negation covers only the
+# phrase right after it, never a later clause ("AC doesn't work, frame damage")
+_VERB_NEGATION_RE = re.compile(r"\b(?:doesn'?t|don'?t|didn'?t|hasn'?t|haven'?t)\s+(?:\w+\s+)?$",
+                               re.IGNORECASE)
+# "No accidents, flood or frame damage": one negation over a list of damage nouns
+_LIST_NEGATION_RE = re.compile(
+    r"\b(?:no|never|not|zero)\b(?:[\s,]+(?:or|and|any)?\s*(?:accidents?|rust|flood|hail|fire|"
+    r"frame|body|structural|mechanical|airbag|title)\b)+[\s,]+(?:or|and)?\s*$", re.IGNORECASE)
+# A rebuilt part is not a rebuilt (branded) title
+_REBUILT_PART_RE = re.compile(
+    r"\brebuilt\s+(?:engine|motor|trans(?:mission)?|carb(?:uretor)?|alternator|starter|turbo|"
+    r"differential|rear\s*end|front\s*end|suspension|axle|heads?)\b|"
+    r"\b(?:engine|motor|trans(?:mission)?|carb(?:uretor)?|alternator|starter|turbo|differential|"
+    r"heads?)\s+(?:(?:was|is|has\s+been|been|just|recently|fully|professionally|completely)\s+)*"
+    r"rebuilt\b", re.IGNORECASE)
 
 
 def extract_int(pat: re.Pattern, text: str) -> Optional[int]:
@@ -246,6 +271,8 @@ def _canon_model(tokens: list[str]) -> Optional[str]:
     key = _model_key(first)
     if key in MODEL_CANON:
         return MODEL_CANON[key]
+    if len(tokens) > 1 and _model_key(first + tokens[1]) in MODEL_CANON:
+        return MODEL_CANON[_model_key(first + tokens[1])]      # "F 150", "CR V"
     if (len(tokens) > 1 and (len(key) <= 2 or key in _JOIN_NEXT)
             and not _NOT_MODEL_TOKEN.match(tokens[1])):
         return f"{first} {tokens[1]}".title()
@@ -313,13 +340,16 @@ def _unnegated(rx: re.Pattern, blob: str) -> Optional[str]:
     """First match of rx that isn't preceded by a negation ("no rebuilt
     title", "never been salvaged", "not a parts car")."""
     for m in rx.finditer(blob):
-        if not _NEGATION_RE.search(blob[max(0, m.start() - 30):m.start()]):
+        before = blob[max(0, m.start() - 60):m.start()]
+        if not (_NEGATION_RE.search(before) or _VERB_NEGATION_RE.search(before)
+                or _LIST_NEGATION_RE.search(before)):
             return m.group(0)
     return None
 
 
 def looks_salvage(title: str, description: str = "") -> bool:
-    return _unnegated(SALVAGE_RE, f"{title or ''} {description or ''}") is not None
+    blob = _REBUILT_PART_RE.sub(" ", f"{title or ''} {description or ''}")
+    return _unnegated(SALVAGE_RE, blob) is not None
 
 
 def looks_needs_work(title: str, description: str = "") -> bool:

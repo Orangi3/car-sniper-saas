@@ -23,12 +23,21 @@ Matching rules for asking comparables:
     cross-posts (same year/make/model/mileage/price) are excluded or
     collapsed to one
   * salvage / rebuilt / parts / needs-work / payment-teaser listings excluded
-  * same trim preferred when the title states one and enough peers share it
+  * auctions excluded: a running auction's price is its current bid
+  * model names that cover different vehicles are split by the title's
+    marker (VARIANT_MARKERS: "Silverado 2500HD" is not a "Silverado 1500",
+    a "Wrangler Unlimited" is not a two-door "Wrangler"); peers of the other
+    variant are excluded, never just down-weighted
+  * same trim preferred when the title states one and enough peers share it;
+    when most comparables state a DIFFERENT trim, confidence is capped at low
   * private-party peers preferred; dealer asking prices only as a fallback
   * stale peers (not seen recently) are down-weighted, then dropped
   * mileage: adjusted ONLY when >= MIN_MILEAGE_POINTS peers have odometers,
     using a Theil–Sen slope clamped to a sane range; otherwise not adjusted
-    and that is stated
+    and that is stated. A listing more than MILEAGE_GAP_MI above every
+    comparable's odometer is capped at low confidence when not adjusted (its
+    value would be that of a lower-mileage car), and loses a point when the
+    adjustment is extrapolated that far
   * robust statistics: MAD outlier rejection, weighted median for the point
     value, weighted 25th/75th percentiles for the range
 
@@ -80,6 +89,23 @@ REGIONAL_RADIUS_MI = 150
 # widened by this fraction of the value on each side (a labeled assumption).
 ASKING_UNCERTAINTY_PCT = 0.03
 MATCH_ATTRS = ("drivetrain", "engine")
+MILEAGE_GAP_MI = 40_000           # same gap match_quality calls "far apart"
+
+# One model name, different vehicles. Sellers of the heavier or longer
+# variant almost always say so ("2500HD", "3/4 ton", "Unlimited"), so a title
+# without the marker is the base variant. Matched on the title only.
+_HEAVY_DUTY = (r"(?<!\$)\b(?:[2-5]500|1500\s*hd)(?:\s*hd)?\b|\bhd\b|\bheavy[\s-]*duty\b|"
+               r"(?:\b3/4|\bone|\b1)[\s-]*ton\b|\bdually\b|\bdrw\b")
+VARIANT_MARKERS = {
+    **{key: ("heavy-duty", _HEAVY_DUTY) for key in (
+        ("chevrolet", "silverado"), ("gmc", "sierra"), ("dodge", "ram"),
+        ("chevrolet", "suburban"), ("chevrolet", "express"), ("gmc", "savana"),
+        ("chevrolet", "avalanche"))},
+    ("jeep", "wrangler"): ("Unlimited", r"\bunlimited\b|\b(?:4|four)[\s-]*(?:door|dr)\b|\bjku\b|\bjlu\b"),
+    ("nissan", "titan"): ("XD", r"\bxd\b"),
+}
+_VARIANT_RES = {k: (label, re.compile(rx, re.IGNORECASE))
+                for k, (label, rx) in VARIANT_MARKERS.items()}
 
 TRIMS = {
     "lx", "ex", "ex-l", "exl", "se", "le", "xle", "xse", "sr", "sr5", "trd",
@@ -134,14 +160,26 @@ def parse_trim(title: str, model: Optional[str]) -> Optional[str]:
     if not title or not model:
         return None
     t = title.lower()
-    i = t.find(model.lower())
-    if i < 0:
+    # "F-150" is also written "F150" / "F 150"; "CR-V" as "CRV"
+    m = re.search(re.sub(r"(\\-|\\ )", r"[\\s-]?", re.escape(model.lower())), t)
+    if not m:
         return None
-    for tok in re.split(r"[\s,/()]+", t[i + len(model):])[:4]:
+    for tok in re.split(r"[\s,/()]+", t[m.end():])[:4]:
         tok = tok.strip(".-")
         if tok in TRIMS:
             return tok.upper()
     return None
+
+
+def model_variant(title: str, make: Optional[str], model: Optional[str]) -> Optional[str]:
+    """Which variant of a multi-vehicle model name the title describes
+    (VARIANT_MARKERS): the marker's label, "standard" without it, or None
+    for models that have no such split."""
+    hit = _VARIANT_RES.get((str(make or "").lower(), str(model or "").lower()))
+    if not hit:
+        return None
+    label, rx = hit
+    return label if rx.search(title or "") else "standard"
 
 
 def _parse_ts(v) -> Optional[datetime]:
@@ -368,15 +406,23 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
     tkey = target.get("vehicle_key")
     t_trim = target.get("trim") or parse_trim(target.get("title") or "", target.get("model"))
     t_miles = target.get("odometer")
+    t_var = model_variant(target.get("title") or "", target.get("make"), target.get("model"))
 
     # ---- asking comparables ----
     usable = []
+    other_variant = 0
     for c in peers:
         if c.get("composite_id") == tid:
             continue
         if tkey and c.get("vehicle_key") == tkey:
             continue
         if c.get("is_salvage") or c.get("needs_work") or not c.get("price"):
+            continue
+        if c.get("is_auction"):
+            continue                       # a current bid is not an asking price
+        if t_var and model_variant(c.get("title") or "", c.get("make") or target.get("make"),
+                                   c.get("model") or target.get("model")) != t_var:
+            other_variant += 1
             continue
         if not c.get("year") or abs(c["year"] - year) > 2:
             continue
@@ -399,6 +445,10 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
 
     reasons: list[str] = []
     points = 0
+    cap_low: list[str] = []          # reasons that cap confidence at "low"
+    if other_variant:
+        reasons.append(f"{other_variant} peer(s) excluded: a different vehicle than this "
+                       f"{t_var} {target.get('model')} (model name shared)")
 
     # geography: regional peers when the target's location is known
     t_geo = _coords(target)
@@ -565,6 +615,12 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
             reasons.append(f"trim-matched ({t_trim})")
         elif t_trim:
             reasons.append(f"not enough {t_trim}-trim peers; mixed trims used")
+            other = [ct for _, _, c in pairs
+                     if (ct := c.get("trim") or parse_trim(c.get("title") or "", c.get("model")))
+                     and ct != t_trim]
+            if 2 * len(other) > len(pairs):
+                cap_low.append(f"most comparables are a different trim "
+                               f"({', '.join(sorted(set(other)))}) than this {t_trim}")
         else:
             reasons.append("trim not stated in title; mixed trims")
         if adjusted:
@@ -577,6 +633,16 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
             reasons.append("no mileage effect detectable among peers; not adjusted")
         else:
             reasons.append("not mileage-adjusted (too few peers with mileage)")
+        odos = [c["odometer"] for _, _, c in pairs if c.get("odometer")]
+        if t_miles and len(odos) >= MIN_COMPS:
+            above = t_miles - max(odos) > MILEAGE_GAP_MI
+            if above and not adjusted:
+                cap_low.append(f"listing has {t_miles:,} mi, over {MILEAGE_GAP_MI // 1000}k more "
+                               f"than any comparable (max {max(odos):,}); value not adjusted")
+            elif adjusted and (above or min(odos) - t_miles > MILEAGE_GAP_MI):
+                points -= 1
+                reasons.append(f"mileage adjustment extrapolated: listing has {t_miles:,} mi, "
+                               f"comparables {min(odos):,}–{max(odos):,}")
         if dealer_fallback:
             points -= 1
             reasons.append("includes dealer or unknown-seller asking prices "
@@ -592,6 +658,9 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
                                / len(pairs), 2)
         v.comp_quality = round(100 * sum(c["_q"] for _, _, c in pairs) / len(pairs), 1)
         reasons.append(f"average comparable match quality {v.comp_quality:.0f}/100")
+    if cap_low:
+        points = min(points, 1)
+        reasons += [f"confidence capped at low: {why}" for why in cap_low]
     return _finish(v, points, reasons)
 
 
@@ -618,7 +687,7 @@ def _finish(v: Valuation, points: int, reasons: list[str]) -> Valuation:
 def load_peers(conn, target: dict) -> list[dict]:
     rows = conn.execute(
         "SELECT composite_id, source, title, url, price, year, make, model, "
-        "  odometer, is_dealer, is_salvage, needs_work, vehicle_key, trim, "
+        "  odometer, is_dealer, is_salvage, needs_work, is_auction, vehicle_key, trim, "
         "  first_seen_at, last_seen_at, latitude, longitude, extras "
         "FROM listings WHERE LOWER(make) = LOWER(?) AND LOWER(model) = LOWER(?) "
         "  AND year BETWEEN ? AND ? AND price IS NOT NULL",

@@ -1,15 +1,17 @@
 """
 sources/ebay_motors.py — eBay Motors live listings via the official Browse API.
 
-To enable:
-  1. Create a free dev account at https://developer.ebay.com/
-  2. In your application keys, generate a "Production" Client ID + Secret
-  3. Set environment variables:
-       export EBAY_CLIENT_ID=...
-       export EBAY_CLIENT_SECRET=...
-  4. (Optional) Add ebay block to config.json with zip + radius_mi.
+Access (owner steps: EBAY_SETUP.md):
+  * Sandbox keys work at once and return eBay's TEST data (never real cars).
+  * Production use of the Buy APIs (Browse included) is for eBay partners:
+    apply through the eBay Partner Network, get eBay's approval and sign its
+    contracts; approval is not guaranteed (eBay "Buy APIs requirements",
+    read via search 2026-10-30). Until the owner records that approval in
+    EBAY_COMMERCIAL_AGREEMENT, commercial mode keeps this source off.
+  * Credentials: EBAY_CLIENT_ID / EBAY_CLIENT_SECRET in the server env file.
 
-Free tier: ~5,000 calls/day, more than enough for 2-min polling.
+Default limit 5,000 Browse calls/day (Application Growth Check for more);
+one territory polled every 5 min with <= 2 pages is <= 576 calls/day.
 
 The Browse API is rate-limited and tokenized. We cache the OAuth app token
 for ~2h and drop it as soon as eBay rejects it (401), so an expired or
@@ -40,8 +42,11 @@ from .base import (NormalizedListing, extract_make_model, extract_miles,
 
 SOURCE_ID = "ebay"
 SOURCE_NAME = "eBay Motors"
-# Data-licensing class (see SOURCES.md): Official eBay Browse API; use is governed by the eBay API License Agreement.
-LICENSING = "licensed_api"
+# Data-licensing class (see SOURCES.md): official Browse API, but production
+# use needs eBay's Buy API approval and contracts — fail-closed until the
+# owner records the approval reference.
+LICENSING = "requires_agreement"
+AGREEMENT_ENV = "EBAY_COMMERCIAL_AGREEMENT"
 
 def _api_base() -> str:
     """https://api.ebay.com, or eBay's Sandbox (EBAY_ENVIRONMENT=sandbox,
@@ -177,6 +182,9 @@ def normalize(it: dict, radius: float | None = None) -> Optional[NormalizedListi
     seller = it.get("seller") or {}
     acct = (seller.get("sellerAccountType") or "").upper()   # BUSINESS | INDIVIDUAL
     postal = str(loc.get("postalCode") or "")[:5]
+    # eBay's own condition "For parts or not working" (id 7000)
+    for_parts = (str(it.get("conditionId") or "") == "7000"
+                 or "not working" in str(it.get("condition") or "").lower())
     return NormalizedListing(
         source=SOURCE_ID, source_id=str(it["itemId"]), url=url, title=title,
         price=price, year=year, make=mk, model=mdl, odometer=miles,
@@ -195,7 +203,8 @@ def normalize(it: dict, radius: float | None = None) -> Optional[NormalizedListi
                 "seller_rating": seller.get("feedbackPercentage"),
                 "currency": currency,
                 # no structured vehicle fields in item summaries
-                "vehicle_fields_from": "title"},
+                "vehicle_fields_from": "title",
+                **({"needs_work": True} if for_parts else {})},
     )
 
 

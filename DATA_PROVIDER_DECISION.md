@@ -1,26 +1,42 @@
 # Data provider decision
 
-Researched 2026-10-28 by web search. **Direct page fetches to vendor sites
-(developers.marketcheck.com, docs.marketcheck.com) were blocked by this
-build environment's network policy**, so everything below comes from search
-results quoting vendor pages. Nothing here was confirmed with a live API
-call or with the vendor. Engineering research, not legal advice.
+Researched 2026-10-28, revised 2026-10-30 by web search. **Direct page
+fetches to vendor sites (developer.ebay.com, docs.marketcheck.com) are
+blocked by this build environment's network policy**, so everything below
+comes from search results quoting vendor pages. Nothing here was confirmed
+with a live API call or with a vendor. Engineering research, not legal
+advice.
+
+## What changed on 2026-10-30
+
+The earlier decision ranked eBay first as "free, click-through and already
+integrated". **That premise was wrong.** eBay's Buy API requirements say
+production use of the Buy APIs (Browse included) is for eBay partners: apply
+through the eBay Partner Network, get eBay's approval and sign its
+contracts, with no guarantee of approval. A production keyset is also
+inactive until marketplace-account-deletion notifications are set up (or an
+exemption granted). The code now treats eBay like MarketCheck: off in
+commercial mode until the owner records the approval
+(`EBAY_COMMERCIAL_AGREEMENT`). Owner steps: `EBAY_SETUP.md`.
 
 ## Decision
 
-**Primary: MarketCheck Private Party (FSBO) API — conditional on a written
-agreement that permits Car Sniper's storage-and-alert model.**
-**Secondary: eBay Browse API (free, already integrated; geography fixed in
-this branch) for auction/BIN vehicles.**
+1. **Apply to eBay now** (free; approval decides): it is the only candidate
+   with an integrated adapter, no data fee and a call quota that covers the
+   pilot. Sandbox verification can happen today; real listings only after
+   approval.
+2. **Ask MarketCheck for a written quote and permission in parallel**
+   (`OWNER_ACTIONS.md` § 1) — the only route found to private-party
+   classifieds at scale, but it costs money before any revenue and its terms
+   restrict exactly what an alert product does. Do not buy a plan until it
+   confirms the storage-and-alert use, the radius limit and the real price.
+3. **Seller listings stay on as the supply we own** (built; needs sellers).
+4. Nothing unlicensed: Craigslist, Facebook Marketplace and similar stay off.
 
-MarketCheck FSBO is the only candidate found that offers documented,
-API-delivered *private-party* car listings with price, vehicle and source
-URL. Its public Terms, however, appear to restrict exactly what an alert
-product does (persisting data, caching outside "normal application use",
-use "tied to a live query or user-driven interaction"). Until MarketCheck
-confirms in writing that central polling, storing listings + price history,
-and pushing alerts to paying subscribers are permitted, the adapter is
-**fail-closed** in commercial mode.
+The shortest legitimate path to the first real vehicles in FlipFirst is
+eBay approval (calendar time unknown, $0) → `validate_deals` run on the
+server (`EBAY_SETUP.md` step 8). If eBay declines or stalls, the fallback is
+MarketCheck FSBO with a written agreement (≥ $299/mo, unverified).
 
 ## Ranked matrix (reproducible)
 
@@ -32,39 +48,31 @@ written agreement, < 2 excluded.
 
 | Rank | Provider | Weighted score /100 | Usable for paid launch? | private_party_coverage (20) | commercial_rights (20) | freshness (10) | geo_filtering (8) | field_richness (8) | cost (10) | quota_scalability (6) | contract_effort (6) | integration_status (6) | verification (6) |
 |---:|---|---:|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | eBay Browse API | 71.2 | yes | 2E | 4V | 4V | 4V | 3V | 5V | 4E | 5V | 5V | 1V |
-| 2 | Seller-submitted listings | 66.8 | yes | 1E | 5E | 5E | 5E | 3E | 4E | 5E | 4E | 1E | 0V |
-| 3 | MarketCheck FSBO | 60.4 | only after written agreement | 4V | 2E | 3E | 5V | 4V | 2V | 3V | 2E | 4V | 1V |
+| 1 | Seller-submitted listings | 71.6 | yes | 1E | 5E | 5E | 5E | 3E | 4E | 5E | 4E | 4V | 1V |
+| 2 | eBay Browse API | 59.6 | only after written agreement | 2E | 2V | 4V | 4V | 3V | 5V | 4V | 2V | 5V | 1V |
+| 3 | MarketCheck FSBO | 59.2 | only after written agreement | 4V | 2E | 3E | 5V | 4V | 2V | 2E | 2E | 4V | 1V |
 | 4 | MarketCheck dealer inventory | 46.8 | only after written agreement | 0V | 2E | 3E | 5V | 5V | 3V | 3V | 2E | 3V | 1V |
 | 5 | Craigslist (unlicensed) | 59.6 | no — rights gate | 5E | 0V | 5E | 4E | 3E | 5E | 1E | 0E | 4V | 2V |
 | 6 | Vehicle Acquisition Network | 34.0 | no — rights gate | 3E | 1E | 2E | 2E | 2E | 2E | 2E | 1E | 0V | 0V |
 
 How to read it:
 
-- **eBay ranks first because it is free, click-through and already
-  integrated — not because it covers our niche.** Its private-party coverage
-  is thin (auctions/BIN, not classifieds). It is the cheapest thing to
-  *verify first*: one manual run of the `live-source-check` workflow with
-  eBay keys turns most of its `E`s into facts.
-- **MarketCheck FSBO is the only route found to private-party listings at
-  scale**, and its score is held down by two unknowns the owner can resolve
-  with one email: commercial rights and freshness. If MarketCheck confirms
-  the stored-alert use in writing, its rights score goes to 4 and it ranks
-  first (≈ 68).
-- **Seller-submitted listings** score well on rights and freshness but have
-  no supply on day one; they are a long-term moat, not a launch source.
+- **Seller listings rank first on rights, freshness and cost — and have no
+  supply on day one** (private-party coverage 1). They are the moat, not
+  the launch source.
+- **eBay and MarketCheck FSBO are now level** (59.6 vs 59.2), both gated on
+  an agreement. eBay is free and integrated but thin on private-party cars;
+  MarketCheck covers private sellers but costs at least $299/mo and its
+  quota and radius limits are unclear.
 - Craigslist scores high on raw supply and is excluded by the rights gate.
-
-Decision unchanged: verify eBay now (free); pursue the MarketCheck written
-agreement in parallel; do not launch paid on unlicensed sources.
 
 ## Comparison
 
 | Provider | Private-party coverage | Geography | Freshness (claimed) | Useful fields | Price | Quota | Commercial redistribution | Contract | Verification | Recommendation |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **MarketCheck FSBO** `GET /v2/search/car/fsbo/active`, detail `GET /v2/listing/car/fsbo/{id}` | Yes — private sellers only (`seller_type` fsbo); "over 80,000 active listings nationwide"; source marketplaces not named; vendor pages conflict on whether classifieds are crawled | US nationwide; zip/radius filters (same as Inventory Search) | "near real-time" (docs) vs "refreshed every 24h" (older vendor article) — **unresolved** | price, year/make/model, miles, location, source marketplace + listing URL; **no seller contact** | Basic **$299/mo** + data fees; Private Party Search listed at **$0.01/call** | Basic: 5,000 calls/mo, 5 calls/s, 500-row pagination limit; free tier 500 calls (third-party APIs need Basic+) | Public ToS: licensed not sold; no persistent datasets outside the Service; no caching "substantial portions … outside normal application use"; display within your app tied to live query/user interaction. **Our use needs explicit written permission.** | Order form / sales agreement; terms may differ by plan | Docs found via search; not live-tested; ToS read via search excerpts | **Primary candidate — pursue written agreement + pilot pricing.** Adapter built, fail-closed. |
+| **MarketCheck FSBO** `GET /v2/search/car/fsbo/active`, detail `GET /v2/listing/car/fsbo/{id}` | Yes — private sellers only (`seller_type` fsbo); "over 80,000 active listings nationwide"; source marketplaces not named; vendor pages conflict on whether classifieds are crawled | US nationwide; zip/radius filters (same as Inventory Search) | "near real-time" (docs) vs "refreshed every 24h" (older vendor article) — **unresolved** | price, year/make/model, miles, location, source marketplace + listing URL; **no seller contact** | Basic **$299/mo** + data fees; Private Party Search **$0.01/call or $0.006/call** (vendor pages conflict) | Vendor pages conflict: 5,000 vs 500 calls/mo; 5 calls/s; a lower tier may cap the radius at **100 mi** (a 150-mi pilot would need two queries) | Public ToS: licensed not sold; no persistent datasets outside the Service; no caching "substantial portions … outside normal application use"; display within your app tied to live query/user interaction. **Our use needs explicit written permission.** | Order form / sales agreement; terms may differ by plan | Docs found via search; not live-tested; ToS read via search excerpts | **Primary candidate — pursue written agreement + pilot pricing.** Adapter built, fail-closed. |
 | MarketCheck dealer inventory `/v2/search/car/active` | No (dealers) | US | as above | full dealer listing | $0.002/call + plan | as above | same ToS | same | as above | Useful only for dealer *asking-price comparables*, labeled retail. Not a deal source for our niche. |
-| **eBay Browse API** `item_summary/search` | Some (eBay sellers incl. private); auctions + BIN; not classifieds | US; pickup filters `pickupPostalCode`/`pickupRadius`/`pickupCountry`/`pickupRadiusUnit` | Displayed listings must be ≤ 6 h behind eBay (API License Agreement) | title, price, item location, image, item URL; year/make/model parsed or from aspects | Free | Default app call limits (not verified for our volume) | API License Agreement: display freshness, delete data ≤ 30 days after no longer needed, security controls, no eBay data in non-prod | Developer program agreement (click-through) | Category 6001 = Cars & Trucks confirmed; **vehicle search via Browse with 6001 not live-tested**; marketplace header for Motors unconfirmed | **Keep as secondary.** Low cost; fix geo params (done); verify with real keys. |
+| **eBay Browse API** `item_summary/search` | Some (eBay sellers incl. private); auctions + BIN; not classifieds | US; pickup filters `pickupPostalCode`/`pickupRadius`/`pickupCountry`/`pickupRadiusUnit` | Display rule in code: hide listings not re-confirmed within 6 h (figure not re-confirmed 2026-10-30) | title, price, item location, condition, image, item URL; year/make/model/mileage parsed from the title | No API fee published | 5,000 Browse calls/day default; Application Growth Check for more | **Production use needs EPN application, eBay approval and contracts** (Buy API requirements); API License Agreement rules on storage, deletion and display | Application + contracts; keyset needs account-deletion notifications or exemption | Category 6001 confirmed; never called with real keys | **Apply now** (`EBAY_SETUP.md`); fail-closed until approved. |
 | Craigslist | Large private-party supply | Local | Real-time | Rich | — | — | Terms prohibit automated collection; enforced (Instamotor injunction, reported $31M) | Written license required | — | **Do not use** without a license. |
 | BaT / Hemmings / GovDeals RSS | Few private-party daily drivers (enthusiast / gov fleet) | National / state | RSS | Partial | — | — | Permission unverified | Ask each | — | Low fit for $2k–$15k niche; skip for paid launch. |
 | Vehicle Acquisition Network (VAN) | Aggregates FSBO from "25+ marketplaces" (vendor listing) | US (unverified) | Unknown | Unknown | Not public | Unknown | Unknown — dealer-acquisition product | Sales contract | Only a directory listing found | **Ask for quote** as a MarketCheck alternative; provenance of their FSBO data must be checked. |
@@ -86,6 +94,8 @@ agreement in parallel; do not launch paid on unlicensed sources.
    documented at ≤ 4 h private caching).
 6. Startup / pilot pricing below $299/mo, or a free-tier evaluation that
    includes the FSBO endpoint (free tier reportedly excludes third-party APIs).
+7. The real per-call price ($0.01 or $0.006), the monthly call allowance
+   and whether the plan limits the search radius (100 mi reported).
 
 Draft inquiry: `OWNER_ACTIONS.md` § 1.
 
@@ -93,7 +103,7 @@ Draft inquiry: `OWNER_ACTIONS.md` § 1.
 
 One territory = one `zip` + `radius` query sorted newest first, 50 rows/call.
 
-| Poll interval | Calls / territory / month | Data fee @ $0.01 | Fits Basic 5,000 calls? |
+| Poll interval | Calls / territory / month | Data fee @ $0.01 (unverified) | Fits 5,000 calls? (unverified) |
 |---|---|---|---|
 | 60 min | 720 | $7.20 | yes (6 territories) |
 | 30 min | 1,440 | $14.40 | yes (3 territories) |
@@ -113,4 +123,5 @@ ingested data. Cost scales with **territories × poll frequency**, not users.
 - [MarketCheck car inventory data overview](https://docs.marketcheck.com/docs/guides/data/cars/inventory/overview) · [Private party data feed](https://www.marketcheck.com/data_feed/private-party/)
 - [eBay Browse API search](https://developers.ebay.com/api-docs/buy/browse/resources/item_summary/methods/search) · [eBay Motors categories](https://developer.ebay.com/api-docs/user-guides/static/trading-user-guide/ebay-motors-categories.html)
 - [eBay API License Agreement](https://developer.ebay.com/join/api-license-agreement)
+- [eBay Buy APIs requirements](https://www.developer.ebay.com/api-docs/buy/buy-requirements.html) · [Browse API overview](https://developer.ebay.com/api-docs/buy/browse/overview.html) · [Buy API call limits](https://developer.ebay.com/develop/api/buy/api_call_limits) · [Marketplace account deletion](https://www.developer.ebay.com/marketplace-account-deletion)
 - [MarketCheck alternatives directory (VAN, VinAudit)](https://sourceforge.net/software/product/MarketCheck/alternatives)

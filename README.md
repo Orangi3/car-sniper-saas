@@ -80,13 +80,18 @@ dashboard's source panel shows each source's real status.
    `confirmed_sales` (dated completed sales), `asking_comparables` (what
    sellers ask), `historical_incomplete` (undated/old/last-asking records),
    `insufficient`. Comparables exclude the car itself, its cross-posts, stale
-   and damaged cars; prefer same trim and ±1 model year; mileage-adjust only
-   with enough data; robust statistics. Confidence (high/medium/low) comes
-   with the reasons behind it. It is **not** calibrated against real sale
-   outcomes yet.
-3. **Assess** — risk flags (scam signals, too good to be true, branded title,
-   needs work, dealer, mileage unknown, relisted, low confidence) → `trusted`
-   or `risk`. Risky cars stay visible in a labeled feed.
+   and damaged cars, auction bids, and other vehicles that share the model
+   name (a Silverado 2500HD is not a 1500, a Wrangler Unlimited is not a
+   two-door); prefer same trim and ±1 model year; mileage-adjust only with
+   enough data; robust statistics. Confidence (high/medium/low) comes with
+   the reasons behind it, and is capped at low when most comparables are a
+   different stated trim or the car has far more miles than any of them. It
+   is **not** calibrated against real sale outcomes yet.
+3. **Assess** — risk flags (scam signals, too good to be true — over 50%
+   under — auction bid, branded title, needs work or damage, dealer, mileage
+   unknown, description not checked, relisted, low confidence) → `trusted`
+   or `risk`. Risky cars stay visible in a labeled feed; ended auctions are
+   hidden.
 4. **Match** (`saved_search_alerts.py`) — every entitled subscriber's own
    criteria: min % under, min profit, confidence floor, conservative /
    aggressive, condition, price/year/miles/make/model/state. One notification
@@ -171,6 +176,9 @@ jobs/scheduler.py       polling process      jobs/worker.py   job process
 notifications.py        alert channels       safe_http.py     SSRF-safe webhooks
 server.py               Flask API + pages    mobile.html      /m mobile app
 benchmarks/             labeled edge cases + run_benchmark.py
+verify_sources.py       one-request live probe of the licensed API sources
+validate_deals.py       isolated real-data deal validation runs (EVALUATION.md)
+evaluation.py           human-labeled outcomes, precision and error metrics
 tests/                  pytest suite (SQLite or Postgres) + browser/ smoke test
 SOURCES.md              data coverage + licensing audit
 LAUNCH_CHECKLIST.md     paid-beta deployment checklist
@@ -181,7 +189,14 @@ RELEASE_READINESS.md    audit, results and GO / NO-GO
 
 - Title parsing is rule-based; cars without a parseable year/make/model are
   stored but not valued. A seller who mislabels the trim can fool the
-  valuation (kept as a measured case in the benchmark).
+  valuation (kept as a measured case in the benchmark). Body style, cab and
+  drivetrain are matched only from structured provider fields, so a
+  title-only source (eBay item summaries) can still mix them.
+- Damage and title problems are found only in the text we receive. eBay item
+  summaries carry no description, so those listings are labeled "description
+  not checked" rather than screened. Detection is keyword-based with simple
+  negation rules: "no rust, minor front end damage" still reads as a denial,
+  so a person must read every listing before acting on it.
 - Valuation confidence is evidence-based but **not yet calibrated** against
   real sale outcomes; the benchmark is synthetic.
 - In commercial mode there is no licensed confirmed-sales feed yet, so values

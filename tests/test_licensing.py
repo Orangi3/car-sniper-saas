@@ -15,12 +15,26 @@ def test_every_source_declares_licensing():
 
 def test_commercial_mode_keeps_only_licensed_sources(monkeypatch):
     monkeypatch.delenv("MARKETCHECK_COMMERCIAL_AGREEMENT", raising=False)
+    monkeypatch.delenv("EBAY_COMMERCIAL_AGREEMENT", raising=False)
     cfg = {"commercial_mode": True, "sources": {}}
     ids = {m.SOURCE_ID for m in sources.iter_sources(cfg)}
-    assert ids == {"ebay"}                 # MarketCheck fail-closed without agreement
+    assert ids == set()                    # every provider fail-closed without approval
     monkeypatch.setenv("MARKETCHECK_COMMERCIAL_AGREEMENT", "MC-2026-001")
     ids = {m.SOURCE_ID for m in sources.iter_sources(cfg)}
+    assert ids == {"marketcheck", "marketcheck_fsbo"}
+    monkeypatch.setenv("EBAY_COMMERCIAL_AGREEMENT", "EPN approval 2026-11-02")
+    ids = {m.SOURCE_ID for m in sources.iter_sources(cfg)}
     assert ids == {"ebay", "marketcheck", "marketcheck_fsbo"}
+
+
+def test_ebay_needs_recorded_buy_api_approval_in_commercial_mode(monkeypatch):
+    """Production Buy API use needs eBay's approval and contracts (EPN);
+    credentials alone must not switch it on for a paid product."""
+    import sources.ebay_motors as eb
+    monkeypatch.delenv("EBAY_COMMERCIAL_AGREEMENT", raising=False)
+    why = sources.licensing_block(eb, {"commercial_mode": True})
+    assert "EBAY_COMMERCIAL_AGREEMENT" in why
+    assert sources.licensing_block(eb, {"commercial_mode": False}) is None
     off = {m.SOURCE_ID for m in sources.iter_sources({"sources": {}})}
     assert {"craigslist", "marketplace"} <= off            # personal mode unchanged
 

@@ -44,3 +44,6 @@ cloudflared.tgz
 .vscode/
 .idea/
 *.swp
+
+# --- Validation harness runs (provider data; never commit) ---
+validation-runs/

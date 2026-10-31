@@ -12,8 +12,10 @@ Companion to `DEPLOY.md` (host build), `RUNBOOK.md` (operations) and
       `MARKETCHECK_FSBO_MONTHLY_CALL_BUDGET` (default 4,000) to stay inside the plan.
 - [ ] `SNIPER_COMMERCIAL_MODE=1` in `/etc/sniper/env`.
 - [ ] At least one licensed listing feed is contracted and configured
-      (`EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` and/or `MARKETCHECK_API_KEY`),
-      and its terms (display, caching, refresh, redistribution) are met.
+      (eBay: keys + `EBAY_COMMERCIAL_AGREEMENT` after eBay's Buy API
+      production approval, `EBAY_SETUP.md`; and/or MarketCheck: key +
+      `MARKETCHECK_COMMERCIAL_AGREEMENT`), and its terms (display, caching,
+      refresh, retention, redistribution) are met.
 - [ ] `/api/diagnostics` shows each licensed source `healthy` from the
       production host, with a real `last_genuine_success_at`.
 - [ ] Unlicensed sources show `disabled — not licensed for commercial use`.
@@ -49,7 +51,8 @@ Companion to `DEPLOY.md` (host build), `RUNBOOK.md` (operations) and
 Required: `DATABASE_URL`, `SNIPER_COMMERCIAL_MODE=1`, `BILLING_ORIGIN`,
 `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_STARTER` (Lite),
 `STRIPE_PRICE_PRO` (Pro), `ALLOW_REGISTRATION`.
-Licensed data: `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`, `MARKETCHECK_API_KEY`.
+Licensed data: `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`, `EBAY_EPN_CAMPAIGN_ID`,
+`EBAY_COMMERCIAL_AGREEMENT`, `MARKETCHECK_API_KEY`, `MARKETCHECK_COMMERCIAL_AGREEMENT`.
 Alerts: `NTFY_SERVER` (+`NTFY_TOKEN` if self-hosted with auth); optional
 Twilio trio for Pro SMS; `COST_SMS_CENTS` from the real invoice.
 Never set in production: `SNIPER_TEST_PG_URL`.

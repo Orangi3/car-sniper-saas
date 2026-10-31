@@ -1,6 +1,6 @@
 # Real-world evaluation
 
-The unit tests and `benchmarks/` (29 synthetic, engineer-labeled cases)
+The unit tests and `benchmarks/` (38 synthetic, engineer-labeled cases)
 check behavior on known edge cases. **They are not evidence that customers
 find worthwhile cars.** This workflow measures that, using real listings and
 real outcomes recorded by people.
@@ -59,6 +59,93 @@ When a source first delivers real listings (eBay, seller submissions, …):
    and `report` for latency and valuation error.
 
 Profit figures are estimates from asking-price comparables, not outcomes.
+
+## Real-deal validation (`validate_deals`)
+
+The harness answers "does the pipeline find real deals in real data?"
+before any customer sees a result. It never touches the production database
+or notifications (details in the module docstring; `EBAY_SETUP.md` step 8
+for the server command).
+
+1. **Run** — `python -m validate_deals run --sources ebay --zip 35401
+   --radius 150 --polls 4 --interval 1800 --out <dir>`: bounded polls of
+   licensed sources, the production pipeline into a private SQLite file,
+   a final valuation pass over everything collected. Re-running with the
+   same `--out` continues the run (more polls, a bigger comparable pool).
+2. **Check provenance** — `report.json` → `headline` / `data_kind`. Only
+   `real` (exit code 0) is a live-data result. `sandbox` and `stand_in` runs
+   prove plumbing only.
+3. **Review every candidate** in `review.csv` (trusted first). Open the
+   listing, compare it with the comparables in `report.json`, contact the
+   seller where useful, and set `outcome_label`:
+
+   | What you found | Label |
+   |---|---|
+   | Worth pursuing at this price after checking it | `genuine_opportunity` |
+   | Cheap, but not enough margin after costs | `weak_opportunity` |
+   | Compared with the wrong cars (trim, cab, drivetrain, duty class, model years, mileage) | `bad_comparison` |
+   | Damage, mechanical or title problem the system did not flag | `mechanical_condition_problem` |
+   | Scam signs, fake price, bait listing, current auction bid read as a price | `suspicious_listing` |
+   | Same car as another candidate | `duplicate` |
+   | Gone before review | `listing_unavailable` |
+   | Can't judge from the information available | `insufficient_evidence` |
+
+   Note the specific reason in `notes` (e.g. "XL work truck vs Lariat
+   comps"): it is how new false-positive patterns become regression tests.
+4. **Measure** — `python -m validate_deals report <dir>` → precision of
+   trusted candidates, its 95% lower bound (Wilson), false positives by
+   label, unavailable rate, and genuine cars that landed in the risk feed.
+   `python -m evaluation import <dir>/review.csv` keeps the labels in the
+   evaluation store (ids and labels only).
+5. **Purge** — `python -m validate_deals purge <dir>` once the review is
+   done (the run directory holds provider data).
+
+Never quote a harness profit as a result: it is an estimate from asking
+prices and default costs. Only `purchased_profit_verified` rows carry a
+realized profit.
+
+## Pilot metrics and acceptance criteria
+
+No real measurement exists yet; every number below is a **proposed
+threshold for the owner to confirm**, not a result.
+
+| Area | Metric | How it is measured | Proposed pilot target |
+|---|---|---|---|
+| Coverage | In-band listings per week in the territory, per source | `validate_deals` funnel (`unique_listings`) per weekly run; `python -m evaluation cohort --source ebay` in production | measure in week 0; no target of its own — the trusted-candidate rate below is what testers feel |
+| Coverage | Share valued (≥ 3 comparables) | funnel `valued / unique_listings` | ≥ 60% |
+| Coverage | Field completeness: mileage, location, trim | `cohort` → `field_completeness_pct` | report; mileage drives confidence |
+| Coverage | Trusted candidates per week | funnel `trusted_candidates` across runs | ≥ 5/week for 10 testers |
+| Speed | Detection latency: seller post → first seen | `evaluation report` (seller-posted sources only); harness `freshness` | p90 ≤ 15 min at 5-min polling |
+| Speed | Valued latency: first seen → valuation stored | `near_misses.refreshed_at − listings.first_seen_at` | p90 ≤ 2 min |
+| Speed | Alert latency: first seen → notification accepted | `evaluation report` (once alerts are on) | p90 ≤ 5 min |
+| Speed | Time a candidate stays listed | harness `freshness` across polls (`seen_in_polls`, last confirmed) | report: how fast testers must act |
+| Accuracy | Precision of trusted candidates | human labels → `validate_deals report` (`precision`, `precision_lower_95`) | Gate 1: ≥ 20 judged, lower bound ≥ 40%; Gate 2: ≥ 40 judged, lower bound ≥ 50% |
+| Accuracy | False positives by reason | `false_positive_reasons` | no single reason ≥ 25% of judged without a fix + regression test |
+| Accuracy | Unavailable at review | `unavailable / labeled` | ≤ 30% (else poll more often or review faster) |
+| Accuracy | Genuine cars in the risk feed | `review.risk.genuine` | report; tune flags only with evidence |
+| Accuracy | Recall and false-positive rate | weekly reference set (below) | report with sample size; no target until n ≥ 20 |
+| Accuracy | Valuation error | `evaluation report` vs confirmed sale amounts | report only; too few sales expected in a pilot |
+| Reliability | Successful polls | `polls.jsonl` statuses; `source_health`; Healthchecks pings | ≥ 95% of polls healthy over 7 days |
+| Reliability | Schema drift, dead jobs | probe/harness `schema`; `jobqueue` stats | 0 unresolved |
+| Reliability | Display-rule violations | eBay listings shown with last confirmation > 6 h | 0 (enforced in code) |
+| Economics | Provider calls per day vs quota | `requests` per poll × polls per day | ≤ 20% of eBay's 5,000/day |
+| Economics | Cost per trusted candidate | monthly cost ÷ trusted candidates per month | report (ESTIMATE) |
+| Economics | Tester outcomes | deal stages (saved → contacted → bought), `purchased_profit_verified` | report; realized profit only from verified purchases |
+
+Gates:
+
+- **Gate 0 — first real data:** a `validate_deals` run on the production
+  host exits 0 (real listings), with eBay's production approval recorded.
+- **Gate 1 — invite the 10 testers** (free; deal feed visible, alerts off):
+  7 consecutive days of polling meeting the reliability targets; coverage
+  targets met; ≥ 20 judged trusted candidates with a precision lower bound
+  ≥ 40%; every false-positive pattern seen twice has a fix or is labeled in
+  the UI.
+- **Gate 2 — turn on customer alerts** (still free): two more weeks with
+  testers; ≥ 40 judged trusted candidates with a lower bound ≥ 50%;
+  unavailable rate ≤ 30%; at least half the testers say a candidate was
+  worth contacting.
+- Paid plans are out of scope for this pilot.
 
 ## Running a beta evaluation
 

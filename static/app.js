@@ -20,7 +20,9 @@ const FLAGS = {
   scam_signals: ["Scam signals", "danger", "Text or price patterns common in scams. Confirm the seller and never pay before seeing the car."],
   too_good_to_be_true: ["Price looks too good", "danger", "Far below comparable cars — often a scam, a typo or a serious problem."],
   branded_title: ["Branded title", "danger", "A salvage, rebuilt or other branded title is mentioned. Resale value and financing are affected."],
-  needs_work: ["Needs work", "danger", "The listing mentions mechanical problems; repairs may exceed the repair allowance."],
+  needs_work: ["Needs work", "danger", "The listing mentions damage or mechanical problems; repairs may exceed the repair allowance."],
+  auction_bid: ["Auction bid", "danger", "The price is the current bid in a running auction, not a price you can buy at. The final price is usually higher."],
+  description_unchecked: ["Description not checked", "warn", "We only saw the listing's title. Read the full listing for damage or title problems before you go."],
   dealer: ["Dealer listing", "warn", "Sold by a dealer; prices and fees differ from private sales."],
   seller_type_unknown: ["Seller type unknown", "warn", "We couldn't tell whether this is a private seller or a dealer."],
   mileage_unknown: ["Mileage unknown", "warn", "No odometer reading, so comparables can't be matched on mileage."],
@@ -28,6 +30,8 @@ const FLAGS = {
   low_confidence: ["Low confidence", "warn", "Few or loosely matched comparables. Treat the value as rough."],
   insufficient_data: ["Not enough data", "warn", "Fewer than 3 usable comparables — no reliable value."],
 };
+// A running auction's price is its current bid, never an asking price
+const priceWord = d => (d.is_auction ? "Current bid" : "Asking");
 const SOURCE_NAMES = {ebay: "eBay", craigslist: "Craigslist", direct: "FlipFirst seller", marketcheck: "MarketCheck",
   marketcheck_fsbo: "MarketCheck private sellers", demo: "Demo data", bat: "Bring a Trailer", govdeals: "GovDeals",
   hemmings: "Hemmings", marketplace: "Marketplace import", email_imap: "Email digest", cars_and_bids: "Cars & Bids",
@@ -202,7 +206,7 @@ function dealCard(d, opts) {
       </div>
     </div>
     <div class="deal__metrics">
-      <div class="metric"><div class="metric__label">Asking</div><div class="metric__value">${money(d.price)}</div>
+      <div class="metric"><div class="metric__label">${priceWord(d)}</div><div class="metric__value">${money(d.price)}</div>
         <div class="metric__sub">${drop ? html`was <s>${money(d.previous_price)}</s>` : (d.event === "price_drop" ? "price drop" : " ")}</div></div>
       <div class="metric"><div class="metric__label">Est. profit</div><div class="metric__value ${pr ? pr.cls : ""}">${pr ? html`<span class="full">${pr.text}</span><span class="compact">${pr.short}</span>` : "—"}</div>
         <div class="metric__sub">${pr ? "after est. costs" : "no valuation"}</div></div>
@@ -360,7 +364,7 @@ function dealDetail(d) {
   const p = d.profit_detail;
   const title = d.title || [d.year, d.make, d.model].filter(Boolean).join(" ");
   const keyMetrics = html`<div class="metrics-box"><div class="deal__metrics" style="border-radius:var(--r-md);border:1px solid var(--line)">
-      <div class="metric"><div class="metric__label">Asking</div><div class="metric__value">${money(d.price)}</div><div class="metric__sub">${drop ? html`was <s>${money(d.previous_price)}</s>` : " "}</div></div>
+      <div class="metric"><div class="metric__label">${priceWord(d)}</div><div class="metric__value">${money(d.price)}</div><div class="metric__sub">${drop ? html`was <s>${money(d.previous_price)}</s>` : " "}</div></div>
       <div class="metric"><div class="metric__label">Est. profit</div><div class="metric__value ${pr ? pr.cls : ""}">${pr ? html`<span class="full">${pr.text}</span><span class="compact">${pr.short}</span>` : "—"}</div><div class="metric__sub">${pr ? "after est. costs" : "no valuation"}</div></div>
       <div class="metric"><div class="metric__label">Below mkt</div><div class="metric__value ${disc > 0 ? "pos" : ""}">${disc != null ? pct(disc) : "—"}</div><div class="metric__sub">${n(d.value_mid) ? "mkt " + moneyK(d.value_mid) : " "}</div></div>
     </div></div>`;
@@ -436,13 +440,13 @@ function marketSection(d) {
     const a = Math.min(ask, lo || mid), b = Math.max(ask, hi || mid);
     const pad = (b - a) * 0.12 || b * 0.05;
     const min = a - pad, max = b + pad, at = v => ((v - min) / (max - min) * 100).toFixed(2) + "%";
-    bar = html`<div class="pvm" role="img" aria-label="Asking ${money(ask)} against an estimated market range of ${money(lo || mid)} to ${money(hi || mid)}">
+    bar = html`<div class="pvm" role="img" aria-label="${priceWord(d)} ${money(ask)} against an estimated market range of ${money(lo || mid)} to ${money(hi || mid)}">
         <div class="pvm__track"></div>
         <div class="pvm__band" style="left:${at(lo || mid)};width:calc(${at(hi || mid)} - ${at(lo || mid)})"></div>
         <div class="pvm__mid" style="left:${at(mid)}"></div>
         <div class="pvm__ask${ask > mid ? " is-over" : ""}" style="left:${at(ask)}"></div>
       </div>
-      <div class="pvm__legend"><span class="key"><i style="background:var(--profit)"></i>Asking <b>${money(ask)}</b></span>
+      <div class="pvm__legend"><span class="key"><i style="background:var(--profit)"></i>${priceWord(d)} <b>${money(ask)}</b></span>
         <span class="key"><i style="background:var(--accent-soft);border:1px solid var(--accent)"></i>Market <b>${money(lo || mid)}–${money(hi || mid)}</b></span></div>`;
   }
   const ev = d.evidence_class;
@@ -493,7 +497,7 @@ function profitSection(d, p) {
       <div>
         <div class="eyebrow" style="margin-bottom:var(--s2)">Base case breakdown</div>
         <dl class="dl">
-          <dt>Purchase price<small>${n(assum.negotiation_pct) ? `${assum.negotiation_pct}% under asking` : "at asking price"}</small></dt><dd>${money(base.purchase)}</dd>
+          <dt>Purchase price<small>${d.is_auction ? "at the current bid; the final price will be higher" : n(assum.negotiation_pct) ? `${assum.negotiation_pct}% under asking` : "at asking price"}</small></dt><dd>${money(base.purchase)}</dd>
           <dt>Repairs &amp; reconditioning<small>${[n(c.mechanical) ? `mechanical allowance ${money(c.mechanical)}` : "", n(c.recon) ? `cosmetic ${money(c.recon)}` : ""].filter(Boolean).join(" · ") || "none entered"}</small></dt><dd>${money(repairs)}</dd>
           <dt>Fees, transport &amp; taxes<small>${feeParts || "none entered"}</small></dt><dd>${money(fees)}</dd>
           <dt>Holding cost<small>${base.days_to_sell ? `~${Math.round(base.days_to_sell)} days` : ""}${n(assum.holding_per_day) ? ` at ${money(assum.holding_per_day)}/day` : ""}</small></dt><dd>${money(base.holding)}</dd>

@@ -143,8 +143,10 @@ CONFIG: dict = {
     "estimate_alert_min_peers":     _OVERRIDES.get("estimate_alert_min_peers", 8),
     "estimate_alert_threshold_pct": _OVERRIDES.get("estimate_alert_threshold_pct", 30),
     # Anything further below comp than this is almost always a mis-parse,
-    # a payment-teaser price, or a scam — never alert on it.
-    "max_believable_discount_pct":  _OVERRIDES.get("max_believable_discount_pct", 65),
+    # a payment-teaser price, undisclosed damage or a scam — never alert on
+    # it. At more than half off, a listing goes to the risk feed for a person
+    # to verify instead of being shown as a trusted deal.
+    "max_believable_discount_pct":  _OVERRIDES.get("max_believable_discount_pct", 50),
 
     # ----- Listing requirements -----------------------------------------
     "require_price": True,

@@ -45,7 +45,7 @@ def test_env_template_defaults_to_internal_staging_and_holds_no_secrets():
         assert env[k] == "", k
     # every variable the mailer and seller flow read is documented
     for k in ("SMTP_PORT", "SMTP_USER", "SMTP_FROM", "SMTP_SSL", "EBAY_ENVIRONMENT",
-              "EBAY_EPN_CAMPAIGN_ID", "OPS_HOSTING_MONTHLY_USD"):
+              "EBAY_EPN_CAMPAIGN_ID", "EBAY_COMMERCIAL_AGREEMENT", "OPS_HOSTING_MONTHLY_USD"):
         assert k in env, k
 
 

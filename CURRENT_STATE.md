@@ -38,7 +38,8 @@ observed; stated with the reason.
 
 ### C. Blocked by people, money or agreements
 
-MarketCheck written agreement + key; eBay production keys; legal review;
+MarketCheck written agreement + key; eBay Buy API production approval
+(EPN application + contracts, `EBAY_SETUP.md`) + keys; legal review;
 production host, HTTPS origin, backups; live Stripe products; branch
 protection; Anthropic key for agent runs. See `OWNER_ACTIONS.md`.
 

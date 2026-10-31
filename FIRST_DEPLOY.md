@@ -25,6 +25,42 @@ workers, worker, scheduler, fail2ban) used ~450 MB RAM and ~150 MB disk;
 the app under a 20-client load used ~220 MB. 2 GB leaves headroom; add a
 1 GB swap file. This is sized for a pilot, not for 1,000 concurrent users.
 
+## Monthly cost for the Tuscaloosa pilot (ESTIMATED)
+
+Nothing has been purchased. Prices are list prices from earlier research or
+the providers' free plans, not re-verified today — check each pricing page
+before you sign up.
+
+| Item | Per month | Note |
+|---|---|---|
+| VPS: Ubuntu 24.04, 1–2 vCPU, 2 GB RAM, PostgreSQL on the same host | ~$5–12 | measured footprint fits (above); add a 1 GB swap file |
+| Domain | ~$1 (≈ $10–20 a year) | only if you don't own one; DNS stays at your registrar |
+| Tailscale, Healthchecks.io, Resend email | $0 | free plans |
+| Backblaze B2 encrypted backups | ~$0–1 | a few GB |
+| eBay Browse API | $0 | no fee published; production approval required (`EBAY_SETUP.md`) |
+| **Total, eBay-only pilot** | **~$6–14** | |
+| MarketCheck private sellers — only if chosen | ≥ $299 + per-call fees | unverified; get a written quote and permission first |
+| Twilio SMS | not needed | push alerts use ntfy (free) |
+
+## Pilot posture (settings in `/etc/sniper/env`)
+
+- `ALLOW_REGISTRATION=0` — testers join by invitation
+  (`python -m invites issue --note "pilot" --count 10 --days 14`).
+- `SNIPER_COMMERCIAL_MODE=1` — only licensed sources run; eBay stays off
+  until `EBAY_COMMERCIAL_AGREEMENT` records eBay's approval
+  (`EBAY_SETUP.md` step 7).
+- Invited accounts are on Free: no alerts until Gate 2
+  (`PILOT_TUSCALOOSA.md`).
+- Validation runs go in `/opt/sniper/shared/validation/` (writable by the
+  app user, outside the release directory, not served by Caddy); purge each
+  one after its review.
+- What runs: `sniper-web` (gunicorn, 2 workers), `sniper-scheduler`
+  (polling), `sniper-worker` (valuation and notification jobs),
+  `sniper-backup.timer` (nightly), `sniper-healthcheck.timer`,
+  `sniper-reconcile.timer` (billing state), and Caddy for HTTPS. All are
+  systemd units installed by `deploy/install.sh`; the scheduler and timers
+  are enabled by hand (steps 7, 11, 13).
+
 ## The 13 steps
 
 1. **Server.** Create the VPS (Ubuntu 24.04, your SSH key, US region).
