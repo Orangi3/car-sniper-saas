@@ -1796,14 +1796,6 @@ def api_admin_billing_health():
 # app.view_functions[rule.endpoint](...) — replacing that mapping is the
 # canonical way to upgrade a route's behavior in place.
 
-def _json_obj(v) -> Optional[dict]:
-    try:
-        o = json.loads(v) if isinstance(v, str) else v
-    except ValueError:
-        return None
-    return o if isinstance(o, dict) else None
-
-
 def _replace_view(endpoint: str, new_handler) -> None:
     """Bind `new_handler` to an already-registered endpoint name. No-op if
     the endpoint was never registered (defensive)."""
@@ -2416,7 +2408,7 @@ def api_deal_detail(cid: str):
     u = auth.current_user()
     with sniper.db() as conn:
         r = conn.execute(
-            f"SELECT {_DEAL_COLS}, l.description, l.zip, l.vin, l.extras, nm.confidence_reasons, nm.evidence, "
+            f"SELECT {_DEAL_COLS}, l.description, l.zip, l.vin, nm.confidence_reasons, nm.evidence, "
             "  sv.status AS user_status, sv.note AS user_note "
             "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
             "LEFT JOIN saved_v2 sv ON sv.composite_id = l.composite_id AND sv.user_id = ? "
@@ -2449,14 +2441,13 @@ def api_deal_detail(cid: str):
         import seller_listings as sl
         with sniper.db() as conn:
             d["seller_contact"] = sl.contact_for(conn, d["composite_id"], plan)
-        dealer = (_json_obj(d.get("extras")) or {}).get("dealer_name")
+            dealer = sl.dealer_name(conn, d["composite_id"])     # current approval, not publish time
         d["provenance"] = (f"Listed on FlipFirst by {dealer}, a dealer approved by FlipFirst. "
                            "Its email address is verified; the vehicle details are "
                            "dealer-reported and not independently verified." if dealer else
                            "Listed on FlipFirst by the seller. The seller's email address is "
                            "verified; the vehicle details are seller-reported and not "
                            "independently verified.")
-    d.pop("extras", None)
     return jsonify(d)
 
 

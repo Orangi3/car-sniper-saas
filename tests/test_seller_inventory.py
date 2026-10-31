@@ -150,3 +150,78 @@ def test_account_deletion_removes_profile_and_reports(client, world, mail):
     accounts.delete("buyer@example.com", confirm=True)
     accounts.delete("dealer@example.com", confirm=True)
     assert q("SELECT 1 FROM listing_reports") == [] and q("SELECT 1 FROM seller_profiles") == []
+
+
+# ---------- regressions from the security review (2026-10-31) -------------------
+
+def live_vins():
+    return sorted(x["vin"] for x in q("SELECT vin FROM seller_listings "
+                                      "WHERE status IN ('pending', 'active')"))
+
+
+def test_a_rejected_row_never_withdraws_its_car(client, world, mail):
+    seller(client, "dealer@example.com", box=mail)
+    approve()
+    assert imp(client, [row(1), row(2)]).get_json()["created"] == 2
+    r = imp(client, [row(1, description="+ new tires"), row(2)], remove_missing=True).get_json()
+    assert (r["removed"], r["errors"]) == (0, 1)
+    assert live_vins() == sorted([vin(1), vin(2)])
+
+
+def test_a_full_refresh_at_the_limit_withdraws_before_adding(client, world, mail):
+    seller(client, "dealer@example.com", box=mail)
+    approve(max_active=2)
+    assert imp(client, [row(1), row(2)]).get_json()["created"] == 2
+    r = imp(client, [row(1), row(3)], remove_missing=True).get_json()
+    assert (r["created"], r["updated"], r["removed"], r["errors"]) == (1, 1, 1, 0), r
+    assert live_vins() == sorted([vin(1), vin(3)])
+
+
+def test_dealer_imports_dont_use_up_private_sellers_daily_cap(client, world, mail, monkeypatch):
+    import seller_listings as sl
+    monkeypatch.setattr(sl, "MAX_NEW_PER_DAY", 3)
+    seller(client, "dealer@example.com", box=mail)
+    approve(max_active=20)
+    assert imp(client, [row(1), row(2), row(3)]).get_json()["created"] == 3
+    logout(client)
+    seller(client, "private@example.com", box=mail)
+    assert client.post("/api/seller/listings", json=car()).status_code == 201
+
+
+def test_a_refused_reapproval_keeps_the_dealer(client, world, mail, capsys):
+    import seller_listings as sl
+    seller(client, "dealer@example.com", box=mail)
+    approve(max_active=20)
+    assert sl._main(["approve-dealer", "dealer@example.com", "--name", "Druid City Wholesale",
+                     "--max-active", "5000"]) == 1
+    assert "max-active must be" in capsys.readouterr().out
+    assert q("SELECT max_active FROM seller_profiles") == [{"max_active": 20}]
+
+
+def test_a_revoked_dealer_loses_the_approved_label(client, world, mail):
+    import seller_listings as sl
+    seller(client, "dealer@example.com", box=mail)
+    approve()
+    sid = imp(client, [row(1)]).get_json()["rows"][0]["id"]
+    assert sl._main(["revoke-dealer", "dealer@example.com"]) == 0
+    logout(client)
+    make_user(client, "buyer@example.com", plan="starter", topic=False)
+    login(client, "buyer@example.com")
+    d = client.get(f"/api/deals/direct:{sid}").get_json()
+    assert "approved by FlipFirst" not in d["provenance"] and "Druid City" not in d["provenance"]
+
+
+def test_malformed_confirmations_are_a_400_not_a_crash(client, world, mail):
+    seller(client, "dealer@example.com", box=mail)
+    approve()
+    for bad in ("yes", ["authorized_to_sell"], 1):
+        assert imp(client, [row(1)], attest=bad).status_code == 400
+        assert client.post("/api/seller/listings", json=car(attest=bad)).status_code == 400
+
+
+def test_nul_characters_never_reach_the_database(client, world, mail):
+    seller(client, "dealer@example.com", box=mail)
+    approve()
+    r = imp(client, [row(1, description="one owner\x00 clean")]).get_json()
+    assert r["created"] == 1, r
+    assert "\x00" not in q("SELECT description FROM listings WHERE source = 'direct'")[0]["description"]

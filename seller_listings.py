@@ -36,12 +36,13 @@ verify ownership of the vehicle or any detail the seller entered.
 
 Dealers and wholesalers: the owner approves a business by hand
 (`approve-dealer`, below) after checking it. Approval raises that account's
-limits (max_active live listings, the same number per day, outside the
-self-serve daily cap), labels its cars as dealer listings under the business
-name, and allows CSV import of the dealer's own inventory: one row per car,
-VIN required, the same validation as the form, re-importing a VIN updates
-its price and re-confirms it, and `remove_missing` withdraws live listings
-whose VIN is no longer in the file.
+limits (max_active live listings, twice that many new ones a day, outside
+the self-serve daily cap), labels its cars as dealer listings under the
+business name while the approval lasts, and allows CSV import of the
+dealer's own inventory: one row per car, VIN required, the same validation
+as the form, re-importing a VIN updates its price and re-confirms it, and
+`remove_missing` first withdraws live listings whose VIN the file doesn't
+mention at all (a VIN on a rejected row still counts as in the file).
 
 Buyers can report a FlipFirst listing (scam, sold, wrong details, offensive,
 other). Reports only queue for the owner (`reports`, `resolve`); nothing is
@@ -125,7 +126,8 @@ def limits_for(conn, user_id: int) -> dict:
     p = profile(conn, user_id)
     if p:
         return {"kind": p["kind"], "business_name": p["business_name"],
-                "active": int(p["max_active"]), "per_day": int(p["max_active"]),
+                "active": int(p["max_active"]),
+                "per_day": 2 * int(p["max_active"]),     # a full same-day refresh fits
                 "global_cap": False}
     return {"kind": "private", "business_name": None, "active": MAX_ACTIVE_PER_USER,
             "per_day": MAX_NEW_PER_USER_PER_DAY, "global_cap": True}
@@ -137,6 +139,8 @@ def validate(p: dict) -> tuple[dict, list[str]]:
     import geo
     import vin as vin_mod
     errs: list[str] = []
+    # PostgreSQL refuses NUL characters in text; nothing legitimate contains one
+    p = {k: v.replace("\x00", "") if isinstance(v, str) else v for k, v in p.items()}
     year, price, miles = _int(p.get("year")), _int(p.get("price")), _int(p.get("mileage"))
     this_year = _now().year
     if year is None or not 1981 <= year <= this_year + 1:
@@ -168,7 +172,7 @@ def validate(p: dict) -> tuple[dict, list[str]]:
     mech = str(p.get("mechanical_issues") or "").strip()[:1000]
     cosm = str(p.get("cosmetic_issues") or "").strip()[:1000]
     description = str(p.get("description") or "").strip()[:2000]
-    att = p.get("attest") or {}
+    att = p.get("attest") if isinstance(p.get("attest"), dict) else {}
     missing = [a for a in ATTESTATIONS if att.get(a) is not True]
     if missing:
         words = {"authorized_to_sell": "you may sell this car",
@@ -410,8 +414,9 @@ def create(user, payload: dict) -> dict:
             raise SubmissionError([f"limit of {lim['active']} listings reached"], 429)
         mine_today = int(conn.execute("SELECT COUNT(*) FROM seller_listings WHERE user_id = ? "
                                       "AND created_at >= ?", (user.id, day_ago)).fetchone()[0])
-        all_today = int(conn.execute("SELECT COUNT(*) FROM seller_listings WHERE created_at >= ?",
-                                     (day_ago,)).fetchone()[0])
+        all_today = int(conn.execute(        # self-serve sellers only: an approved dealer's
+            "SELECT COUNT(*) FROM seller_listings WHERE created_at >= ? AND user_id NOT IN "
+            "(SELECT user_id FROM seller_profiles)", (day_ago,)).fetchone()[0])   # imports don't count
         if mine_today >= lim["per_day"] or (lim["global_cap"] and all_today >= MAX_NEW_PER_DAY):
             raise SubmissionError(["too many new listings today — try again tomorrow"], 429)
         if f["vin"] and conn.execute("SELECT 1 FROM seller_listings WHERE vin = ? AND "
@@ -553,6 +558,17 @@ def discoverable_ids(conn) -> set[str]:
         "AND LOWER(c.email) = LOWER(s.contact_email) AND s.last_confirmed_at >= ?", (cutoff,))}
 
 
+def dealer_name(conn, composite_id: str) -> str | None:
+    """The business name of a listing's seller while its dealer approval lasts."""
+    try:
+        sid = int(str(composite_id).split(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
+    r = conn.execute("SELECT p.business_name FROM seller_listings s JOIN seller_profiles p "
+                     "ON p.user_id = s.user_id WHERE s.id = ?", (sid,)).fetchone()
+    return r[0] if r else None
+
+
 def contact_for(conn, composite_id: str, viewer_plan: str) -> dict | None:
     """Seller contact for a discoverable 'direct' listing: paid plans only,
     and only a verified address."""
@@ -607,8 +623,17 @@ def import_inventory(user, csv_text, attest: dict | None, remove_missing: bool =
     missing = IMPORT_REQUIRED - {(h or "").strip().lower() for h in reader.fieldnames or []}
     if missing:
         raise SubmissionError(["missing columns: " + ", ".join(sorted(missing))])
-    if any((attest or {}).get(a) is not True for a in ATTESTATIONS):
+    if not isinstance(attest, dict) or any(attest.get(a) is not True for a in ATTESTATIONS):
         raise SubmissionError(["please confirm all three statements for this file"])
+    parsed = []
+    for n, row in enumerate(rows, start=2):         # row 1 is the header, as in a spreadsheet
+        r = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()
+             if isinstance(k, str) and isinstance(v, str)}
+        parsed.append((n, r, r.get("vin", "").upper()))
+    # every VIN the file mentions is "in the file", even on a row rejected below:
+    # withdrawing a car because one of its cells is bad would delete it, and
+    # buyers' saved copies, for good
+    in_file = {vin for _, _, vin in parsed if vin}
     with _db.session() as conn:
         live = {r[1]: r[0] for r in conn.execute(
             "SELECT id, vin FROM seller_listings WHERE user_id = ? AND vin IS NOT NULL AND "
@@ -620,10 +645,14 @@ def import_inventory(user, csv_text, attest: dict | None, remove_missing: bool =
         out.append({"row": n, "vin": vin, "status": "error", "errors": errs})
         counts["errors"] += 1
 
-    for n, row in enumerate(rows, start=2):         # row 1 is the header, as in a spreadsheet
-        r = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()
-             if isinstance(k, str) and isinstance(v, str)}
-        vin = r.get("vin", "").upper()
+    if remove_missing:          # first, so a dealer at its limit can swap sold cars for new ones
+        for vin, sid in list(live.items()):
+            if vin not in in_file:
+                remove(user, sid)
+                out.append({"row": None, "vin": vin, "status": "removed", "id": sid})
+                counts["removed"] += 1
+                del live[vin]
+    for n, r, vin in parsed:
         formula = [k for k in IMPORT_COLUMNS if r.get(k, "").startswith(_FORMULA_START)]
         if formula:
             fail(n, vin, [f"{', '.join(formula)}: a cell can't start with = + or @"])
@@ -647,12 +676,6 @@ def import_inventory(user, csv_text, attest: dict | None, remove_missing: bool =
                 counts["created"] += 1
         except SubmissionError as e:
             fail(n, vin, e.errors)
-    if remove_missing:
-        for vin, sid in live.items():
-            if vin not in seen:
-                remove(user, sid)
-                out.append({"row": None, "vin": vin, "status": "removed", "id": sid})
-                counts["removed"] += 1
     return {**counts, "rows": out}
 
 
@@ -689,19 +712,23 @@ def _owner_cmd(a) -> int:
         if not u:
             print(f"no account for {a.email}")
             return 1
+        if a.cmd == "approve-dealer" and (not a.name.strip() or not 1 <= a.max_active <= 1000):
+            print("--name is required and --max-active must be 1–1000")    # nothing changed
+            return 1
         with _db.session() as conn:
             conn.execute("DELETE FROM seller_profiles WHERE user_id = ?", (u.id,))
+            live = conn.execute("SELECT COUNT(*) FROM seller_listings WHERE user_id = ? AND "
+                                "status IN ('pending', 'active')", (u.id,)).fetchone()[0]
             if a.cmd == "approve-dealer":
-                if not a.name.strip() or not 1 <= a.max_active <= 1000:
-                    print("--name is required and --max-active must be 1–1000")
-                    return 1
                 conn.execute("INSERT INTO seller_profiles(user_id, kind, business_name, max_active, "
                              "approved_note, approved_at) VALUES (?, ?, ?, ?, ?, ?)",
                              (u.id, DEALER, a.name.strip()[:80], a.max_active,
                               a.note.strip()[:200] or None, now))
         print(f"{a.email}: " + (f"approved as dealer '{a.name.strip()}' (up to {a.max_active} "
                                 "live listings). New listings carry the dealer label."
-                                if a.cmd == "approve-dealer" else "dealer approval revoked"))
+                                if a.cmd == "approve-dealer" else
+                                f"dealer approval revoked; {live} live listing(s) stay up without the "
+                                "dealer label (withdraw them with `resolve` or ask the seller)"))
         return 0
     if a.cmd == "reports":
         with _db.session() as conn:
