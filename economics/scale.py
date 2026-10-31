@@ -1,6 +1,7 @@
 """
 economics/scale.py — minimum monthly operating cost at 10 / 100 / 1,000 /
-5,000 users and break-even at $2.99 / $4.99 / $9.99 a month.
+5,000 / 10,000 users, break-even at $2.99 / $4.99 / $9.99 a month, cost per
+analysis, and the load each scale implies.
 
     python economics/scale.py > economics/scale.md
 
@@ -23,8 +24,17 @@ RESEND_FREE_EMAILS, RESEND_PRO = 3000, 20.0      # Resend free tier / Pro per mo
 SMALL_VPS = 12.0          # 1–2 vCPU, 2 GB, PostgreSQL on the same host (FIRST_DEPLOY.md: $5–12)
 DOMAIN = 1.25             # ~$15 a year
 EMAILS_PER_USER = 3       # sign-in help, seller confirmations, notices; alerts go by push
-USERS = (10, 100, 1000, 5000)
+USERS = (10, 100, 1000, 5000, 10000)
 PRICES = (2.99, 4.99, 9.99)
+# Analyze (measured 2026-10-30 on 50,000 SIMULATED listings: 41 ms SQLite,
+# 59 ms PostgreSQL per analysis; a saved analysis is ~10.7 KB)
+ANALYSES_PER_USER = 15      # ASSUMPTION per active user per month; pilot_report measures it
+SAVED_DEALS_PER_USER = 10   # ASSUMPTION
+ANALYSIS_KB = 10.7          # measured
+ANALYSIS_SECONDS = 0.06     # measured upper end (PostgreSQL)
+TIER2_SHARE = 0.6           # ASSUMPTION: analyses with too few comparables of our own
+MC_PRICE_CALL = 0.07        # SOURCED (MarketCheck Price Base, search excerpt); NOT built, needs permission
+ALERTS_PER_USER = 30        # ASSUMPTION: about one push alert a day (ntfy, $0)
 PATHS = {"marketcheck": "MarketCheck (listings + values)",
          "free_data": "eBay with permission, or sellers + free value source"}
 
@@ -34,11 +44,13 @@ def hosting(n: int) -> float:
         return SMALL_VPS                                   # one small VPS
     if n <= 1000:
         return DROPLET_4GB                                 # one 4 GB VPS
-    return 2 * DROPLET_4GB + MANAGED_PG[1]                 # two app servers + managed database
+    if n <= 5000:
+        return 2 * DROPLET_4GB + MANAGED_PG[1]             # two app servers + managed database
+    return 3 * DROPLET_4GB + MANAGED_PG[2]                 # three app servers + database with a standby
 
 
 def backups(n: int) -> float:
-    return 0.5 if n <= 100 else 1.0 if n <= 1000 else 3.0
+    return 0.5 if n <= 100 else 1.0 if n <= 1000 else 3.0 if n <= 5000 else 6.0
 
 
 def email(n: int) -> float:
@@ -56,6 +68,20 @@ def fixed(n: int, path: str) -> float:
     """Monthly costs that don't scale per paying user (monitoring and push
     on free tiers: $0)."""
     return hosting(n) + backups(n) + email(n) + DOMAIN + data(n, path)
+
+
+def tier2_valuations(n: int) -> float:
+    """Optional on-demand licensed valuations for Analyze (not built; needs
+    written permission): per-call fees only, plan fee not included."""
+    return n * ANALYSES_PER_USER * TIER2_SHARE * MC_PRICE_CALL
+
+
+def load(n: int) -> dict:
+    return {"analyses": n * ANALYSES_PER_USER,
+            "analysis_cpu_hours": n * ANALYSES_PER_USER * ANALYSIS_SECONDS / 3600,
+            "workspace_gb": n * SAVED_DEALS_PER_USER * ANALYSIS_KB / 1024 / 1024,
+            "emails": n * EMAILS_PER_USER, "push_alerts": n * ALERTS_PER_USER,
+            "mc_listing_calls": data_cost(n, "base")["calls"]}
 
 
 def payment_cost(price: float) -> float:
@@ -91,7 +117,28 @@ def render() -> str:
     for p in PRICES:
         out.append(f"| ${p:.2f} | {money(payment_cost(p))} | {money(p - payment_cost(p))} | "
                    f"{breakeven(p, 'marketcheck'):,} paying users | {breakeven(p, 'free_data'):,} paying users |")
-    out += ["", "Notes: a free pilot has no payment cost. \"Free data\" assumes eBay grants",
+    out += ["", f"Gross margin at $4.99 if every user pays (after Stripe and the costs above):", "",
+            "| Users | MarketCheck | Free data |", "|---:|---:|---:|"]
+    net = 4.99 - payment_cost(4.99)
+    for n in USERS:
+        out.append(f"| {n:,} | {100 * (n * net - fixed(n, 'marketcheck')) / (n * 4.99):.0f}% | "
+                   f"{100 * (n * net - fixed(n, 'free_data')) / (n * 4.99):.0f}% |")
+    out += ["", f"Cost per analysis and the load each scale implies ({ANALYSES_PER_USER} analyses "
+            "per user a month — an ASSUMPTION the pilot report will replace):", "",
+            "| Users | Analyses/mo | Analyze CPU | Saved-deal storage | Emails/mo | Push alerts/mo | "
+            "MarketCheck listing calls/mo | Optional licensed valuations |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for n in USERS:
+        ld = load(n)
+        out.append(f"| {n:,} | {ld['analyses']:,} | {ld['analysis_cpu_hours']:.1f} h | "
+                   f"{ld['workspace_gb']:.2f} GB | {ld['emails']:,} | {ld['push_alerts']:,} | "
+                   f"{ld['mc_listing_calls']:,} | {money(tier2_valuations(n))} |")
+    out += ["", "An analysis against FlipFirst's own comparables costs nothing beyond hosting "
+            f"(measured {ANALYSIS_SECONDS * 1000:.0f} ms or less on 50,000 SIMULATED listings). An "
+            f"optional licensed valuation would cost ${MC_PRICE_CALL:.2f} per call (MarketCheck Price "
+            "Base, list price; not built, needs written permission), called for an estimated "
+            f"{TIER2_SHARE:.0%} of analyses.",
+            "", "Notes: a free pilot has no payment cost. \"Free data\" assumes eBay grants",
             "price-estimate permission, or seller listings valued by a source that costs nothing —",
             "neither exists yet. MarketCheck figures use list prices (Basic $299/mo, 5,000 calls;",
             "Standard $749/mo) and a third-party ~$0.01 per call; get a quote."]

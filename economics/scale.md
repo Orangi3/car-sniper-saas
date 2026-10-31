@@ -8,6 +8,7 @@ ESTIMATES from list prices — no quote has been obtained and nothing was purcha
 | 100 | $12.00 | $0.50 | $0.00 | $1.25 | $313 | $327 | $13.75 | $3.27 | $0.14 |
 | 1,000 | $24.00 | $1.00 | $0.00 | $1.25 | $850 | $876 | $26.25 | $0.88 | $0.03 |
 | 5,000 | $63.00 | $3.00 | $20.00 | $1.25 | $1,239 | $1,326 | $87.25 | $0.27 | $0.02 |
+| 10,000 | $102 | $6.00 | $20.00 | $1.25 | $1,714 | $1,843 | $129 | $0.18 | $0.01 |
 
 Payment processing per subscriber per month (Stripe card + Billing):
 
@@ -16,6 +17,28 @@ Payment processing per subscriber per month (Stripe card + Billing):
 | $2.99 | $0.41 | $2.58 | 132 paying users | 6 paying users |
 | $4.99 | $0.48 | $4.51 | 73 paying users | 4 paying users |
 | $9.99 | $0.66 | $9.33 | 36 paying users | 2 paying users |
+
+Gross margin at $4.99 if every user pays (after Stripe and the costs above):
+
+| Users | MarketCheck | Free data |
+|---:|---:|---:|
+| 10 | -565% | 63% |
+| 100 | 25% | 88% |
+| 1,000 | 73% | 90% |
+| 5,000 | 85% | 90% |
+| 10,000 | 87% | 90% |
+
+Cost per analysis and the load each scale implies (15 analyses per user a month — an ASSUMPTION the pilot report will replace):
+
+| Users | Analyses/mo | Analyze CPU | Saved-deal storage | Emails/mo | Push alerts/mo | MarketCheck listing calls/mo | Optional licensed valuations |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 150 | 0.0 h | 0.00 GB | 30 | 300 | 1,440 | $6.30 |
+| 100 | 1,500 | 0.0 h | 0.01 GB | 300 | 3,000 | 1,440 | $63.00 |
+| 1,000 | 15,000 | 0.2 h | 0.10 GB | 3,000 | 30,000 | 10,080 | $630 |
+| 5,000 | 75,000 | 1.2 h | 0.51 GB | 15,000 | 150,000 | 48,960 | $3,150 |
+| 10,000 | 150,000 | 2.5 h | 1.02 GB | 30,000 | 300,000 | 96,480 | $6,300 |
+
+An analysis against FlipFirst's own comparables costs nothing beyond hosting (measured 60 ms or less on 50,000 SIMULATED listings). An optional licensed valuation would cost $0.07 per call (MarketCheck Price Base, list price; not built, needs written permission), called for an estimated 60% of analyses.
 
 Notes: a free pilot has no payment cost. "Free data" assumes eBay grants
 price-estimate permission, or seller listings valued by a source that costs nothing —
