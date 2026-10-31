@@ -1329,7 +1329,7 @@ async function viewSell(m, tok) {
     const p = Number(String(val).replace(/[^0-9.]/g, ""));
     if (!(p >= 500 && p <= 250000)) { toast("Price must be $500–$250,000.", {kind: "bad"}); return; }
     busy(b, true);
-    try { await api(`/api/seller/listings/${b.dataset.price}`, {method: "PATCH", body: JSON.stringify({price: Math.round(p)})}); toast("Price updated. Buyers watching for price drops are notified.", {kind: "ok"}); route(); }
+    try { await api(`/api/seller/listings/${b.dataset.price}`, {method: "PATCH", body: JSON.stringify({price: Math.round(p)})}); toast("Price updated.", {kind: "ok"}); route(); }
     catch (e) { busy(b, false); toast(e.message, {kind: "bad"}); }
   });
 }

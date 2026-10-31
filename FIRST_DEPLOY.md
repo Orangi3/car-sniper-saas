@@ -121,6 +121,9 @@ in chat or Git:
    - Add the values from your password manager: `SMTP_*`, `B2_*`,
      `AGE_RECIPIENT` and the three `HEALTHCHECK_*_URL`s.
    - Set `SNIPER_SELLER_SUBMISSIONS=1`.
+   - `B2_ENDPOINT` and the Healthchecks URLs must start with `https://`.
+     The backup and restore scripts and `golive.sh` refuse plain HTTP,
+     because the keys and ping URLs would travel in clear text.
    - Leave `STRIPE_*` empty: the pilot has no billing.
 5. **Deploy + migrate.** From the Mac, in the repo at the merged `main`:
    `bash deploy/sync.sh --apply root@sniper-staging`.
@@ -131,8 +134,10 @@ in chat or Git:
 7. **Go live.** On the server:
    `sudo bash /opt/sniper/current/deploy/golive.sh --test-email you@example.com`.
    It runs nine gates and stops at the first problem with the fix; re-run it
-   after fixing. The gates, in order:
-   1. settings, checked by name (values are never printed);
+   after fixing. `--test-email` (your own address) is required. The gates, in
+   order:
+   1. settings, checked by name (values are never printed), with HTTPS-only
+      endpoints;
    2. the release is in place;
    3. services restarted, and enabled at boot;
    4. billing reconciliation off;
@@ -141,7 +146,8 @@ in chat or Git:
    6. one encrypted backup uploaded, nightly timer on;
    7. health probes pinged, 5-minute timer on;
    8. only 80 and 443 open, Tailscale connected;
-   9. preflight ready, an admin exists, and the test email is accepted.
+   9. preflight ready, an admin exists (required), and the test email is
+      accepted.
 
    **Proven** on the disposable host with stand-ins (`DEPLOY_TEST_REPORT.md`).
    **Not yet proven:** a real Let's Encrypt certificate, and Resend, B2 and

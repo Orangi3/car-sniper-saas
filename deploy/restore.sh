@@ -72,6 +72,12 @@ done
 : "${B2_APPLICATION_KEY:?B2_APPLICATION_KEY required}"
 : "${B2_BUCKET:?B2_BUCKET required}"
 : "${B2_ENDPOINT:?B2_ENDPOINT required}"
+# Keys and signed requests never cross the network in clear text: https://
+# only, except a loopback stand-in used in tests (as the mailer allows SMTP).
+case "$B2_ENDPOINT" in
+    https://*|http://127.0.0.1|http://127.0.0.1[:/]*|http://localhost|http://localhost[:/]*|http://\[::1\]|http://\[::1\][:/]*) ;;
+    *) echo "FATAL: B2_ENDPOINT must start with https://" >&2; exit 2 ;;
+esac
 # The signing region is the endpoint's (s3.<region>.backblazeb2.com), so a
 # bucket in any B2 region works with only B2_ENDPOINT set.
 B2_REGION=$(sed -nE 's#^https?://s3\.([a-z0-9-]+)\.backblazeb2\.com/?$#\1#p' <<<"$B2_ENDPOINT")

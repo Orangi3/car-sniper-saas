@@ -43,6 +43,12 @@ if ! command -v lsb_release >/dev/null 2>&1 || \
     echo "install.sh targets Ubuntu LTS only."
     exit 1
 fi
+# The stack (Python 3.12, PostgreSQL 16, systemd units) is tested on 24.04
+# only; stop before installing anything on another release.
+if [[ "$(lsb_release -rs)" != "24.04" ]]; then
+    echo "install.sh targets Ubuntu 24.04 LTS (this host: $(lsb_release -ds)). Recreate the server with 24.04."
+    exit 1
+fi
 
 # ----------------------------------------------------------------------
 # 0. Prompt for the staging hostname (e.g. staging.car-sniper.com).

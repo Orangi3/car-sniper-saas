@@ -234,3 +234,67 @@ def test_restore_drill_masks_a_password_in_the_database_url():
         out = subprocess.run(["bash", "-c", f'VERIFICATION_DATABASE_URL="{url}"; {cmd}'],
                              capture_output=True, text=True, check=True).stdout.strip()
         assert out == shown and "s3cret" not in out
+
+
+# ---------- HTTPS-only transport for keys and secret-bearing URLs -------------
+
+INSECURE = ("http://s3.us-east-005.backblazeb2.com", "http://127.0.0.1.evil.example",
+            "http://localhost.evil.example", "HTTPS://s3.us-east-005.backblazeb2.com", "ftp://x", "")
+LOOPBACK = ("http://127.0.0.1:5000", "http://localhost:8099/web", "http://[::1]:5000")
+
+
+def test_golive_accepts_only_https_or_a_loopback_stand_in():
+    import subprocess
+    fn = _bash_function("golive.sh", "secure_url")
+    def ok(url):
+        return subprocess.run(["bash", "-c", f'{fn}\nsecure_url "$1"', "_", url]).returncode == 0
+    assert ok("https://s3.us-east-005.backblazeb2.com") and ok("https://hc-ping.com/abc")
+    assert all(ok(u) for u in LOOPBACK)
+    assert not any(ok(u) for u in INSECURE)
+    text = (DEPLOY / "golive.sh").read_text()
+    for k in ("B2_ENDPOINT", "HEALTHCHECK_WEB_URL", "HEALTHCHECK_PIPELINE_URL", "HEALTHCHECK_BACKUP_URL"):
+        assert k in text.split("secure_url \"$(val")[0].rsplit("for k in", 1)[1], k
+
+
+def _run(script, env, tmp_path):
+    import os, subprocess
+    base = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
+    return subprocess.run(["bash", str(DEPLOY / script)], env={**base, **env},
+                          capture_output=True, text=True, timeout=20)
+
+
+def test_backup_refuses_an_endpoint_that_is_not_https(tmp_path):
+    env = {"DATABASE_URL": "postgresql://x@127.0.0.1/x", "B2_BUCKET": "b", "B2_KEY_ID": "k",
+           "B2_APPLICATION_KEY": "s", "AGE_RECIPIENT": "not-a-recipient"}
+    for url in INSECURE[:3]:
+        r = _run("backup.sh", {**env, "B2_ENDPOINT": url}, tmp_path)
+        assert r.returncode == 2 and "must start with https://" in r.stderr, (url, r.stderr)
+    # https passes this check; the run then stops at the invalid recipient, before any upload
+    r = _run("backup.sh", {**env, "B2_ENDPOINT": "https://s3.us-east-005.backblazeb2.com"}, tmp_path)
+    assert "must start with https://" not in r.stderr and r.returncode != 0
+
+
+def test_restore_refuses_an_endpoint_that_is_not_https(tmp_path):
+    env = {"B2_BUCKET": "b", "B2_KEY_ID": "k", "B2_APPLICATION_KEY": "s",
+           "AGE_KEY_FILE": str(tmp_path / "missing.key")}
+    for url in INSECURE[:3]:
+        r = _run("restore.sh", {**env, "B2_ENDPOINT": url}, tmp_path)
+        assert r.returncode == 2 and "must start with https://" in r.stderr, (url, r.stderr)
+    r = _run("restore.sh", {**env, "B2_ENDPOINT": "https://s3.us-east-005.backblazeb2.com"}, tmp_path)
+    assert "must start with https://" not in r.stderr and "cannot read AGE_KEY_FILE" in r.stderr
+
+
+def test_golive_needs_a_test_email_and_an_admin_and_install_needs_ubuntu_2404():
+    import subprocess
+    r = subprocess.run(["bash", str(DEPLOY / "golive.sh")], capture_output=True, text=True, timeout=10)
+    assert r.returncode == 2 and "--test-email" in r.stdout          # email delivery is a gate
+    text = (DEPLOY / "golive.sh").read_text()
+    assert 'fail "no admin account' in text and "! no admin account" not in text
+    install = (DEPLOY / "install.sh").read_text()
+    assert '"$(lsb_release -rs)" != "24.04"' in install
+    assert install.index("lsb_release -rs") < install.index("apt-get update")
+
+
+def test_seller_price_change_promises_no_notification():
+    app = (ROOT / "static" / "app.js").read_text()
+    assert "Buyers watching for price drops are notified" not in app
