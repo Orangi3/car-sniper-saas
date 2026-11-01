@@ -2540,8 +2540,10 @@ def _run_analysis(u, body) -> tuple[Optional[dict], Optional[tuple]]:
         repeat = conn.execute("SELECT 1 FROM usage_events WHERE user_id = ? AND kind = 'analysis' "
                               "AND ref = ? AND created_at >= ?", (u.id, key, since)).fetchone()
     if used >= limit and not repeat:
-        return None, (jsonify({"error": f"You've used today's {limit} analyses on your plan; "
-                                        "more tomorrow, or upgrade for a higher limit.",
+        import plans
+        higher = any(plans.limits(p).get("analyses_per_day", 0) > limit for p in plans.DISPLAY_NAMES)
+        return None, (jsonify({"error": f"You've used today's {limit} analyses on your plan; more tomorrow"
+                                        + (", or upgrade for a higher limit." if higher else "."),
                                "limit": limit}), 429)
     limits = _display_limits()
     result, errs = analyze_mod.analyze(body, settings=settings, home_zip=home_zip,

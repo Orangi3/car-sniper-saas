@@ -115,7 +115,7 @@ async function load() {
 
       <section class="card span-all" aria-labelledby="h-src"><div class="card__head"><h2 id="h-src">${icon("server")}Data sources</h2>
           <span class="xsmall muted">${dh.vehicles_seen_on_multiple_listings} vehicles cross-posted</span></div>
-        <div class="table-wrap"><table class="table">
+        <div class="table-wrap" tabindex="0" role="region" aria-labelledby="h-src"><table class="table">
           <thead><tr><th scope="col">Source</th><th scope="col">Status</th><th scope="col">Last real success</th><th scope="col" class="r">New (${HOURS}h)</th><th scope="col">Live probe</th></tr></thead>
           <tbody>${dh.sources.map(s => html`<tr>
             <td><span class="src-name">${s.source}</span>${s.commercially_blocked ? html`<span class="sub">not licensed for paid use</span>` : ""}</td>
@@ -137,7 +137,7 @@ async function load() {
 
       <section class="card" aria-labelledby="h-cost"><div class="card__head"><h2 id="h-cost">${icon("dollar")}Costs this month</h2></div>
         <div class="card__body stack">
-          ${c.providers.length ? html`<div class="table-wrap"><table class="table"><thead><tr><th scope="col">Provider</th><th scope="col" class="r">Calls</th><th scope="col" class="r">Budget left</th><th scope="col" class="r">Fees</th></tr></thead>
+          ${c.providers.length ? html`<div class="table-wrap" tabindex="0" role="region" aria-labelledby="h-cost"><table class="table"><thead><tr><th scope="col">Provider</th><th scope="col" class="r">Calls</th><th scope="col" class="r">Budget left</th><th scope="col" class="r">Fees</th></tr></thead>
             <tbody>${c.providers.map(p => html`<tr><td>${p.source}</td><td class="r">${num(p.calls_this_month)}</td><td class="r">${num(p.remaining)} / ${num(p.budget)}</td><td class="r">${money(p.estimated_call_fees_usd)}</td></tr>`)}</tbody></table></div>` : ""}
           <dl class="dl dl--stack">
             <dt>Hosting</dt><dd style="white-space:normal">${isNA(c.hosting) ? naText(c.hosting) : money(c.hosting.value) + " (configured)"}</dd>
@@ -147,7 +147,7 @@ async function load() {
           </dl></div></section>
 
       <section class="card span-all" aria-labelledby="h-top"><div class="card__head"><h2 id="h-top">${icon("trend")}Top potential opportunities</h2><span class="xsmall muted">conservative estimate, default assumptions</span></div>
-        ${di.top_by_conservative_profit.length ? html`<div class="table-wrap"><table class="table"><thead><tr><th scope="col">Vehicle</th><th scope="col">Source</th><th scope="col" class="r">Asking</th><th scope="col" class="r">Conservative</th><th scope="col" class="r">Base</th><th scope="col">Confidence</th></tr></thead>
+        ${di.top_by_conservative_profit.length ? html`<div class="table-wrap" tabindex="0" role="region" aria-labelledby="h-top"><table class="table"><thead><tr><th scope="col">Vehicle</th><th scope="col">Source</th><th scope="col" class="r">Asking</th><th scope="col" class="r">Conservative</th><th scope="col" class="r">Base</th><th scope="col">Confidence</th></tr></thead>
           <tbody>${di.top_by_conservative_profit.map(t => html`<tr><td><a href="/m#/deal/${encodeURIComponent(t.composite_id)}">${t.vehicle}</a><span class="sub">${num(t.comps)} comparables</span></td><td>${t.source}</td>
             <td class="r">${money(t.price)}</td><td class="r pos">${money(t.conservative_profit)}</td><td class="r">${money(t.base_profit)}</td><td>${t.confidence}</td></tr>`)}</tbody></table></div>`
           : html`<div class="card__body"><p class="small na">No potential opportunities in this window.</p></div>`}
