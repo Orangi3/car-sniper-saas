@@ -604,7 +604,8 @@ html, body { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Seg
 .ff-brand .brand__word::after { background: linear-gradient(118deg, #F6E3A6, #D9B45A 45%, #B98A3A 70%, #E7C97E);
   -webkit-mask-image: url("/static/brand/wordmark-first.svg"); mask-image: url("/static/brand/wordmark-first.svg"); }
 .ff-brand small { margin-left: 6px; }
-.sr-only { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+h1.ff-brand { filter: none !important; background: none !important; -webkit-text-fill-color: currentColor; color: #F2EEE4; }
+.ff-lockup { display: inline-flex; align-items: center; gap: 11px; }
 .ff-brand small a { color: #E2C27A; }
 /* calm the v7 terminal look: no neon glows, readable type, room for the account chip */
 *, *::before, *::after { box-shadow: none !important; }
@@ -630,7 +631,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan) !important
 
 <!-- ============ HEADER ============ -->
 <header>
-  <h1 class="ff-brand"><span class="sr-only">FlipFirst</span><span class="brand__emblem" aria-hidden="true"></span><span class="brand__word" aria-hidden="true"></span> <small>Classic console · <a href="/m">Open app</a> · <a href="/admin/ops">Operations</a></small></h1>
+  <h1 class="ff-brand"><span class="ff-lockup" role="img" aria-label="FlipFirst"><span class="brand__emblem"></span><span class="brand__word"></span></span> <small>Classic console · <a href="/m">Open app</a> · <a href="/admin/ops">Operations</a></small></h1>
   <span class="live-pill"><span class="live-dot"></span><span id="hero-status">SCANNING</span></span>
   <span class="hd-meta">ZIP <strong id="hero-zip">35401</strong> · R<strong id="hero-radius">100</strong>mi</span>
   <span class="hd-meta">LAST <strong id="hero-last">–</strong></span>

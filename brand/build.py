@@ -52,6 +52,24 @@ WINGS = {   # the full emblem, 48 px and up
 }
 
 
+# The Wings drawn for 16 px: same mirrored F, swept wings and pointed stems,
+# snapped to a 16-unit pixel grid (x = 8 is the centre line) so the favicon
+# stays sharp at 16 and 32 px. Right half only; the left half is its mirror.
+MICRO = {
+    "stem": [(9, 3.5), (11, 3.5), (11, 11.5), (9, 13)],
+    "top": [(9, 3.5), (15.5, 2), (15, 3.6), (11, 5.6)],
+    "mid": [(9, 7), (14, 6), (13.4, 7.4), (11, 9)],
+}
+
+
+def micro_favicon(px=32):
+    """The favicon: the micro Wings, flat gold on a carbon tile, on a 16-unit grid."""
+    mirror = lambda p: [(16 - x, y) for x, y in p][::-1]   # noqa: E731
+    body = "".join(f'<path d="{_d(p)}"/><path d="{_d(mirror(p))}"/>' for p in MICRO.values())
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="{px}" height="{px}" role="img" '
+            f'aria-label="FlipFirst"><rect width="16" height="16" rx="3.6" fill="{CARBON}"/><g fill="{GOLD}">{body}</g></svg>\n')
+
+
 def _d(pts):
     return "M" + " L".join(f"{x:.2f},{y:.2f}" for x, y in pts) + " Z"
 
@@ -200,9 +218,10 @@ def lockup(theme, stacked=False, weight=None):
         ew = eh * emblem_aspect()
         cap = 40.0
         gap = 30.0
-        W, H = ew + gap + ww * cap / 100, eh
-        body = (emblem(ew / 2, eh / 2, ew, finish="faceted" if theme == "dark" else "foil")
-                + f'<g transform="translate({ew + gap:.2f} {(eh - cap) / 2:.2f}) scale({cap / 100})">{word}</g>')
+        pad = 12.0                      # file margin: nothing touches the edge
+        W, H = ew + gap + ww * cap / 100 + 2 * pad, eh + 2 * pad
+        body = (emblem(pad + ew / 2, pad + eh / 2, ew, finish="faceted" if theme == "dark" else "foil")
+                + f'<g transform="translate({pad + ew + gap:.2f} {pad + (eh - cap) / 2:.2f}) scale({cap / 100})">{word}</g>')
     return svg(round(W, 2), round(H, 2), body, defs=emblem_defs(foil=foil), label="FlipFirst")
 
 
@@ -231,8 +250,8 @@ def assets():
     out = [
         # --- served by the app
         ("static/brand/flipfirst-mark.svg", svg(64, 64, tile(64, finish="foil", emb="bold", wing=.78), defs=emblem_defs(), label="FlipFirst")),
-        ("static/brand/flipfirst-glyph.svg", svg(round(100 * ea, 2), 100, emblem(50 * ea, 50, 100 * ea, finish="foil"), defs=emblem_defs(), label="FlipFirst")),
-        ("static/brand/favicon.svg", svg(32, 32, tile(32, finish="flat", emb="bold", wing=.84), label="FlipFirst")),
+        ("static/brand/flipfirst-glyph.svg", svg(round(100 * ea + 12, 2), 112, emblem(50 * ea + 6, 56, 100 * ea, finish="foil"), defs=emblem_defs(), label="FlipFirst")),
+        ("static/brand/favicon.svg", micro_favicon(32)),
         ("static/brand/emblem-mask.svg", svg(round(100 * ba, 2), 100, emblem(50 * ba, 50, 100 * ba, size="bold", finish="flat", color="#000"))),
     ]
     for part in ("flip", "first"):
@@ -240,6 +259,7 @@ def assets():
         out.append((f"static/brand/wordmark-{part}.svg", svg(round(ww, 2), 100, g)))
     # --- sources for the PNG sizes and the brand kit (not served)
     out += [
+        ("brand/exports/favicon-48.svg", svg(48, 48, tile(48, finish="flat", emb="bold", wing=.84), label="FlipFirst")),
         ("brand/exports/app-icon.svg", svg(512, 512, tile(512, full_bleed=True), defs=emblem_defs())),
         ("brand/exports/app-icon-rounded.svg", svg(512, 512, tile(512), defs=emblem_defs())),
         ("brand/exports/app-icon-maskable.svg", svg(512, 512, tile(512, full_bleed=True, wing=.6), defs=emblem_defs())),
@@ -251,10 +271,11 @@ def assets():
         ww, g = wordmark("text", cols)
         out += [(f"brand/exports/flipfirst-logo-{theme}.svg", lockup(theme)),
                 (f"brand/exports/flipfirst-logo-stacked-{theme}.svg", lockup(theme, stacked=True)),
-                (f"brand/exports/flipfirst-wordmark-{theme}.svg", svg(round(ww, 2), 100, g, label="FlipFirst"))]
+                (f"brand/exports/flipfirst-wordmark-{theme}.svg",
+                 svg(round(ww + 24, 2), 124, f'<g transform="translate(12 12)">{g}</g>', label="FlipFirst"))]
     out += [
-        ("brand/exports/flipfirst-emblem-gold.svg", svg(round(100 * ea, 2), 100, emblem(50 * ea, 50, 100 * ea), defs=emblem_defs(), label="FlipFirst")),
-        ("brand/exports/flipfirst-emblem-flat.svg", svg(round(100 * ea, 2), 100, emblem(50 * ea, 50, 100 * ea, finish="flat"), label="FlipFirst")),
+        ("brand/exports/flipfirst-emblem-gold.svg", svg(round(100 * ea + 12, 2), 112, emblem(50 * ea + 6, 56, 100 * ea), defs=emblem_defs(), label="FlipFirst")),
+        ("brand/exports/flipfirst-emblem-flat.svg", svg(round(100 * ea + 12, 2), 112, emblem(50 * ea + 6, 56, 100 * ea, finish="flat"), label="FlipFirst")),
         ("brand/exports/flipfirst-badge.svg", svg(512, 512, tile(512), defs=emblem_defs(), label="FlipFirst")),
     ]
     return out

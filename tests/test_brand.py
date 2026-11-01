@@ -183,3 +183,55 @@ def test_no_icon_without_an_https_origin(monkeypatch, origin):
     monkeypatch.setenv("BILLING_ORIGIN", origin)
     notifications._send_ntfy("flipfirst-test", "t", "b", "")
     assert "icon" not in sent["payload"] and "tags" not in sent["payload"]
+
+
+# ---------- vector files are valid, self-contained and safe ---------------------
+def _svgs():
+    return sorted([*(ROOT / "static" / "brand").glob("*.svg"), *(ROOT / "brand" / "exports").glob("*.svg")])
+
+
+def test_every_svg_is_well_formed_self_contained_and_script_free():
+    import xml.etree.ElementTree as ET
+    assert len(_svgs()) >= 20
+    for p in _svgs():
+        text = p.read_text(encoding="utf-8")
+        root = ET.fromstring(text)                                   # raises on malformed XML
+        assert root.tag == "{http://www.w3.org/2000/svg}svg", p
+        vb = [float(v) for v in root.get("viewBox").split()]
+        assert len(vb) == 4 and vb[2] > 0 and vb[3] > 0, p
+        assert not re.search(r"\b(nan|inf)\b", text, re.I), p
+        assert "<script" not in text and not re.search(r"\son\w+=", text), p     # no script or event handlers
+        assert not re.search(r'href="(https?:)?//', text), p                     # nothing loaded from elsewhere
+
+
+def test_favicon_is_the_pixel_snapped_micro_emblem():
+    fav = (ROOT / "static" / "brand" / "favicon.svg").read_text()
+    assert 'viewBox="0 0 16 16"' in fav                              # drawn on the 16 px grid
+
+
+# ---------- Safari: every mask also has its -webkit- form -------------------------
+@pytest.mark.parametrize("path", ["static/ff.css", "dashboard.html"])
+def test_masks_carry_webkit_prefixes(path):
+    css = (ROOT / path).read_text()
+    for block in re.findall(r"\{([^{}]*)\}", css):
+        decls = [d.strip() for d in block.split(";")]
+        for prop in ("mask", "mask-image"):
+            if any(d.startswith(prop + ":") for d in decls):
+                assert any(d.startswith("-webkit-" + prop + ":") for d in decls), (path, block[:120])
+
+
+# ---------- keyboard: scrollable tables can be reached and scrolled ---------------
+@pytest.mark.parametrize("path", ["static/ops.js", "static/app.js"])
+def test_scrollable_tables_are_focusable_named_regions(path):
+    js = (ROOT / path).read_text()
+    wraps = re.findall(r'<div class="table-wrap"[^>]*>', js)
+    assert wraps, path
+    for w in wraps:
+        assert 'tabindex="0"' in w and 'role="region"' in w and "aria-labelledby=" in w, w
+
+
+def test_app_shell_has_a_link_preview_too():
+    shell = (ROOT / "mobile.html").read_text()
+    assert '<meta property="og:image" content="https://app.tryflipfirst.com/static/brand/og-image.png">' in shell
+    login = (ROOT / "login.html").read_text()
+    assert '<meta property="og:url" content="https://app.tryflipfirst.com/login">' in login

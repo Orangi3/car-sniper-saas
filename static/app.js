@@ -225,7 +225,7 @@ function dealCard(d, opts) {
     <div class="deal__metrics">
       <div class="metric"><div class="metric__label">${priceWord(d)}</div><div class="metric__value">${money(d.price)}</div>
         <div class="metric__sub">${drop ? html`was <s>${money(d.previous_price)}</s>` : (d.event === "price_drop" ? "price drop" : " ")}</div></div>
-      <div class="metric"><div class="metric__label">Est. profit</div><div class="metric__value ${pr ? pr.cls : ""}">${pr ? html`<span class="full">${pr.text}</span><span class="compact">${pr.short}</span>` : "—"}</div>
+      <div class="metric"><div class="metric__label">Est. profit</div><div class="metric__value metric__value--range ${pr ? pr.cls : ""}">${pr ? html`<span class="full">${pr.text}</span><span class="compact">${pr.short}</span>` : "—"}</div>
         <div class="metric__sub">${pr ? "after est. costs" : "no valuation"}</div></div>
       <div class="metric"><div class="metric__label">Below mkt</div><div class="metric__value ${disc > 0 ? "pos" : ""}">${disc != null ? pct(disc) : "—"}</div>
         <div class="metric__sub">${n(d.value_mid) ? "mkt " + moneyK(d.value_mid) : " "}</div></div>
@@ -386,7 +386,7 @@ function dealDetail(d) {
   const title = d.title || [d.year, d.make, d.model].filter(Boolean).join(" ");
   const keyMetrics = html`<div class="metrics-box"><div class="deal__metrics" style="border-radius:var(--r-md);border:1px solid var(--line)">
       <div class="metric"><div class="metric__label">${priceWord(d)}</div><div class="metric__value">${money(d.price)}</div><div class="metric__sub">${drop ? html`was <s>${money(d.previous_price)}</s>` : " "}</div></div>
-      <div class="metric"><div class="metric__label">Est. profit</div><div class="metric__value ${pr ? pr.cls : ""}">${pr ? html`<span class="full">${pr.text}</span><span class="compact">${pr.short}</span>` : "—"}</div><div class="metric__sub">${pr ? "after est. costs" : "no valuation"}</div></div>
+      <div class="metric"><div class="metric__label">Est. profit</div><div class="metric__value metric__value--range ${pr ? pr.cls : ""}">${pr ? html`<span class="full">${pr.text}</span><span class="compact">${pr.short}</span>` : "—"}</div><div class="metric__sub">${pr ? "after est. costs" : "no valuation"}</div></div>
       <div class="metric"><div class="metric__label">Below mkt</div><div class="metric__value ${disc > 0 ? "pos" : ""}">${disc != null ? pct(disc) : "—"}</div><div class="metric__sub">${n(d.value_mid) ? "mkt " + moneyK(d.value_mid) : " "}</div></div>
     </div></div>`;
   const actions = html`
@@ -541,7 +541,7 @@ function profitSection(d, p, o) {
       ${opp.risk_adjusted_profit != null ? html`<div>
         <div class="row row--between"><div><div class="eyebrow">Risk-adjusted opportunity</div>
           <p class="xsmall muted">Conservative profit ${money(opp.conservative_profit)} × ${opp.multiplier} for evidence, confidence, condition, freshness, distance and liquidity. Used to rank deals.</p></div>
-          <b class="num" style="font-size:var(--fs-xl)">${money(opp.risk_adjusted_profit)}</b></div>
+          <b class="num" style="font-size:var(--fs-xl);white-space:nowrap;flex:0 0 auto">${money(opp.risk_adjusted_profit)}</b></div>
         <details style="margin-top:var(--s2)"><summary class="small" style="cursor:pointer;font-weight:600">How it's ranked</summary>
           <table class="table" style="margin-top:var(--s2)">${(opp.factors || []).map(f => html`<tr><td>${String(f.name)}<span class="sub">${f.why}</span></td><td class="r">×${f.value}</td></tr>`)}</table></details></div>` : ""}
     </div></section>`;
@@ -729,7 +729,7 @@ function analysisView(a, o) {
     ${own ? html`<div class="notice notice--warn">${icon("alert")}<div><strong>No market value found.</strong> Profit uses your resale estimate of ${money(a.user_estimate)}; FlipFirst has no comparables to back it.</div></div>` : ""}
     ${marketSection(a)}
     ${p ? profitSection(a, p, {purchaseNote: a.offer_price ? "what you expect to pay" : "at the asking price", editHref: o.editHref || "#/analyze"}) : moneyInSection(a)}
-    ${a.freshness ? html`<p class="xsmall muted" style="margin:calc(-1 * var(--s3)) 0 0">Comparables last confirmed ${a.freshness.oldest.slice(0, 10)} to ${a.freshness.newest.slice(0, 10)}.</p>` : ""}
+    ${a.freshness ? html`<p class="xsmall muted" style="margin-top:var(--s2);padding:0 var(--s1)">Comparables last confirmed ${a.freshness.oldest.slice(0, 10)} to ${a.freshness.newest.slice(0, 10)}.</p>` : ""}
     ${compsSection(a)}
     ${riskSection(a)}
     ${missingSection(a)}
@@ -1571,7 +1571,8 @@ async function viewAccount(m, tok) {
   const me = S.me || {};
   const theme = FF.getTheme();
   const planRows = plans && plans.plans ? plans.plans : [];
-  const feat = [["saved_searches", "Saved searches", x => x || "—"], ["alerts_per_day", "Alerts per day", x => x || "—"],
+  const feat = [["analyses_per_day", "Car analyses per day", x => x || "—"], ["opportunities", "Saved deals", x => x ? Number(x).toLocaleString("en-US") : "—"],
+    ["saved_searches", "Saved searches", x => x || "—"], ["alerts_per_day", "Alerts per day", x => x || "—"],
     ["profit_scenarios", "Profit scenarios", x => x ? "✓" : "—"], ["price_drop_alerts", "Price-drop alerts", x => x ? "✓" : "—"],
     ["custom_profit_assumptions", "Custom cost assumptions", x => x ? "✓" : "—"], ["webhook", "Webhook alerts", x => x ? "✓" : "—"],
     ["sms_per_month", "Text alerts / month", x => x || "—"], ["aggressive_mode", "Flagged deals in alerts", x => x ? "✓" : "—"]];
@@ -1581,7 +1582,7 @@ async function viewAccount(m, tok) {
     <section class="card" id="acct-plan" aria-labelledby="h-plan">
       <div class="card__head"><h2 id="h-plan">${icon("zap")}Plan</h2><span class="chip chip--accent">${planName(S.plan)}</span></div>
       <div class="card__body stack">
-        ${planRows.length ? html`<div class="table-wrap"><table class="table"><thead><tr><th scope="col">Feature</th>${planRows.map(p => html`<th scope="col" class="r"${p.plan === S.plan ? raw(' style="color:var(--accent)"') : ""}>${p.name}${p.plan === S.plan ? " (you)" : ""}</th>`)}</tr></thead>
+        ${planRows.length ? html`<div class="table-wrap" tabindex="0" role="region" aria-labelledby="h-plan"><table class="table"><thead><tr><th scope="col">Feature</th>${planRows.map(p => html`<th scope="col" class="r"${p.plan === S.plan ? raw(' style="color:var(--accent)"') : ""}>${p.name}${p.plan === S.plan ? " (you)" : ""}</th>`)}</tr></thead>
           <tbody>${feat.map(([k, l, fmt]) => html`<tr><td>${l}</td>${planRows.map(p => html`<td class="r">${fmt(p[k])}</td>`)}</tr>`)}</tbody></table></div>` : ""}
         <div class="row row--wrap" id="bill-actions">${billActions(bill)}</div>
         <div class="error-text" id="bill-err" role="alert"></div>

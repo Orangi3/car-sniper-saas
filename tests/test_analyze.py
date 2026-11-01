@@ -160,6 +160,25 @@ def test_only_comparables_allowed_on_screen_are_used(client, world):
 
 # ---------- API ---------------------------------------------------------------
 
+def test_daily_cap_message_offers_an_upgrade_only_when_one_exists(client, world, monkeypatch):
+    """A Pro member at the cap isn't told to upgrade: Pro is the top plan."""
+    monkeypatch.setenv("PLAN_LIMITS_JSON", '{"free": {"analyses_per_day": 1}, "starter": {"analyses_per_day": 2}, '
+                                           '"pro": {"analyses_per_day": 2}}')
+    make_user(client, "free-cap@example.com", plan="free", topic=False)
+    login(client, "free-cap@example.com")
+    assert client.post("/api/analyze", json=CAMRY).status_code == 200
+    r = client.post("/api/analyze", json={**CAMRY, "mileage": 150000})
+    assert r.status_code == 429 and "upgrade for a higher limit" in r.get_json()["error"]
+    client.post("/api/auth/logout")
+    make_user(client, "pro-cap@example.com", plan="pro", topic=False)
+    login(client, "pro-cap@example.com")
+    assert client.post("/api/analyze", json=CAMRY).status_code == 200
+    assert client.post("/api/analyze", json={**CAMRY, "mileage": 140000}).status_code == 200
+    r = client.post("/api/analyze", json={**CAMRY, "mileage": 150000})
+    assert r.status_code == 429
+    assert r.get_json()["error"] == "You've used today's 2 analyses on your plan; more tomorrow."
+
+
 def test_analyze_api_free_plan_daily_limit_and_login(client, world, monkeypatch):
     assert client.post("/api/analyze", json=CAMRY).status_code == 401
     make_user(client, "free@example.com", plan="free", topic=False)

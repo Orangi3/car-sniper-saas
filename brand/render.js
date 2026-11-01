@@ -11,9 +11,9 @@ const E = p => path.join(ROOT, "brand", "exports", p);
 
 // [source svg, output png, width, height]
 const JOBS = [
-  [S("favicon.svg"), S("favicon-16.png"), 16, 16],
+  [S("favicon.svg"), S("favicon-16.png"), 16, 16],                  // 16 and 32 px: the micro Wings
   [S("favicon.svg"), S("favicon-32.png"), 32, 32],
-  [S("favicon.svg"), S("favicon-48.png"), 48, 48],
+  [E("favicon-48.svg"), S("favicon-48.png"), 48, 48],                // 48 px: the Bold emblem
   [E("app-icon.svg"), S("apple-touch-icon.png"), 180, 180],          // iOS rounds the corners itself
   [E("app-icon-rounded.svg"), S("icon-192.png"), 192, 192],
   [E("app-icon-rounded.svg"), S("icon-512.png"), 512, 512],

@@ -34,7 +34,8 @@ Two drawings of the same emblem:
 | Version | Use | Why |
 |---|---|---|
 | **Full** (`WINGS["full"]`) | 48 px and up: app icons, social, sign-in, print | long, fine wing tips |
-| **Bold** (`WINGS["bold"]`) | 16–40 px: favicon, app header, sidebar | shorter, thicker wings stay solid at 16 px |
+| **Bold** (`WINGS["bold"]`) | 20–48 px: app header, sidebar, 48 px favicon | shorter, thicker wings |
+| **Micro** (`MICRO`) | 16 and 32 px favicon only | the same Wings snapped to a 16 px grid, so the tab icon stays sharp |
 
 Finishes:
 
@@ -154,13 +155,16 @@ Segoe UI, Roboto) for speed and legibility. No web font is loaded.
 
 | File (`static/brand/`) | Size | Notes |
 |---|---|---|
-| `favicon.svg`, `favicon.ico`, `favicon-32.png` | 16/32/48 | Bold emblem, flat gold, carbon tile. Legible at 16 px |
+| `favicon.svg`, `favicon.ico`, `favicon-32.png` | 16/32/48 | Micro emblem at 16 and 32 px, Bold at 48. Flat gold on a carbon tile |
 | `apple-touch-icon.png` | 180 | full bleed, so iOS rounds the corners itself |
 | `icon-192.png`, `icon-512.png` | 192/512 | rounded carbon tile |
 | `icon-maskable-512.png` | 512 | emblem inside Android's 80 % safe zone |
 | `manifest.webmanifest` | | theme `#0E0F11`, background `#0B0B0C` |
 
 ## 9. Social
+
+The sign-in page and the app shell both carry the link-preview tags (`og:*`,
+`twitter:card`), so a shared link to the app shows the card too.
 
 - **Link preview** (`static/brand/og-image.png`, 1200×630): the stacked logo on
   carbon with a faint gold light, plus FIND IT FIRST · FLIP IT BETTER. It is
@@ -173,9 +177,9 @@ Segoe UI, Roboto) for speed and legibility. No web font is loaded.
 
 | Place | Emblem height | Notes |
 |---|---|---|
-| Mobile top bar | 20 px | emblem + logotype |
-| Desktop sidebar | 22 px | |
-| Operations and classic console | 20 px | |
+| Mobile top bar | 22 px | emblem + logotype |
+| Desktop sidebar | 24 px | |
+| Operations and classic console | 22 px | |
 | Sign-in brand panel | 30 px mobile, 40 px desktop | always carbon and gold, in both themes |
 
 ## 11. Notifications and email
@@ -195,3 +199,16 @@ badge (luxury carmakers). That is a design precaution, **not legal clearance.** 
 FlipFirst name is used by another business. A new logo does not settle a name
 conflict: have a trademark attorney search the name and the emblem
 (USPTO classes 9, 35 and 42) before filing or scaling up.
+
+## 13. Platform notes
+
+- **Exports** carry a small transparent margin, so wing tips and letters never touch
+  the file's edge.
+- **Safari / WebKit:** the header lockup is painted through CSS masks. Every mask
+  also has its `-webkit-` form (Safari 15.4+), and `tests/test_brand.py` enforces this.
+  WebKit itself was not available to the test environment.
+- **Push icons:** ntfy shows the app icon on Android. iOS shows the title and text
+  only, which is an ntfy limitation.
+- **Link previews** resolve once `app.tryflipfirst.com` serves the app. Until then the
+  image URL has nothing to fetch.
+
