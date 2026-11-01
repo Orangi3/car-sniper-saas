@@ -87,7 +87,7 @@ function topbar(o) {
   const pl = $("[data-plan-link]"); if (pl) setHTML(pl, html`<span>${planName(S.plan)} plan</span>${icon("chevron-right", "sm")}`);
   setHTML($("#topbar"), html`
     ${o.back ? html`<button class="btn btn--ghost btn--icon" type="button" data-back aria-label="Back">${icon("chevron-left")}</button>`
-      : html`<a class="brand" href="#/discover" aria-label="FlipFirst — Discover"><img class="brand__mark" src="/static/brand/flipfirst-mark.svg?v=${V}" alt="" width="28" height="28"><span class="brand__word">Flip<b>First</b></span></a>`}
+      : html`<a class="brand" href="#/discover" aria-label="FlipFirst — Discover"><span class="brand__emblem" aria-hidden="true"></span><span class="brand__word" aria-hidden="true"></span></a>`}
     ${o.title ? html`<div class="topbar__title">${o.title}</div>` : ""}
     <div class="spacer"></div>
     ${o.right || ""}
@@ -211,7 +211,7 @@ function dealCard(d, opts) {
   const fr = freshness(d);
   return html`<article class="deal" data-cid="${cid}">
     <div class="deal__top">
-      <div class="thumb">${img ? html`<img src="${img}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" width="92" height="69">` : html`${icon("car")}<span class="sr-only">No photo</span>`}</div>
+      <div class="thumb">${img ? html`<img src="${img}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" width="92" height="69">` : html`<span class="ph-mark" aria-hidden="true"></span><span class="sr-only">No photo</span>`}</div>
       <div class="deal__id">
         <h2 class="deal__title"><a href="#/deal/${encodeURIComponent(cid)}">${d.title || [d.year, d.make, d.model].filter(Boolean).join(" ")}</a></h2>
         <div class="deal__meta">
@@ -401,7 +401,7 @@ function dealDetail(d) {
     <div class="stack-lg">
       <section class="card" aria-labelledby="deal-title">
         ${img ? html`<img class="hero-img" src="${img}" alt="Listing photo of ${title}" referrerpolicy="no-referrer">`
-          : html`<div class="hero-ph"><div style="text-align:center">${icon("car", "lg")}<div class="xsmall" style="margin-top:4px">No photo in the listing</div></div></div>`}
+          : html`<div class="hero-ph"><div style="text-align:center"><span class="ph-mark ph-mark--lg" aria-hidden="true"></span><div class="xsmall" style="margin-top:8px">No photo in the listing</div></div></div>`}
         <div class="card__body stack">
           <div class="chips"><span class="chip">${srcName(d.source)}</span>${drop ? html`<span class="chip chip--profit">${icon("trend-down")}Price dropped ${money(n(d.previous_price) - n(d.price))}</span>` : ""}${d.relist_of ? html`<span class="chip chip--warn">Relisted</span>` : ""}${saved ? html`<span class="chip chip--accent">${STAGE_NAME[d.user_status] || "Saved"}</span>` : ""}</div>
           <h1 id="deal-title" style="font-size:var(--fs-2xl)">${title}</h1>

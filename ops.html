@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Operations · FlipFirst</title>
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#F4F6FA" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#070B14" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F6F6F3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0B0B0C" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" href="/static/brand/favicon.svg?v=__ASSET_V__" type="image/svg+xml">
 <link rel="stylesheet" href="/static/ff.css?v=__ASSET_V__">
@@ -15,8 +15,7 @@
   .ops-top { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
              padding: var(--s3) var(--s4); background: color-mix(in srgb, var(--surface) 90%, transparent);
              -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
-  .ops-top .brand__word { font-size: 18px; }
-  .ops-top .brand__mark { width: 28px; height: 28px; }
+  .ops-top .brand { --brand-h: 20px; }
   .ops-top__title { font-weight: 650; color: var(--muted); border-left: 1px solid var(--line-strong); padding-left: var(--s3); }
   .ops { max-width: 1240px; margin: 0 auto; padding: var(--s5) var(--s4) var(--s12); }
   .ops-grid { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr); margin-top: var(--s4); }
@@ -36,8 +35,7 @@
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="ops-top">
   <a class="brand" href="/m" aria-label="FlipFirst app">
-    <img class="brand__mark" src="/static/brand/flipfirst-mark.svg?v=__ASSET_V__" alt="" width="28" height="28">
-    <span class="brand__word">Flip<b>First</b></span>
+    <span class="brand__emblem" aria-hidden="true"></span><span class="brand__word" aria-hidden="true"></span>
   </a>
   <span class="ops-top__title">Operations</span>
   <div class="spacer"></div>
