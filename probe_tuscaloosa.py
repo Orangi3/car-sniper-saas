@@ -59,6 +59,35 @@ Relist definition (exact, deterministic):
   segment. This is neither a relist nor a repeated observation; it
   is multi-segment membership of one vehicle.
 
+Canonical observation ordering (exact, deterministic):
+Fixture input order never decides anything. Before per-segment
+deduplication, records in a segment are sorted by _canonical_key:
+(1) known, parseable first_seen_at first, unknown/malformed last;
+(2) parsed first_seen_at, earliest first; (3) source_id, ascending;
+(4) posted_at, known first, earliest first; (5) a deterministic
+final tie-breaker over title, price, year, make, model, odometer,
+ZIP, and photo hash. The first record for a dedupe key after this
+sort is that key's first observation in the segment. "First
+observation" in the relist definition means this canonical first,
+never the first line in the fixture file. Missing or malformed
+dates are never replaced by dates from another record.
+
+Canonical global observation (exact, deterministic):
+Global freshness uses ONE canonical observation per unique vehicle:
+the per-segment first observation with the earliest known
+first_seen_at, tie-broken by source_id, then posted_at, using the
+same ordering as above. Freshness is computed ONLY from that
+observation's own first_seen_at and posted_at pair. Dates are
+never combined across observations to create a synthetic lag. If
+the canonical observation's dates are chronologically invalid
+(first_seen before posted, or any date after run_date), the vehicle
+counts as invalid, even if another observation for the same vehicle
+is valid. If a required timestamp is unknown, the vehicle counts as
+unknown, even if another observation supplies that field. Conflicting
+observations are therefore resolved by selection, not by merging,
+and the result is a measurement of the canonical observation, not
+provider-verified truth about the vehicle.
+
 Budget notes:
 - SimulatedBudget reserves atomically under a lock in one process,
   counts pages, retries, and failures, and stops at the cap. It
@@ -120,10 +149,18 @@ BLOCKED_SOURCES_EXAMPLES = {
 RELIST_DEFINITION = (
     "Genuine relist: same dedupe key, same segment, later first_seen_at "
     "than the first observation in that segment, and a different "
-    "source_id. Repeated observation: same dedupe key, same segment, "
-    "but not a genuine relist (same or earlier first_seen_at, or the "
-    "same source_id). Cross-segment overlap is neither a relist nor a "
-    "repeated observation."
+    "source_id. The first observation is the canonical first: records "
+    "are sorted before deduplication by known first_seen_at first, "
+    "earliest first_seen_at, source_id, posted_at, then a deterministic "
+    "tie-breaker over title, price, year, make, model, odometer, ZIP, "
+    "and photo hash; fixture input order never decides it. Repeated "
+    "observation: same dedupe key, same segment, but not a genuine "
+    "relist (same or earlier first_seen_at, or the same source_id). "
+    "Cross-segment overlap is neither a relist nor a repeated "
+    "observation. Global freshness uses one canonical observation per "
+    "vehicle (earliest known first_seen_at, tie-broken by source_id "
+    "then posted_at) and only that observation's own first_seen_at "
+    "and posted_at pair; dates are never combined across observations."
 )
 BUDGET_NOTE = (
     "Budget is charged per segment polled, even if a segment has zero "
@@ -309,6 +346,54 @@ def _observation_dates(listing: NormalizedListing) -> tuple[date | None, date | 
     return first_seen, posted
 
 
+def _canonical_key(listing: NormalizedListing) -> tuple:
+    """Deterministic ordering for observation selection.
+
+    (1) known first_seen first, unknown/malformed last; (2) earliest
+    first_seen first; (3) source_id ascending; (4) known posted
+    first, earliest posted first; (5) deterministic final tie-breaker
+    over title, price, year, make, model, odometer, ZIP, and photo
+    hash. Two records that tie on every element are indistinguishable
+    for relist, freshness, and match purposes, so input order cannot
+    change any reported metric. Missing or malformed dates are never
+    manufactured: they sort last, they are not replaced.
+    """
+    first_seen, posted = _observation_dates(listing)
+    return (
+        0 if first_seen is not None else 1,
+        first_seen if first_seen is not None else date.min,
+        str(listing.source_id or ""),
+        0 if posted is not None else 1,
+        posted if posted is not None else date.min,
+        _norm_title(listing.title),
+        listing.price if listing.price is not None else -1,
+        listing.year if listing.year is not None else -1,
+        (listing.make or "").lower(),
+        _norm_model(listing.model),
+        listing.odometer if listing.odometer is not None else -1,
+        listing.zip or "",
+        str((listing.extras or {}).get("photo_hash", "")),
+    )
+
+
+def _canonical_observation_key(first_seen: date | None, posted: date | None,
+                               source_id: str) -> tuple:
+    """Ordering for choosing one canonical observation per vehicle.
+
+    Same rule as _canonical_key, restricted to the fields a
+    per-segment first observation carries: known first_seen first,
+    earliest first_seen, source_id, known posted first, earliest
+    posted. The chosen observation's own date pair is then used whole.
+    """
+    return (
+        0 if first_seen is not None else 1,
+        first_seen if first_seen is not None else date.min,
+        str(source_id or ""),
+        0 if posted is not None else 1,
+        posted if posted is not None else date.min,
+    )
+
+
 class SharedPoller:
     """One poll per segment, shared by every test search mapped to it.
 
@@ -439,9 +524,12 @@ def run_probe(*, segments: list[Segment], fixtures: list[dict],
     # Per-segment state is independent: order must not change it.
     per_segment: dict[str, dict] = {}
     # Global state: one entry per unique vehicle, across segments.
+    # Each entry holds the per-segment first observations as
+    # (first_seen, posted, source_id); global freshness later picks
+    # exactly one canonical observation from them, never a mix.
     global_unique: set[str] = set()
     global_matches: set[str] = set()
-    global_observations: dict[str, list[tuple[date | None, date | None]]] = {}
+    global_observations: dict[str, list[tuple[date | None, date | None, str]]] = {}
     global_relists = 0
     global_repeated = 0
 
@@ -467,7 +555,12 @@ def run_probe(*, segments: list[Segment], fixtures: list[dict],
         seg_relists = 0
         seg_repeated = 0
         seg_out = 0
-        # First observation per key *within this segment*.
+        # Canonical order first: fixture input order must not decide
+        # which record is a key's first observation. Pagination and
+        # budget accounting above are unaffected by this sort.
+        polled = sorted(polled, key=_canonical_key)
+        # First observation per key *within this segment*, after the
+        # canonical sort: the earliest known first_seen for that key.
         seg_first: dict[str, tuple[date | None, str]] = {}
         for listing in polled:
             seg_seen += 1
@@ -499,7 +592,8 @@ def run_probe(*, segments: list[Segment], fixtures: list[dict],
             seg_first[key] = (first_seen, listing.source_id)
             seg_unique.add(key)
             global_unique.add(key)
-            global_observations.setdefault(key, []).append((first_seen, posted))
+            global_observations.setdefault(key, []).append(
+                (first_seen, posted, listing.source_id))
             if seg.matches(listing):
                 seg_matches.add(key)
                 global_matches.add(key)
@@ -509,18 +603,25 @@ def run_probe(*, segments: list[Segment], fixtures: list[dict],
                                "repeated_observations": seg_repeated,
                                "out_of_radius": seg_out, "stopped_at_cap": False}
 
-    # Global freshness, order-independent: for each unique vehicle, use
-    # the earliest known first-seen and the earliest known posted date
-    # across its per-segment first observations.
+    # Global freshness, canonical-observation only: for each unique
+    # vehicle, pick exactly one per-segment first observation by the
+    # canonical rule (earliest known first_seen, then source_id, then
+    # posted) and use ONLY that observation's own first_seen/posted
+    # pair. Dates are never combined across observations. If the
+    # canonical observation is invalid, the vehicle is invalid even
+    # if another observation is valid; if a timestamp is unknown,
+    # the vehicle is unknown even if another observation supplies it.
+    # first_seen_by_day follows the same policy: it counts the
+    # canonical first_seen date for valid and posted-unknown vehicles
+    # only, never for invalid or first_seen-unknown vehicles.
     lags: list[int] = []
     unknown_dates = 0
     invalid_dates = 0
     first_seen_by_day: dict[str, int] = {}
     for key, observations in global_observations.items():
-        known_first = [f for f, _ in observations if f is not None]
-        known_posted = [p for _, p in observations if p is not None]
-        first_seen = min(known_first) if known_first else None
-        posted = min(known_posted) if known_posted else None
+        first_seen, posted, _source_id = min(
+            observations,
+            key=lambda obs: _canonical_observation_key(obs[0], obs[1], obs[2]))
         if first_seen is None:
             unknown_dates += 1
             continue

@@ -264,10 +264,16 @@ def test_genuine_relist_vs_repeated_observation():
     r = run_probe(segments=[_seg()], fixtures=[
         _rec(), _rec(source_id="fx-2", extras={"first_seen_at": "2026-10-22"})])
     assert r["relist_records"] == 0 and r["repeated_observations"] == 1
-    # Repeated observation: earlier first_seen, different source.
+    # Canonical ordering supersedes input order: an "earlier" record
+    # supplied second is sorted first (earliest known first_seen),
+    # so the later record is a genuine relist, not a repeated
+    # observation. Input order must not change this result.
     r = run_probe(segments=[_seg()], fixtures=[
         _rec(), _rec(source_id="fx-2", extras={"first_seen_at": "2026-10-21"})])
-    assert r["relist_records"] == 0 and r["repeated_observations"] == 1
+    assert r["relist_records"] == 1 and r["repeated_observations"] == 0
+    r = run_probe(segments=[_seg()], fixtures=[
+        _rec(source_id="fx-2", extras={"first_seen_at": "2026-10-21"}), _rec()])
+    assert r["relist_records"] == 1 and r["repeated_observations"] == 0
 
 
 # ---------- Review regressions: freshness ----------
@@ -473,3 +479,162 @@ def test_sample_fixtures_use_synthetic_identifiers():
                        / "probe_sample_fixtures.json").read_text())
     vins = [r["extras"]["vin"] for r in data]
     assert vins and all(v.startswith("FIXTURE-") for v in vins)
+
+
+# ---------- Canonical ordering: record-order independence ----------
+
+def _canonical_metrics(report):
+    return (report["relist_records"], report["repeated_observations"],
+            report["unique_listings"], report["global_matches"],
+            report["freshness"], report["first_seen_by_day"],
+            report["per_search"])
+
+
+def test_canonical_two_record_permutation():
+    # A: Codex finding A. Same F-150, first_seen Oct 22 (fx-1) and
+    # Oct 23 (fx-2). Both input orders must give identical results,
+    # with the Oct 22 observation canonical: relist 1, lag 2.
+    a = _rec()
+    b = _rec(source_id="fx-2", extras={"first_seen_at": "2026-10-23"})
+    r1 = run_probe(segments=[_seg()], fixtures=[a, b])
+    r2 = run_probe(segments=[_seg()], fixtures=[b, a])
+    assert _canonical_metrics(r1) == _canonical_metrics(r2)
+    assert r1["relist_records"] == 1
+    assert r1["repeated_observations"] == 0
+    assert r1["freshness"]["median_days"] == 2
+    assert r1["first_seen_by_day"] == {"2026-10-22": 1}
+
+
+def test_canonical_three_record_permutation():
+    # B: Codex finding B. Same identity, Oct 22/23/24, all six orders.
+    import itertools
+    recs = [_rec(source_id=f"fx-{i}",
+                 extras={"first_seen_at": f"2026-10-2{i}"}) for i in (2, 3, 4)]
+    reports = [run_probe(segments=[_seg()], fixtures=list(p))
+               for p in itertools.permutations(recs)]
+    metrics = [_canonical_metrics(r) for r in reports]
+    assert all(m == metrics[0] for m in metrics)
+    assert reports[0]["relist_records"] == 2
+    assert reports[0]["repeated_observations"] == 0
+    assert reports[0]["freshness"]["median_days"] == 2
+    assert reports[0]["first_seen_by_day"] == {"2026-10-22": 1}
+
+
+def test_canonical_conflicting_dates_across_segments_never_fabricates_lag():
+    # C: Codex finding C. Valid Oct 20/Oct 22 plus inverted
+    # Oct 25/Oct 21. Canonical is earliest first_seen: Oct 21, whose
+    # own posted date Oct 25 makes it invalid. Must never report lag 1.
+    full = _fullsize()
+    band = _seg(id="band-2008-2020", name="Band")
+    fixtures = [_rec(segment="trucks-fullsize"),
+                _rec(segment="band-2008-2020", source_id="fx-2",
+                     posted_at="2026-10-25",
+                     extras={"first_seen_at": "2026-10-21"})]
+    r = run_probe(segments=[full, band], fixtures=fixtures)
+    assert r["freshness"]["invalid_date_listings"] == 1
+    assert r["freshness"].get("count_with_dates", 0) == 0
+    assert "median_days" not in r["freshness"]
+    assert r["first_seen_by_day"] == {}
+
+
+def test_canonical_two_valid_conflicting_observations_use_canonical_lag():
+    # D: Codex finding D. Lag 2 (Oct 20/Oct 22) vs lag 7
+    # (Oct 18/Oct 25). Canonical is earliest first_seen, Oct 22,
+    # so the lag is 2, never the synthetic 4 from combining
+    # earliest first_seen with earliest posted.
+    full = _fullsize()
+    band = _seg(id="band-2008-2020", name="Band")
+    fixtures = [_rec(segment="trucks-fullsize"),
+                _rec(segment="band-2008-2020", source_id="fx-2",
+                     posted_at="2026-10-18",
+                     extras={"first_seen_at": "2026-10-25"})]
+    r = run_probe(segments=[full, band], fixtures=fixtures)
+    assert r["freshness"]["count_with_dates"] == 1
+    assert r["freshness"]["median_days"] == 2
+    assert r["first_seen_by_day"] == {"2026-10-22": 1}
+
+
+def test_canonical_missing_and_malformed_dates_are_not_filled_from_other_records():
+    # E: Codex finding E. Canonical selection when some records have
+    # unknown first_seen or posted dates. No missing value may be
+    # replaced by a field from a different observation.
+    # (i) Known first_seen Oct 22 / posted Oct 20, plus an unknown
+    # first_seen record: canonical is the known record, lag 2, and
+    # the unknown record is a repeated observation, not a relist.
+    unknown_first = _rec(source_id="fx-u", extras={"vin": "FIXTURE-VIN-001"})
+    unknown_first["extras"].pop("first_seen_at", None)
+    r = run_probe(segments=[_seg()], fixtures=[unknown_first, _rec()])
+    assert r["relist_records"] == 0 and r["repeated_observations"] == 1
+    assert r["freshness"]["median_days"] == 2
+    # (ii) All first_seen unknown: unknown, never a lag, and no
+    # first_seen_by_day entry, regardless of input order.
+    u1 = _rec(source_id="fx-u1")
+    u1["extras"].pop("first_seen_at", None)
+    u2 = _rec(source_id="fx-u2", posted_at="2026-10-19")
+    u2["extras"].pop("first_seen_at", None)
+    for fixtures in ([u1, u2], [u2, u1]):
+        r = run_probe(segments=[_seg()], fixtures=fixtures)
+        assert r["freshness"]["unknown_date_listings"] == 1
+        assert r["freshness"].get("count_with_dates", 0) == 0
+        assert r["first_seen_by_day"] == {}
+    # (iii) Canonical first_seen known but posted missing: lag
+    # unknown, even though another segment record has a posted date.
+    # The missing posted date is not filled from that record.
+    full = _fullsize()
+    band = _seg(id="band-2008-2020", name="Band")
+    fixtures = [_rec(segment="trucks-fullsize", posted_at=None),
+                _rec(segment="band-2008-2020", source_id="fx-2",
+                     posted_at="2026-10-20",
+                     extras={"first_seen_at": "2026-10-25"})]
+    r = run_probe(segments=[full, band], fixtures=fixtures)
+    assert r["freshness"]["unknown_date_listings"] == 1
+    assert r["freshness"].get("count_with_dates", 0) == 0
+    assert r["first_seen_by_day"] == {"2026-10-22": 1}
+
+
+def test_canonical_stable_tie_breaking():
+    # F: Codex finding F. Equal first_seen dates with conflicting
+    # posted dates or identifiers, in reversed input order.
+    # Canonical is the smallest source_id; with equal source_id it
+    # is the earliest posted date. Both orders must agree.
+    a = _rec(source_id="fx-b", posted_at="2026-10-20",
+             extras={"first_seen_at": "2026-10-22"})
+    b = _rec(source_id="fx-a", posted_at="2026-10-19",
+             extras={"first_seen_at": "2026-10-22"})
+    r1 = run_probe(segments=[_seg()], fixtures=[a, b])
+    r2 = run_probe(segments=[_seg()], fixtures=[b, a])
+    assert _canonical_metrics(r1) == _canonical_metrics(r2)
+    # Canonical source fx-a, posted Oct 19, first_seen Oct 22: lag 3.
+    assert r1["freshness"]["median_days"] == 3
+    assert r1["repeated_observations"] == 1
+    # Equal source_id, conflicting posted: earliest posted wins.
+    c = _rec(source_id="fx-1", posted_at="2026-10-20",
+             extras={"first_seen_at": "2026-10-22"})
+    d = _rec(source_id="fx-1", posted_at="2026-10-18",
+             extras={"first_seen_at": "2026-10-22"})
+    r3 = run_probe(segments=[_seg()], fixtures=[c, d])
+    r4 = run_probe(segments=[_seg()], fixtures=[d, c])
+    assert _canonical_metrics(r3) == _canonical_metrics(r4)
+    assert r3["freshness"]["median_days"] == 4  # Oct 22 - Oct 18
+    assert r3["repeated_observations"] == 1
+
+
+def test_canonical_ordering_with_adequate_budget_is_segment_order_independent():
+    # G + budget exception: with adequate budget, segment order does
+    # not change results even for conflicting cross-segment data.
+    full = _fullsize()
+    band = _seg(id="band-2008-2020", name="Band")
+    fixtures = [_rec(segment="trucks-fullsize"),
+                _rec(segment="band-2008-2020", source_id="fx-2",
+                     posted_at="2026-10-18",
+                     extras={"first_seen_at": "2026-10-25"})]
+    r1 = run_probe(segments=[full, band], fixtures=fixtures)
+    r2 = run_probe(segments=[band, full], fixtures=fixtures)
+    assert _canonical_metrics(r1) == _canonical_metrics(r2)
+    # Budget exception, retained and documented: at a cap that stops
+    # the second segment, which segment is reached depends on segment
+    # order, and that is reported per segment as stopped_at_cap.
+    r3 = run_probe(segments=[full, band], fixtures=fixtures, budget_cap=1)
+    r4 = run_probe(segments=[band, full], fixtures=fixtures, budget_cap=1)
+    assert r3["per_search"]["band-2008-2020"]["stopped_at_cap"] is True
+    assert r4["per_search"]["trucks-fullsize"]["stopped_at_cap"] is True

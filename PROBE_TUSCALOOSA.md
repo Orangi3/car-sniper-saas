@@ -22,8 +22,11 @@ Does prove (on fixtures only): shared polling charges once per segment
 budget stops at its cap and rejects invalid reservations; pagination
 and retries are counted by a real paged poll; blocked sources are
 refused before any poll; per-segment and global dedupe are
-order-independent; freshness is computed only from real observation
-dates; reports are reproducible.
+order-independent for both segment order and fixture record order
+(after the canonical ordering below; the budget-cap exception is
+retained); freshness is computed only from a canonical observation's
+own dates, never by combining dates across observations; reports are
+reproducible.
 
 Does NOT prove: real vehicle inventory in Tuscaloosa or Birmingham;
 listing density, freshness, or match rates in any real market;
@@ -84,22 +87,40 @@ that approval.
   match counts, while the global unique count stays 1. Segment order
   does not change per-segment or global results, except that a
   budget cap stops later segments first, which is reported per
-  segment as `stopped_at_cap`.
+  segment as `stopped_at_cap`. That budget exception is retained
+  and documented; it is not a claim that a capped run is
+  order-independent.
+- Fixture record order does not change any result. Before
+  per-segment deduplication, records in a segment are sorted by the
+  canonical ordering: (1) known, parseable first_seen_at first,
+  unknown/malformed last; (2) parsed first_seen_at, earliest first;
+  (3) source_id, ascending; (4) posted_at, known first, earliest
+  first; (5) a deterministic final tie-breaker over title, price,
+  year, make, model, odometer, ZIP, and photo hash. Pagination and
+  budget accounting are computed before this sort and are
+  unaffected by it.
 - Per-segment match totals must NOT be summed. Use `global_matches`
   for unique qualifying vehicles.
 - Genuine relist: same dedupe key, same segment, later first_seen_at
   than the first observation in that segment, AND a different
-  source_id.
+  source_id. "First observation" means the canonical first after the
+  sort above, never the first line in the fixture file.
 - Repeated observation: same dedupe key, same segment, but not a
   genuine relist (same or earlier first_seen_at, or the same
   source_id). This is a duplicate record, not evidence of a new
-  listing event.
+  listing event. Under canonical ordering, a record supplied second
+  with an earlier first_seen_at is sorted first, so the later record
+  is a relist, not a repeated observation.
 - Cross-segment overlap: same dedupe key first seen in a different
   segment. This is neither a relist nor a repeated observation; it
   is multi-segment membership of one vehicle.
-- Global freshness uses, for each unique vehicle, the earliest known
-  first-seen and earliest known posted date across its per-segment
-  first observations, so it is also order-independent.
+- Global freshness uses, for each unique vehicle, ONE canonical
+  observation: the per-segment first observation with the earliest
+  known first_seen_at, tie-broken by source_id, then posted_at.
+  Freshness is computed only from that observation's own
+  first_seen_at and posted_at pair. Dates are never combined across
+  observations, so no synthetic lag can be created from unrelated
+  fields.
 
 ## Freshness integrity
 
@@ -112,6 +133,19 @@ populate `first_seen_by_day`; a known first-seen date does populate
 it even when the posted date is unknown, because the observation
 date itself is known. The report separates valid, unknown, and
 invalid counts, with median/min/max computed from valid lags only.
+
+Conflicting observations are resolved by selection, not by
+merging, and the result is NOT provider-verified truth. If the
+canonical observation's dates are invalid, the vehicle counts as
+invalid, even if another observation for the same vehicle is valid.
+If a required timestamp is unknown on the canonical observation,
+the vehicle counts as unknown, even if another observation supplies
+that field. No missing value is ever replaced by a field from a
+different observation. `first_seen_by_day`, valid/unknown/invalid
+counts, and freshness statistics all follow this same canonical
+policy: `first_seen_by_day` counts the canonical first_seen date
+for valid and posted-unknown vehicles only, never for invalid or
+first_seen-unknown vehicles.
 
 ## Budget safeguards — what is simulated, what is not
 
