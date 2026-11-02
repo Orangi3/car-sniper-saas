@@ -7,7 +7,15 @@
 <meta name="description" content="FlipFirst sends alerts for underpriced used cars near you, with the comparables, confidence and profit math behind every estimate.">
 <meta property="og:title" content="FlipFirst — Find it first. Flip it better.">
 <meta property="og:description" content="Alerts for underpriced used cars near you, with the comparables and profit math behind every estimate.">
-<meta name="theme-color" content="#0B1324">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="FlipFirst">
+<meta property="og:url" content="https://app.tryflipfirst.com/login">
+<meta property="og:image" content="https://app.tryflipfirst.com/static/brand/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The FlipFirst wings emblem in gold above the FLIPFIRST logotype on black.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0E0F11">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" href="/static/brand/favicon.svg?v=__ASSET_V__" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png?v=__ASSET_V__">
@@ -16,18 +24,25 @@
 <script>try{var t=localStorage.getItem("ff-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <style>
   .auth { min-height: 100vh; min-height: 100dvh; display: grid; grid-template-columns: minmax(0, 1fr); }
-  .auth__brand { background: #0B1324; color: #E7ECF5; padding: var(--s6) var(--s5); position: relative; overflow: hidden; }
-  .auth__brand::after { content: ""; position: absolute; right: -180px; top: -180px; width: 520px; height: 520px; border-radius: 50%;
-                        background: radial-gradient(closest-side, rgba(53, 99, 245, .35), transparent); pointer-events: none; }
-  .auth__brand .brand { color: #fff; position: relative; z-index: 1; }
-  .auth__brand .brand__word b { color: #8FB0FF; }
-  .auth__tag { margin-top: var(--s5); font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -.025em; line-height: 1.15; position: relative; z-index: 1; }
-  .auth__lede { margin-top: var(--s3); color: #B6C2D9; font-size: var(--fs-md); max-width: 460px; position: relative; z-index: 1; }
+  /* the brand panel is always carbon and gold, whatever the theme */
+  .auth__brand { --brand-word: #F2EEE4;
+                 --brand-foil: linear-gradient(118deg, #F6E3A6 0%, #E2BF6C 28%, #B98A3A 52%, #E7C97E 72%, #C6984A 100%);
+                 --brand-word-accent: var(--brand-foil);
+                 background: #0E0F11; color: #F2F0EA; padding: var(--s6) var(--s5); position: relative; overflow: hidden; }
+  .auth__brand::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+                         background: radial-gradient(70% 55% at 22% 0%, rgba(217, 180, 90, .16), transparent 70%); }
+  .auth__brand::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; pointer-events: none;
+                        background: linear-gradient(90deg, transparent, rgba(217, 180, 90, .45), transparent); }
+  .auth__brand .brand { position: relative; z-index: 1; --brand-h: 30px; }
+  .auth__tag { margin-top: var(--s6); font-size: var(--fs-2xl); font-weight: 650; letter-spacing: -.02em; line-height: 1.15; position: relative; z-index: 1; }
+  .auth__tag em { font-style: normal; background: linear-gradient(118deg, #F6E3A6, #D9B45A 45%, #B98A3A 70%, #E7C97E);
+                  -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .auth__lede { margin-top: var(--s3); color: #B9B3A6; font-size: var(--fs-md); max-width: 460px; position: relative; z-index: 1; }
   .auth__props { display: none; list-style: none; margin: var(--s8) 0 0; padding: 0; position: relative; z-index: 1; }
-  .auth__props li { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s3) 0; color: #C9D3E6; font-size: var(--fs-sm); border-top: 1px solid rgba(255,255,255,.08); }
-  .auth__props li strong { display: block; color: #fff; font-size: var(--fs-md); font-weight: 650; margin-bottom: 2px; }
-  .auth__props .ico { color: #8FB0FF; width: 22px; height: 22px; margin-top: 2px; }
-  .auth__foot { display: none; position: relative; z-index: 1; color: #8D9AB3; font-size: var(--fs-xs); }
+  .auth__props li { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s4) 0; color: #B9B3A6; font-size: var(--fs-sm); border-top: 1px solid rgba(217, 180, 90, .14); }
+  .auth__props li strong { display: block; color: #F2F0EA; font-size: var(--fs-md); font-weight: 650; margin-bottom: 2px; }
+  .auth__props .ico { color: #E2C27A; width: 22px; height: 22px; margin-top: 2px; }
+  .auth__foot { display: none; position: relative; z-index: 1; color: #8E897E; font-size: var(--fs-xs); letter-spacing: var(--track-caps); text-transform: uppercase; }
   .auth__main { display: flex; align-items: flex-start; justify-content: center; padding: var(--s6) var(--s4) var(--s10); }
   .auth__card { width: 100%; max-width: 420px; }
   .auth__card h1 { font-size: var(--fs-2xl); }
@@ -42,6 +57,8 @@
   @media (min-width: 960px) {
     .auth { grid-template-columns: minmax(420px, 46%) minmax(0, 1fr); }
     .auth__brand { display: flex; flex-direction: column; padding: var(--s10) var(--s12); }
+    .auth__brand .brand { --brand-h: 40px; }
+    .auth__brand::after { left: auto; top: 0; width: 1px; height: auto; background: linear-gradient(180deg, transparent, rgba(217, 180, 90, .45), transparent); }
     .auth__tag { margin-top: auto; font-size: var(--fs-4xl); }
     .auth__props { display: block; }
     .auth__foot { display: block; margin-top: var(--s10); }
@@ -53,10 +70,9 @@
 <div class="auth">
   <section class="auth__brand" aria-label="About FlipFirst">
     <a class="brand brand--lg" href="/login" aria-label="FlipFirst">
-      <img class="brand__mark" src="/static/brand/flipfirst-mark.svg?v=__ASSET_V__" alt="" width="40" height="40">
-      <span class="brand__word">Flip<b>First</b></span>
+      <span class="brand__emblem" aria-hidden="true"></span><span class="brand__word" aria-hidden="true"></span>
     </a>
-    <p class="auth__tag">Find it first.<br>Flip it better.</p>
+    <p class="auth__tag">Find it <em>first</em>.<br>Flip it better.</p>
     <p class="auth__lede">Alerts for underpriced used cars near you — with the comparables, confidence and profit math behind every estimate.</p>
     <ul class="auth__props">
       <li><svg class="ico" aria-hidden="true"><use href="/static/icons.svg?v=__ASSET_V__#i-bell"></use></svg><div><strong>First to know</strong>New listings are checked continuously; matches reach your phone in minutes.</div></li>

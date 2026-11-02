@@ -1,6 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="FlipFirst">
-  <rect width="64" height="64" rx="15" fill="#2454F5"/>
-  <g transform="translate(31 33) skewX(-11) translate(-32 -32)" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="1.6" stroke-linejoin="round">
-    <path d="M16.5 18.5H37V12.5L50.5 23.25L37 34V28H26V32.5H35V40H26V49.5H16.5Z"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="32" height="32" role="img" aria-label="FlipFirst"><rect width="16" height="16" rx="3.6" fill="#0E0F11"/><g fill="#D9B45A"><path d="M9.00,3.50 L11.00,3.50 L11.00,11.50 L9.00,13.00 Z"/><path d="M7.00,13.00 L5.00,11.50 L5.00,3.50 L7.00,3.50 Z"/><path d="M9.00,3.50 L15.50,2.00 L15.00,3.60 L11.00,5.60 Z"/><path d="M5.00,5.60 L1.00,3.60 L0.50,2.00 L7.00,3.50 Z"/><path d="M9.00,7.00 L14.00,6.00 L13.40,7.40 L11.00,9.00 Z"/><path d="M5.00,9.00 L2.60,7.40 L2.00,6.00 L7.00,7.00 Z"/></g></svg>

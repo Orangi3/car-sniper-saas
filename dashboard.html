@@ -585,24 +585,40 @@ small.muted { color: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
    v7 palette to FlipFirst tokens and switches the neon effects off.
    ============================================================ */
 :root {
-  --bg: #070B14; --bg-2: #0D1424; --panel: #0D1424; --panel-2: #121B2E;
-  --border: #1D2840; --border-2: #1D2840; --ink: #E7ECF5; --ink-2: #C3CCDB; --muted: #8A97AE;
-  --neon: #34D399; --neon-d: #10B981; --cyan: #6B91FF; --magenta: #FF7A7A; --gold: #F5B544; --orange: #F59E6B;
+  --bg: #0B0B0C; --bg-2: #141416; --panel: #141416; --panel-2: #19191C;
+  --border: #26262A; --border-2: #26262A; --ink: #F2F0EA; --ink-2: #CFCCC4; --muted: #9D9A92;
+  --neon: #34D399; --neon-d: #10B981; --cyan: #E2C27A; --magenta: #FF7A7A; --gold: #F3DA9A; --orange: #FB923C;
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
 }
 html, body { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 .bg-layer, .bg-scan, #code-rain { display: none !important; }
 *, *::before, *::after { text-shadow: none !important; }
-.ff-brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 750; letter-spacing: -.03em; }
-.ff-brand img { border-radius: 7px; }
-.ff-brand b { color: #8FB0FF; font-weight: 750; }
-.ff-brand small a { color: #8FB0FF; }
+.ff-brand { display: inline-flex; align-items: center; gap: 11px; font-weight: 600; }
+.ff-brand .brand__emblem { width: 32px; height: 20px; flex: 0 0 auto;
+  background: linear-gradient(118deg, #F6E3A6 0%, #E2BF6C 28%, #B98A3A 52%, #E7C97E 72%, #C6984A 100%);
+  -webkit-mask: url("/static/brand/emblem-mask.svg") center / contain no-repeat; mask: url("/static/brand/emblem-mask.svg") center / contain no-repeat; }
+.ff-brand .brand__word { position: relative; width: 84px; height: 10px; flex: 0 0 auto; }
+.ff-brand .brand__word::before, .ff-brand .brand__word::after { content: ""; position: absolute; inset: 0;
+  -webkit-mask: center / contain no-repeat; mask: center / contain no-repeat; }
+.ff-brand .brand__word::before { background: #F2EEE4; -webkit-mask-image: url("/static/brand/wordmark-flip.svg"); mask-image: url("/static/brand/wordmark-flip.svg"); }
+.ff-brand .brand__word::after { background: linear-gradient(118deg, #F6E3A6, #D9B45A 45%, #B98A3A 70%, #E7C97E);
+  -webkit-mask-image: url("/static/brand/wordmark-first.svg"); mask-image: url("/static/brand/wordmark-first.svg"); }
+.ff-brand small { margin-left: 6px; }
+h1.ff-brand { filter: none !important; background: none !important; -webkit-text-fill-color: currentColor; color: #F2EEE4; }
+.ff-lockup { display: inline-flex; align-items: center; gap: 11px; }
+.ff-brand small a { color: #E2C27A; }
 /* calm the v7 terminal look: no neon glows, readable type, room for the account chip */
 *, *::before, *::after { box-shadow: none !important; }
-:focus-visible { outline: 2px solid #6B91FF !important; outline-offset: 2px; }
+:focus-visible { outline: 2px solid #E2C27A !important; outline-offset: 2px; }
 body *:not(code):not(pre):not(kbd) { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; }
 .mono, td, .value { font-variant-numeric: tabular-nums; }
 @media (min-width: 900px) { header { padding-right: 330px !important; } }
+/* the v7 cyan tints, re-cut in FlipFirst gold */
+button { background: rgba(217, 180, 90, .12) !important; border-color: rgba(217, 180, 90, .35) !important; }
+button:hover { background: rgba(217, 180, 90, .2) !important; border-color: var(--cyan) !important; }
+button.secondary { background: transparent !important; border-color: var(--border-2) !important; }
+button.secondary:hover { border-color: var(--ink-2) !important; }
+input:focus, select:focus, textarea:focus { border-color: var(--cyan) !important; }
 </style>
 </head>
 <body>
@@ -615,7 +631,7 @@ body *:not(code):not(pre):not(kbd) { font-family: ui-sans-serif, -apple-system, 
 
 <!-- ============ HEADER ============ -->
 <header>
-  <h1 class="ff-brand"><img src="/static/brand/flipfirst-mark.svg" alt="" width="28" height="28"><span>Flip<b>First</b></span> <small>Classic console · <a href="/m">Open app</a> · <a href="/admin/ops">Operations</a></small></h1>
+  <h1 class="ff-brand"><span class="ff-lockup" role="img" aria-label="FlipFirst"><span class="brand__emblem"></span><span class="brand__word"></span></span> <small>Classic console · <a href="/m">Open app</a> · <a href="/admin/ops">Operations</a></small></h1>
   <span class="live-pill"><span class="live-dot"></span><span id="hero-status">SCANNING</span></span>
   <span class="hd-meta">ZIP <strong id="hero-zip">35401</strong> · R<strong id="hero-radius">100</strong>mi</span>
   <span class="hd-meta">LAST <strong id="hero-last">–</strong></span>

@@ -190,10 +190,19 @@ def _post(url: str, **kw) -> requests.Response:
                                       retryable=True) from None
 
 
+def _brand_icon() -> Optional[str]:
+    """The FlipFirst app icon for push notifications (ntfy on Android shows it
+    beside the alert). Only from the public HTTPS origin; otherwise none."""
+    origin = (os.environ.get("BILLING_ORIGIN") or "").strip().rstrip("/")
+    return f"{origin}/static/brand/icon-192.png" if origin.startswith("https://") else None
+
+
 def _send_ntfy(topic: str, title: str, body: str, url: str) -> str:
     server = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-    payload = {"topic": topic, "title": title, "message": body,
-               "priority": 4, "tags": ["car", "moneybag"]}
+    payload = {"topic": topic, "title": title, "message": body, "priority": 4}
+    icon = _brand_icon()
+    if icon:
+        payload["icon"] = icon
     if url:
         payload["click"] = url
     headers = {}
