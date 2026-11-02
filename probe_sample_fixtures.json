@@ -1,0 +1,70 @@
+[
+  {
+    "extras": {
+      "first_seen_at": "2026-10-22",
+      "photo_hash": "ph1",
+      "vin": "1FTEX1EP5FFA00001"
+    },
+    "make": "Ford",
+    "model": "F-150",
+    "odometer": 120000,
+    "posted_at": "2026-10-20",
+    "price": 9000,
+    "segment": "trucks-fullsize",
+    "source_id": "fx-1",
+    "title": "2015 Ford F-150 XLT",
+    "year": 2015,
+    "zip": "35401"
+  },
+  {
+    "extras": {
+      "first_seen_at": "2026-10-23",
+      "photo_hash": "ph1",
+      "vin": "1FTEX1EP5FFA00001"
+    },
+    "make": "Ford",
+    "model": "F-150",
+    "odometer": 120000,
+    "posted_at": "2026-10-20",
+    "price": 9000,
+    "segment": "trucks-fullsize",
+    "source_id": "fx-2",
+    "title": "2015 Ford F-150 XLT",
+    "year": 2015,
+    "zip": "35401"
+  },
+  {
+    "extras": {
+      "first_seen_at": "2026-10-22",
+      "photo_hash": "ph3",
+      "vin": "3GCUKREC5JG100003"
+    },
+    "make": "Chevrolet",
+    "model": "Silverado",
+    "odometer": 95000,
+    "posted_at": null,
+    "price": 14000,
+    "segment": "trucks-fullsize",
+    "source_id": "fx-3",
+    "title": "2018 Chevrolet Silverado 1500",
+    "year": 2018,
+    "zip": "35401"
+  },
+  {
+    "extras": {
+      "first_seen_at": "2026-10-21",
+      "photo_hash": "ph4",
+      "vin": "1HGCR2F30GA00004"
+    },
+    "make": "Honda",
+    "model": "Accord",
+    "odometer": 88000,
+    "posted_at": "2026-10-19",
+    "price": 11000,
+    "segment": "sedans",
+    "source_id": "fx-4",
+    "title": "2016 Honda Accord LX",
+    "year": 2016,
+    "zip": "35401"
+  }
+]

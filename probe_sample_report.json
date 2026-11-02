@@ -1,0 +1,151 @@
+{
+  "budget": {
+    "cap": 450,
+    "ledger_entries": 10,
+    "poll_calls": 10,
+    "stopped_at_cap": false,
+    "used": 10
+  },
+  "first_seen_by_day": {
+    "2026-10-21": 1,
+    "2026-10-22": 2
+  },
+  "freshness": {
+    "count_with_dates": 2,
+    "max_days": 2,
+    "median_days": 2.0,
+    "min_days": 2,
+    "unknown_date_listings": 1
+  },
+  "home_zip": "35401",
+  "label": "FIXTURE \u2014 NOT A REAL LISTING",
+  "listings_seen": 4,
+  "live_access": false,
+  "network_calls": 0,
+  "out_of_radius_records": 0,
+  "per_search": {
+    "hatchbacks-compact": {
+      "listings_seen": 0,
+      "matches": 0,
+      "name": "Hatchbacks and compact cars",
+      "segment": "hatchbacks-compact",
+      "stopped_at_cap": false,
+      "unique": 0
+    },
+    "jeeps-offroad": {
+      "listings_seen": 0,
+      "matches": 0,
+      "name": "Jeeps and off-road SUVs",
+      "segment": "jeeps-offroad",
+      "stopped_at_cap": false,
+      "unique": 0
+    },
+    "newer-value": {
+      "listings_seen": 0,
+      "matches": 0,
+      "name": "Newer value cars 2015-2020",
+      "segment": "newer-value",
+      "stopped_at_cap": false,
+      "unique": 0
+    },
+    "older-value": {
+      "listings_seen": 0,
+      "matches": 0,
+      "name": "Older value cars 2000-2012",
+      "segment": "older-value",
+      "stopped_at_cap": false,
+      "unique": 0
+    },
+    "sedans": {
+      "listings_seen": 1,
+      "matches": 1,
+      "name": "Sedans",
+      "segment": "sedans",
+      "stopped_at_cap": false,
+      "unique": 1
+    },
+    "suvs": {
+      "listings_seen": 0,
+      "matches": 0,
+      "name": "SUVs",
+      "segment": "suvs",
+      "stopped_at_cap": false,
+      "unique": 0
+    },
+    "trucks-fullsize": {
+      "listings_seen": 3,
+      "matches": 2,
+      "name": "Full-size trucks",
+      "segment": "trucks-fullsize",
+      "stopped_at_cap": false,
+      "unique": 2
+    },
+    "trucks-midsize": {
+      "listings_seen": 0,
+      "matches": 0,
+      "name": "Midsize trucks",
+      "segment": "trucks-midsize",
+      "stopped_at_cap": false,
+      "unique": 0
+    },
+    "vans-minivans": {
+      "listings_seen": 0,
+      "matches": 0,
+      "name": "Vans and minivans",
+      "segment": "vans-minivans",
+      "stopped_at_cap": false,
+      "unique": 0
+    },
+    "work-vans-trucks": {
+      "listings_seen": 0,
+      "matches": 0,
+      "name": "Work vans and cargo trucks",
+      "segment": "work-vans-trucks",
+      "stopped_at_cap": false,
+      "unique": 0
+    }
+  },
+  "price_band": [
+    2000,
+    15000
+  ],
+  "qualifying_definition": "A qualifying match here means only: in radius, in the segment price/year/make bounds. It is NOT a deal, a valuation, or a profit estimate.",
+  "radius_mi": 100,
+  "relist_records": 1,
+  "run_date": "2026-10-22",
+  "scope": "Separate preliminary fixture measurement only. NOT the PILOT_TUSCALOOSA.md pilot (150 miles, 10 testers). Fixture counts are NOT observed market inventory, customer demand, valuation accuracy, or licensing permission.",
+  "segments_excluded": "Any segment not in the owner-approved config is excluded. No segment in a report is owner-approved unless the config file itself was owner-approved.",
+  "segments_included": [
+    "trucks-fullsize",
+    "trucks-midsize",
+    "suvs",
+    "sedans",
+    "hatchbacks-compact",
+    "vans-minivans",
+    "work-vans-trucks",
+    "jeeps-offroad",
+    "older-value",
+    "newer-value"
+  ],
+  "sources_allowed": [
+    "fixture"
+  ],
+  "sources_blocked": [
+    "bat",
+    "cars_and_bids",
+    "copart",
+    "craigslist",
+    "ebay",
+    "facebook",
+    "govdeals",
+    "gsa",
+    "hemmings",
+    "iaa",
+    "marketcheck",
+    "marketcheck_fsbo",
+    "marketplace",
+    "offerup",
+    "publicsurplus"
+  ],
+  "unique_listings": 3
+}
