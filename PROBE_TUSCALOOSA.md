@@ -17,45 +17,124 @@ of synthetic fixtures, not observed market inventory.
 
 ## What the probe does and does not prove
 
-Does prove (on fixtures only): shared polling charges once per segment;
-a simulated budget stops at its cap; pagination and retries can be
-counted; blocked sources are refused before any poll; dedupe and
-freshness logic are deterministic; reports are reproducible.
+Does prove (on fixtures only): shared polling charges once per segment
+(sequentially and, after the review repair, concurrently); a simulated
+budget stops at its cap and rejects invalid reservations; pagination
+and retries are counted by a real paged poll; blocked sources are
+refused before any poll; per-segment and global dedupe are
+order-independent; freshness is computed only from real observation
+dates; reports are reproducible.
 
 Does NOT prove: real vehicle inventory in Tuscaloosa or Birmingham;
 listing density, freshness, or match rates in any real market;
 valuation accuracy or profit; customer demand; willingness to pay;
 licensing permission for MarketCheck, eBay, or any other source; or
 that any segment will produce deals. A "qualifying match" in a probe
-report means only: in radius, in the segment price/year/make bounds.
-It is not a deal.
+report means only: in radius, inside the segment price/year bounds,
+and, for a category segment, inside its model/make bounds. It is not
+a deal.
+
+## Segment classification — corrected after independent review
+
+The original PR #20 head classified segments by price and year only,
+so a sedan could match a truck segment and trucks-fullsize,
+trucks-midsize, and work-vans-trucks were indistinguishable. That
+defect is fixed, not documented away:
+
+- A segment is a *category* segment only when it lists explicit
+  model families and/or makes. A listing must match them; a missing
+  or ambiguous model never matches a category segment.
+  - trucks-fullsize: model families f150, f250, f350, f450,
+    silverado, sierra, tundra, titan, ram1500, ram2500, ram3500.
+    A model matches by normalized prefix, so "Silverado 1500"
+    matches "silverado", and "F-150 XLT" matches "f150". Bare "ram"
+    does not match, because it is ambiguous.
+  - trucks-midsize: ranger, colorado, canyon, tacoma, frontier,
+    gladiator, ridgeline.
+  - jeeps-offroad: make "jeep" only. Jeep is a make, and every Jeep
+    vehicle in the available data is an SUV/off-road vehicle, so a
+    make filter is a responsible category mechanism here.
+- Every other proposed category was consolidated, because make/model
+  alone cannot distinguish SUVs, sedans, hatchbacks, vans, and
+  work-vans responsibly without exhaustive model lists that would
+  false-negative legitimate vehicles. Those segments are now
+  price/year bands, honestly labelled as such:
+  - band-2008-2020: $2,000–$15,000, 2008–2020, no category claim.
+  - older-value: $2,000–$8,000, 2000–2012.
+  - newer-value: $8,000–$15,000, 2015–2020.
+  A band match must never be quoted as a category match. If a future
+  probe needs SUV/sedan/van categories, it needs a body-type field
+  from a provider or a curated, tested model list — not a rename.
 
 ## Proposed real segment list — NOT owner-approved
 
-`probe_segments_proposed.json` contains 10 proposed segments for
-separate owner approval. No segment in that file is approved, and no
-fixture in this repository was chosen to imply that a segment has
-supply. The owner must approve the real segment list, in writing,
-before any live probe is designed around it. Synthetic test
-configurations in `tests/test_probe_tuscaloosa.py` are explicitly
-synthetic and are not that approval.
+`probe_segments_proposed.json` now contains 6 segments (3 category,
+3 price/year bands) for separate owner approval. No segment in that
+file is approved, and no fixture in this repository was chosen to
+imply that a segment has supply. The owner must approve the real
+segment list, in writing, before any live probe is designed around
+it. Synthetic test configurations in
+`tests/test_probe_tuscaloosa.py` are explicitly synthetic and are not
+that approval.
 
-Proposed segments (price/year bounds only; no counts, no demand):
-trucks-fullsize, trucks-midsize, suvs, sedans, hatchbacks-compact,
-vans-minivans, work-vans-trucks, jeeps-offroad, older-value
-(2000–2012, $2,000–$8,000), newer-value (2015–2020, $8,000–$15,000).
+## Deduplication, relists, and repeated observations — exact definitions
+
+- Global vehicle identity and per-segment membership are separate.
+  A vehicle in two segments counts in each segment's unique and
+  match counts, while the global unique count stays 1. Segment order
+  does not change per-segment or global results, except that a
+  budget cap stops later segments first, which is reported per
+  segment as `stopped_at_cap`.
+- Per-segment match totals must NOT be summed. Use `global_matches`
+  for unique qualifying vehicles.
+- Genuine relist: same dedupe key, same segment, later first_seen_at
+  than the first observation in that segment, AND a different
+  source_id.
+- Repeated observation: same dedupe key, same segment, but not a
+  genuine relist (same or earlier first_seen_at, or the same
+  source_id). This is a duplicate record, not evidence of a new
+  listing event.
+- Cross-segment overlap: same dedupe key first seen in a different
+  segment. This is neither a relist nor a repeated observation; it
+  is multi-segment membership of one vehicle.
+- Global freshness uses, for each unique vehicle, the earliest known
+  first-seen and earliest known posted date across its per-segment
+  first observations, so it is also order-independent.
+
+## Freshness integrity
+
+First-seen comes ONLY from the fixture's `first_seen_at` field.
+There is no fallback to posted_at. Missing or malformed dates are
+unknown, never zero lag. A first-seen date before the posted date,
+or any date after `run_date` when `run_date` is supplied, is
+invalid, never a negative lag. Unknown first-seen dates never
+populate `first_seen_by_day`; a known first-seen date does populate
+it even when the posted date is unknown, because the observation
+date itself is known. The report separates valid, unknown, and
+invalid counts, with median/min/max computed from valid lags only.
 
 ## Budget safeguards — what is simulated, what is not
 
 The probe's `SimulatedBudget` reserves atomically under a lock in one
 process, counts pages, retries, and failures, and stops at the cap.
-That is a simulation for offline verification.
+Reservations below 1 and caps at or below 0 are rejected with
+`ValueError`, so invalid inputs cannot reduce recorded usage or
+create capacity. `SharedPoller` holds one lock across cache lookup,
+reservation, fetching, and cache publication, so concurrent polls
+of one segment fetch once and charge once; a failed fetch leaves no
+cache entry and its budget charge stands.
+
+Budget is charged per segment polled, even if a segment has zero
+fixtures, because polling a segment is an attempt regardless of
+results. With pagination, a segment costs one call per page, with a
+minimum of one call per segment polled. The sample report's budget
+therefore reflects segments polled (and pages), not listings seen.
 
 Existing `provider_budget.py` (reused as a concept, not as code here)
 is DB-backed, checks `remaining()` and then `record()`s in two steps,
-and records successful calls. Under parallel requests that check-then-
-record window can overspend, and a failed request that was attempted
-is not necessarily recorded as a cost.
+and records successful calls. Under parallel requests that
+check-then-record window can overspend, and a failed request that was
+attempted is not necessarily recorded as a cost.
 
 A future live enforcement layer would therefore still need, at
 minimum: a single transactional reserve-and-record operation in the
@@ -65,6 +144,20 @@ persistence (a committed ledger row, not a temp-file replace), and a
 live gate that is a separate, owner-approved change — never a flag
 added silently to this fixture module. Those changes are documented
 here and are NOT in this PR, by design, to keep this PR narrow.
+This simulated ledger must never be presented as production-grade
+cost enforcement.
+
+## Pagination and retry accounting — implemented, not just claimed
+
+`SharedPoller.poll_paged()` polls a segment page by page. Each page
+attempt, including a failed attempt and its retry, costs one budget
+call. If a page exhausts its retries or the budget, no partial
+result is cached and a later poll retries from the first page.
+`run_probe()` uses paged polling for every segment (default page
+size 100, so small fixture sets still cost one call per segment).
+The paged/retry behaviour is tested directly in
+`tests/test_probe_tuscaloosa.py`, not only through direct
+`reserve()` calls.
 
 ## Security
 
@@ -72,12 +165,17 @@ here and are NOT in this PR, by design, to keep this PR narrow.
   notifications, no live adapter imports in `probe_tuscaloosa.py`.
 - Source policy: only source id "fixture" is allowed. Every real
   source, including MarketCheck and eBay, raises BlockedSourceError
-  before any poll.
+  before any poll. This is an allowlist: any source id other than
+  "fixture" raises, whether or not it appears in the report's
+  example blocklist. The example list in reports is not exhaustive,
+  and the report now says so explicitly.
 - Licensing controls in `sources/__init__.py` (`licensing_block`)
   are untouched and are not bypassed by this module; the probe does
   not call `iter_sources` or `poll_all` at all.
 - Synthetic fixtures are labelled "FIXTURE — NOT A REAL LISTING" in
-  code, in reports, and in sample files.
+  code, in reports, and in sample files, and use unmistakably
+  synthetic identifiers such as FIXTURE-VIN-001, never realistic
+  VINs.
 
 ## Running it
 

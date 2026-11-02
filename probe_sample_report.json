@@ -1,22 +1,26 @@
 {
+  "all_non_fixture_sources_blocked": true,
   "budget": {
     "cap": 450,
-    "ledger_entries": 10,
-    "poll_calls": 10,
+    "ledger_entries": 6,
+    "poll_calls": 6,
     "stopped_at_cap": false,
-    "used": 10
+    "used": 6
   },
+  "budget_note": "Budget is charged per segment polled, even if a segment has zero fixtures, because polling a segment is an attempt regardless of results. With pagination, a segment costs one call per page, with a minimum of one call per segment polled. This ledger is a fixture simulation, not production-grade cost enforcement.",
   "first_seen_by_day": {
     "2026-10-21": 1,
     "2026-10-22": 2
   },
   "freshness": {
     "count_with_dates": 2,
+    "invalid_date_listings": 0,
     "max_days": 2,
     "median_days": 2.0,
     "min_days": 2,
     "unknown_date_listings": 1
   },
+  "global_matches": 3,
   "home_zip": "35401",
   "label": "FIXTURE \u2014 NOT A REAL LISTING",
   "listings_seen": 4,
@@ -24,83 +28,75 @@
   "network_calls": 0,
   "out_of_radius_records": 0,
   "per_search": {
-    "hatchbacks-compact": {
-      "listings_seen": 0,
-      "matches": 0,
-      "name": "Hatchbacks and compact cars",
-      "segment": "hatchbacks-compact",
+    "band-2008-2020": {
+      "kind": "price_year_band",
+      "listings_seen": 1,
+      "matches": 1,
+      "name": "General price/year band 2008-2020 (not a vehicle category)",
+      "out_of_radius": 0,
+      "relists": 0,
+      "repeated_observations": 0,
+      "segment": "band-2008-2020",
       "stopped_at_cap": false,
-      "unique": 0
+      "unique": 1
     },
     "jeeps-offroad": {
+      "kind": "category",
       "listings_seen": 0,
       "matches": 0,
-      "name": "Jeeps and off-road SUVs",
+      "name": "Jeep vehicles (make category)",
+      "out_of_radius": 0,
+      "relists": 0,
+      "repeated_observations": 0,
       "segment": "jeeps-offroad",
       "stopped_at_cap": false,
       "unique": 0
     },
     "newer-value": {
+      "kind": "price_year_band",
       "listings_seen": 0,
       "matches": 0,
-      "name": "Newer value cars 2015-2020",
+      "name": "Newer value price/year band 2015-2020",
+      "out_of_radius": 0,
+      "relists": 0,
+      "repeated_observations": 0,
       "segment": "newer-value",
       "stopped_at_cap": false,
       "unique": 0
     },
     "older-value": {
+      "kind": "price_year_band",
       "listings_seen": 0,
       "matches": 0,
-      "name": "Older value cars 2000-2012",
+      "name": "Older value price/year band 2000-2012",
+      "out_of_radius": 0,
+      "relists": 0,
+      "repeated_observations": 0,
       "segment": "older-value",
       "stopped_at_cap": false,
       "unique": 0
     },
-    "sedans": {
-      "listings_seen": 1,
-      "matches": 1,
-      "name": "Sedans",
-      "segment": "sedans",
-      "stopped_at_cap": false,
-      "unique": 1
-    },
-    "suvs": {
-      "listings_seen": 0,
-      "matches": 0,
-      "name": "SUVs",
-      "segment": "suvs",
-      "stopped_at_cap": false,
-      "unique": 0
-    },
     "trucks-fullsize": {
+      "kind": "category",
       "listings_seen": 3,
       "matches": 2,
-      "name": "Full-size trucks",
+      "name": "Full-size trucks (model category)",
+      "out_of_radius": 0,
+      "relists": 1,
+      "repeated_observations": 0,
       "segment": "trucks-fullsize",
       "stopped_at_cap": false,
       "unique": 2
     },
     "trucks-midsize": {
+      "kind": "category",
       "listings_seen": 0,
       "matches": 0,
-      "name": "Midsize trucks",
+      "name": "Midsize trucks (model category)",
+      "out_of_radius": 0,
+      "relists": 0,
+      "repeated_observations": 0,
       "segment": "trucks-midsize",
-      "stopped_at_cap": false,
-      "unique": 0
-    },
-    "vans-minivans": {
-      "listings_seen": 0,
-      "matches": 0,
-      "name": "Vans and minivans",
-      "segment": "vans-minivans",
-      "stopped_at_cap": false,
-      "unique": 0
-    },
-    "work-vans-trucks": {
-      "listings_seen": 0,
-      "matches": 0,
-      "name": "Work vans and cargo trucks",
-      "segment": "work-vans-trucks",
       "stopped_at_cap": false,
       "unique": 0
     }
@@ -109,28 +105,116 @@
     2000,
     15000
   ],
-  "qualifying_definition": "A qualifying match here means only: in radius, in the segment price/year/make bounds. It is NOT a deal, a valuation, or a profit estimate.",
+  "qualifying_definition": "A qualifying match here means only: in radius, and inside the segment's price/year bounds, plus its model/make bounds when the segment is a category segment. It is NOT a deal, a valuation, or a profit estimate. Per-segment match totals must not be summed: use global_matches for unique qualifying vehicles.",
   "radius_mi": 100,
+  "relist_definition": "Genuine relist: same dedupe key, same segment, later first_seen_at than the first observation in that segment, and a different source_id. Repeated observation: same dedupe key, same segment, but not a genuine relist (same or earlier first_seen_at, or the same source_id). Cross-segment overlap is neither a relist nor a repeated observation.",
   "relist_records": 1,
+  "repeated_observations": 0,
   "run_date": "2026-10-22",
   "scope": "Separate preliminary fixture measurement only. NOT the PILOT_TUSCALOOSA.md pilot (150 miles, 10 testers). Fixture counts are NOT observed market inventory, customer demand, valuation accuracy, or licensing permission.",
-  "segments_excluded": "Any segment not in the owner-approved config is excluded. No segment in a report is owner-approved unless the config file itself was owner-approved.",
+  "segments_detail": [
+    {
+      "id": "trucks-fullsize",
+      "kind": "category",
+      "makes": [],
+      "max_price": 15000,
+      "max_year": 2020,
+      "min_price": 2000,
+      "min_year": 2005,
+      "models": [
+        "f150",
+        "f250",
+        "f350",
+        "f450",
+        "silverado",
+        "sierra",
+        "tundra",
+        "titan",
+        "ram1500",
+        "ram2500",
+        "ram3500"
+      ],
+      "name": "Full-size trucks (model category)"
+    },
+    {
+      "id": "trucks-midsize",
+      "kind": "category",
+      "makes": [],
+      "max_price": 15000,
+      "max_year": 2020,
+      "min_price": 2000,
+      "min_year": 2005,
+      "models": [
+        "ranger",
+        "colorado",
+        "canyon",
+        "tacoma",
+        "frontier",
+        "gladiator",
+        "ridgeline"
+      ],
+      "name": "Midsize trucks (model category)"
+    },
+    {
+      "id": "jeeps-offroad",
+      "kind": "category",
+      "makes": [
+        "jeep"
+      ],
+      "max_price": 15000,
+      "max_year": 2020,
+      "min_price": 2000,
+      "min_year": 2005,
+      "models": [],
+      "name": "Jeep vehicles (make category)"
+    },
+    {
+      "id": "band-2008-2020",
+      "kind": "price_year_band",
+      "makes": [],
+      "max_price": 15000,
+      "max_year": 2020,
+      "min_price": 2000,
+      "min_year": 2008,
+      "models": [],
+      "name": "General price/year band 2008-2020 (not a vehicle category)"
+    },
+    {
+      "id": "older-value",
+      "kind": "price_year_band",
+      "makes": [],
+      "max_price": 8000,
+      "max_year": 2012,
+      "min_price": 2000,
+      "min_year": 2000,
+      "models": [],
+      "name": "Older value price/year band 2000-2012"
+    },
+    {
+      "id": "newer-value",
+      "kind": "price_year_band",
+      "makes": [],
+      "max_price": 15000,
+      "max_year": 2020,
+      "min_price": 8000,
+      "min_year": 2015,
+      "models": [],
+      "name": "Newer value price/year band 2015-2020"
+    }
+  ],
+  "segments_excluded": "Any segment not in the owner-approved config is excluded. No segment in a report is owner-approved unless the config file itself was owner-approved. Category segments require a model/make match; price/year band segments claim no vehicle category.",
   "segments_included": [
     "trucks-fullsize",
     "trucks-midsize",
-    "suvs",
-    "sedans",
-    "hatchbacks-compact",
-    "vans-minivans",
-    "work-vans-trucks",
     "jeeps-offroad",
+    "band-2008-2020",
     "older-value",
     "newer-value"
   ],
   "sources_allowed": [
     "fixture"
   ],
-  "sources_blocked": [
+  "sources_blocked_examples": [
     "bat",
     "cars_and_bids",
     "copart",
@@ -147,5 +231,6 @@
     "offerup",
     "publicsurplus"
   ],
+  "sources_blocked_note": "Allowlist only: only 'fixture' is allowed. Any other source id raises BlockedSourceError. The examples list above is not exhaustive.",
   "unique_listings": 3
 }
