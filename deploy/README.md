@@ -14,7 +14,7 @@ runs automatically. Operator-driven, reviewable, idempotent.
 | `restore.sh`           | **OFF-HOST** decryption + restore. Runs on your Mac (refuses to run on the VPS). Pulls a named or newest backup from B2 with a read-only B2 key, decrypts locally using the age **private** key (which never leaves your Mac), restores into an isolated local verification database, runs migrations against it, prints row counts. Used for the "backup verified" acceptance drill. |
 | `Caddyfile.staging`    | Caddy reverse-proxy template. Substitutes `${STAGING_HOSTNAME}` at install time. |
 | `env.staging.example`  | Template for `/etc/sniper/env` on the staging host. **Never** filled in from chat — all secrets typed directly on the host. |
-| `systemd/sniper-migrate.service`   | One-shot: runs `python3 -m migrations.runner`, must succeed before web/scheduler start. |
+| `systemd/sniper-migrate.service`   | One-shot: runs `python3 -m migrations.runner` at boot and on every deploy and rollback (`sync.sh` restarts it), before web/scheduler start. Stays active after it succeeds, so restarting the app doesn't re-run it; use `systemctl restart sniper-migrate` to run it by hand. |
 | `systemd/sniper-web.service`       | Gunicorn, bound to `127.0.0.1:8765`. Cannot start until migrate succeeds. **Web never owns the scheduler.** |
 | `systemd/sniper-scheduler.service` | `python3 -m jobs.scheduler --interval 60`. **Disabled by default** — operator enables manually after approving source config. |
 | `systemd/sniper-reconcile.service` | Oneshot: `python3 -m jobs.reconcile_billing`. |

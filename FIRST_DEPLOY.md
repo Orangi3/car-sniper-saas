@@ -285,7 +285,10 @@ Full server loss:
    systemctl stop sniper-web sniper-worker sniper-scheduler
    sudo -u postgres pg_restore --clean --if-exists --no-owner --role=sniper -d sniper /tmp/dump.bin
    shred -u /tmp/dump.bin
-   systemctl start sniper-migrate sniper-web sniper-worker sniper-scheduler
+   systemctl restart sniper-migrate
+   systemctl start sniper-web sniper-worker sniper-scheduler
    ```
+   (`restart`, not `start`: the migrate unit stays active after it runs, so
+   `start` would skip the migrations an older backup may need.)
 
 Never run a restore against the live database to "test" it.
