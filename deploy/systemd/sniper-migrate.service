@@ -6,7 +6,13 @@ Before=sniper-web.service sniper-scheduler.service
 
 [Service]
 Type=oneshot
-RemainAfterExit=no
+# Stays active after it succeeds, so restarting web, worker or scheduler
+# (each Wants= this unit) doesn't run it again. It used to: one deploy or
+# rollback started it 4 times in a second, and systemd refuses a 6th start
+# within 10 s, which stopped a rollback half-way. deploy/sync.sh restarts
+# this unit itself on every deploy and rollback; after a restore, use
+# `systemctl restart sniper-migrate` (start is a no-op while it's active).
+RemainAfterExit=yes
 User=sniper
 Group=sniper
 WorkingDirectory=/opt/sniper/current
