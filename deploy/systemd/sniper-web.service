@@ -16,7 +16,7 @@ EnvironmentFile=/etc/sniper/env
 Environment=SNIPER_LOG_DIR=/var/log/sniper
 # GUNICORN_WORKERS lives in /etc/sniper/env (default 2 — tune AFTER
 # observing CPU/RSS/request load; do NOT hard-code as a correctness req).
-ExecStart=/opt/sniper/.venv/bin/gunicorn server:app \
+ExecStart=/opt/sniper/current/.venv/bin/python3 -m gunicorn server:app \
             --workers ${GUNICORN_WORKERS} \
             --bind 127.0.0.1:8765 \
             --access-logfile /var/log/sniper/web-access.log \

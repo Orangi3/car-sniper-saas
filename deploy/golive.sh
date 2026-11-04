@@ -14,7 +14,7 @@ set -uo pipefail
 
 ENV_FILE=/etc/sniper/env
 APP=/opt/sniper/current
-PY=/opt/sniper/.venv/bin/python3
+PY=/opt/sniper/current/.venv/bin/python3
 TEST_EMAIL=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
