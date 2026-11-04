@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import os
 from pathlib import Path
 import subprocess
 import tarfile
@@ -49,6 +50,28 @@ NEW_UNITS = {
     SCHEDULER: "ExecStart=/opt/sniper/current/.venv/bin/python3 -m scheduler\n",
     WORKER: "ExecStart=/opt/sniper/current/.venv/bin/python3 -m worker\n",
 }
+
+
+# The real production check, saved before any fixture patching: the
+# dedicated tests below call it directly so the ownership invariant
+# is proven against the production code, not the test seam.
+_REAL_CHECK = host.check_system_dir
+
+
+def _stat_result(uid):
+    """A directory stat_result with a controlled owner uid (real
+    directory mode, so is_dir() still works under a Path.stat mock)."""
+    return os.stat_result((0o40755, 0, 0, 1, uid, 0, 0, 0, 0, 0))
+
+
+def _test_system_dir_check(path):
+    """Test seam for simulated deployments: enforce that the unit
+    directory is a real directory and not a symlink, but skip the
+    root-ownership check, which a temp directory on an unprivileged
+    CI runner cannot satisfy. See _REAL_CHECK tests below for the
+    production ownership proof."""
+    host.require(path.is_dir() and not path.is_symlink(),
+                 f"Systemd unit directory is not a real directory: {path}")
 
 
 class FakeRun:
@@ -110,6 +133,11 @@ class ReviewFixTests(unittest.TestCase):
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve()
+        # Simulated deployments run with a temp unit directory: keep
+        # the directory/symlink checks, skip only the root-ownership
+        # check (see _test_system_dir_check and the _REAL_CHECK tests).
+        self.stack.enter_context(
+            patch.object(host, "check_system_dir", _test_system_dir_check))
         self.system_dir = self.root / "system"
         self.system_dir.mkdir()
         self.fake = FakeRun(self.system_dir)
@@ -259,6 +287,35 @@ class ReviewFixTests(unittest.TestCase):
         self.make_release(PREVIOUS, units=NEW_UNITS, venv=True)
         with self.assertRaises(RuntimeError):
             t.rollback(OLD, PREVIOUS)
+
+    # ---- production ownership guard, tested directly ----
+    # These call the REAL host.check_system_dir (not the fixture
+    # seam), so the production invariant is proven on every runner:
+    # ownership is simulated by mocking only Path.stat's uid, which
+    # is deterministic whether the runner is root or not. The mock
+    # keeps a real directory mode so is_dir() still works.
+    def test_production_check_accepts_root_owned_directory(self):
+        target = self.root / "owned"
+        target.mkdir()
+        with patch.object(Path, "stat",
+                          lambda self, **kwargs: _stat_result(0)):
+            _REAL_CHECK(target)
+
+    def test_production_check_rejects_non_root_owned_directory(self):
+        target = self.root / "owned"
+        target.mkdir()
+        with patch.object(Path, "stat",
+                          lambda self, **kwargs: _stat_result(1000)):
+            with self.assertRaises(RuntimeError):
+                _REAL_CHECK(target)
+
+    def test_production_check_rejects_symlinked_directory(self):
+        real = self.root / "real-system"
+        real.mkdir()
+        link = self.root / "link-system"
+        host.os.symlink(real, link)
+        with self.assertRaises(RuntimeError):
+            _REAL_CHECK(link)
 
     # ---- m10: ssh robustness ----
     def test_sync_sh_uses_batch_mode_and_connect_timeout(self):

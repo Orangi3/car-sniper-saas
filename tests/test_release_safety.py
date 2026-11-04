@@ -52,6 +52,18 @@ OLD_UNITS = {
 }
 
 
+def _test_system_dir_check(path):
+    """Test seam for simulated deployments: enforce that the unit
+    directory is a real directory and not a symlink, but skip the
+    root-ownership check, which a temp directory on an unprivileged
+    CI runner cannot satisfy. The ownership check itself is NOT
+    skipped in production (sync_units always calls the real
+    host.check_system_dir) and is covered by dedicated tests in
+    test_review_fixes.py calling that function directly."""
+    host.require(path.is_dir() and not path.is_symlink(),
+                 f"Systemd unit directory is not a real directory: {path}")
+
+
 class FakeRun:
     def __init__(self, system_dir):
         self.calls = []
@@ -135,6 +147,12 @@ class SafetyTests(unittest.TestCase):
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve()
         self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
         self.stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        # Simulated deployments run with a temp unit directory: keep
+        # the directory/symlink checks, skip only the root-ownership
+        # check (see _test_system_dir_check). Production sync always
+        # uses the real host.check_system_dir.
+        self.stack.enter_context(
+            patch.object(host, "check_system_dir", _test_system_dir_check))
         self.system_dir = self.root / "system"
         self.system_dir.mkdir()
         self.fake = FakeRun(self.system_dir)

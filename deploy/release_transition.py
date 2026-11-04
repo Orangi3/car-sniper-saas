@@ -87,6 +87,21 @@ def host_lock(path):
         os.close(fd)
 
 
+def check_system_dir(path):
+    """Enforce the production unit-directory invariant: a real
+    directory, not a symlink, owned by root (uid 0). Called by
+    sync_units() on every deploy/rollback/recovery; never bypassed
+    in production (main() runs as root and passes no override).
+    Tests that simulate deployment with a temp directory patch this
+    function with a stub that keeps the directory/symlink checks
+    and skips only the uid check — the uid check itself is covered
+    by dedicated tests calling this function directly."""
+    require(path.is_dir()
+            and not path.is_symlink()
+            and path.stat().st_uid == 0,
+            f"Systemd unit directory is not a root-owned directory: {path}")
+
+
 class Transition:
     def __init__(self, root, run, system_dir=None):
         self.root = root
@@ -326,10 +341,7 @@ class Transition:
         if not sources:
             return []
         self.require_release_venv(release_dir)
-        require(self.system_dir.is_dir()
-                and not self.system_dir.is_symlink()
-                and self.system_dir.stat().st_uid == 0,
-                f"Systemd unit directory is not a root-owned directory: {self.system_dir}")
+        check_system_dir(self.system_dir)
         installed = []
         for name, path in sources:
             text = path.read_text(encoding="utf-8")
