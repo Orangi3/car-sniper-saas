@@ -251,6 +251,8 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                                   reason="disclosed:" + "+".join(disclosed))
             else:
                 touched.append((now, cid))
+            if disclosed:
+                _hold_disclosed_risk(conn, cid, disclosed)
         if touched:
             conn.executemany("UPDATE listings SET last_seen_at = ? WHERE composite_id = ?",
                              touched)
@@ -277,6 +279,28 @@ def _disclosure_flags(l: NormalizedListing, prev: dict, scam_fn) -> tuple[tuple,
     if scam >= SCAM_FLAG_SCORE > old:
         disclosed.append("scam_signals")
     return (salvage, needs_work, scam, reasons), disclosed
+
+
+def _hold_disclosed_risk(conn, composite_id: str, disclosed: list[str]) -> None:
+    """Take a car that just disclosed a problem out of the trusted feed now,
+    in the transaction that stores the disclosure — not when its re-score
+    runs. That job can wait behind a saturated score queue, sit with a
+    crashed worker until its lease expires, or dead-letter (backfill only
+    re-queues price changes), and the feeds read the stored valuation
+    meanwhile. Only lowers trust and adds the disclosed flags, all blocking:
+    the re-score sees the same sticky flags, reaches the same verdict and
+    refreshes the rest."""
+    r = conn.execute("SELECT risk_flags FROM near_misses WHERE composite_id = ?",
+                     (composite_id,)).fetchone()
+    if r is None:
+        return                        # never valued: nothing shows it as trusted
+    try:
+        flags = list(json.loads(r[0] or "[]"))
+    except (TypeError, ValueError):
+        flags = []
+    flags += [f for f in disclosed if f not in flags]
+    conn.execute("UPDATE near_misses SET trust = 'risk', risk_flags = ? "
+                 "WHERE composite_id = ?", (json.dumps(flags), composite_id))
 
 
 def _location(l: NormalizedListing) -> tuple:
@@ -527,6 +551,12 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
     sold, sold_err = _sold_evidence(l)          # network; outside the txn
     now = datetime.now(timezone.utc).isoformat()
     with db() as conn:
+        # a disclosure stored during the lookup above must not be overwritten
+        # by a verdict from the row read before it (the flags are sticky)
+        cur = conn.execute("SELECT is_salvage, needs_work, scam_score FROM listings "
+                           "WHERE composite_id = ?", (composite_id,)).fetchone()
+        if cur:
+            l.update(dict(cur))
         peers = valuation.load_peers(conn, l)
         v = valuation.value_listing(l, peers, sold)
         if sold_err:
