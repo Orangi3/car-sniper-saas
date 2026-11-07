@@ -99,6 +99,15 @@ def find_vin(*texts: str) -> Optional[str]:
     return None
 
 
+def listing_vin(l: NormalizedListing) -> Optional[str]:
+    """The vehicle's VIN: one printed in the title or description, else the
+    provider's own VIN field (MarketCheck: extras["vin"]) — the same car on
+    two marketplaces arrives as two records whose text may carry no VIN.
+    Both are held to the same bar: the check digit must verify."""
+    raw = (l.extras or {}).get("vin")
+    return find_vin(l.title, l.description) or (find_vin(str(raw)) if raw else None)
+
+
 def _norm_title(t: str) -> str:
     """Title without its price tag ("… - $9,000", "$9k"): a relist at a new
     price must still compare equal."""
@@ -293,7 +302,7 @@ def _location(l: NormalizedListing) -> tuple:
 def _insert_listing(conn, l: NormalizedListing, now: str, scam_fn) -> None:
     cid = l.composite_id()
     sc, reasons = scam_fn(l.title, l.description, l.price, None)
-    vin = find_vin(l.title, l.description)
+    vin = listing_vin(l)
     vehicle_key = f"vin:{vin}" if vin else None
     trim = valuation.parse_trim(l.title, l.model)
     relist = _find_relist(conn, l, vehicle_key, cid)
