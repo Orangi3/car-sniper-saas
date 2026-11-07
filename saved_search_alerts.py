@@ -13,7 +13,9 @@ against each entitled subscriber's own saved searches:
   * each search's own criteria decide (see `criteria_match`)
   * one match per user per event: several matching searches → one
     notification (UNIQUE(user_id, event_key) in user_matches); the same car
-    cross-posted on another source is not re-sent within 14 days
+    cross-posted on another source is not re-sent within 14 days — same VIN,
+    or without a VIN the conservative identity in vehicle_identity.py — and
+    each such suppression is recorded in alert_suppressions
   * plan limits are enforced here, server-side: entitled plans only, at
     most N active searches, alerts/day cap (extra matches still land in the
     tray, unnotified), price-drop alerts and aggressive mode for Pro, SMS
@@ -155,6 +157,42 @@ def _month_start(now: datetime) -> str:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
 
 
+def _already_alerted_vehicle(conn, uid: int, opp: dict,
+                             now: datetime) -> Optional[tuple[str, str, dict]]:
+    """(earlier listing, reason, evidence) when this subscriber was matched to
+    the same vehicle through another listing within CROSS_POST_WINDOW_DAYS;
+    else None. Same VIN first (unchanged rule), then the no-VIN identity of
+    vehicle_identity.same_vehicle over the few earlier matches that share
+    year, make, model and odometer."""
+    import vehicle_identity
+    since = (now - timedelta(days=CROSS_POST_WINDOW_DAYS)).isoformat()
+    cid = opp["composite_id"]
+    if opp.get("vehicle_key"):
+        r = conn.execute(
+            "SELECT m.composite_id FROM user_matches m "
+            "JOIN listings l ON l.composite_id = m.composite_id "
+            "WHERE m.user_id = ? AND l.vehicle_key = ? AND m.composite_id <> ? "
+            "  AND m.created_at > ? ORDER BY m.created_at, m.id LIMIT 1",
+            (uid, opp["vehicle_key"], cid, since)).fetchone()
+        if r:
+            return r[0], "same_vin", {"vehicle_key": opp["vehicle_key"]}
+    if not (opp.get("year") and opp.get("odometer") and opp.get("make") and opp.get("model")):
+        return None
+    rows = conn.execute(
+        "SELECT l.* FROM user_matches m JOIN listings l ON l.composite_id = m.composite_id "
+        "WHERE m.user_id = ? AND m.composite_id <> ? AND m.created_at > ? "
+        "  AND l.source <> ? AND l.year = ? AND l.odometer = ? "
+        "  AND LOWER(l.make) = LOWER(?) AND LOWER(l.model) = LOWER(?) "
+        "ORDER BY m.created_at, m.id",
+        (uid, cid, since, opp.get("source") or "", opp["year"], opp["odometer"],
+         opp["make"], opp["model"])).fetchall()
+    for r in rows:
+        same, reason, evidence = vehicle_identity.same_vehicle(dict(r), opp)
+        if same:
+            return r["composite_id"], reason, evidence
+    return None
+
+
 def evaluate(conn, opp: dict) -> list[dict]:
     """Match one opportunity against every entitled subscriber's searches,
     inside the caller's transaction. Records user_matches rows and queues
@@ -223,15 +261,16 @@ def evaluate(conn, opp: dict) -> list[dict]:
         if hit is None:
             continue
 
-        if u_event == "new" and opp.get("vehicle_key"):
-            dup = conn.execute(
-                "SELECT 1 FROM user_matches m JOIN listings l ON l.composite_id = m.composite_id "
-                "WHERE m.user_id = ? AND l.vehicle_key = ? AND m.composite_id <> ? "
-                "  AND m.created_at > ?",
-                (uid, opp["vehicle_key"], cid,
-                 (now - timedelta(days=CROSS_POST_WINDOW_DAYS)).isoformat())).fetchone()
-            if dup:
-                continue                  # same car already sent from another source
+        if u_event == "new":
+            dup = _already_alerted_vehicle(conn, uid, opp, now)
+            if dup:                       # same car already sent from another listing
+                conn.execute(
+                    "INSERT INTO alert_suppressions(user_id, composite_id, duplicate_of, "
+                    "  reason, evidence, created_at) VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(user_id, composite_id) DO NOTHING",
+                    (uid, cid, dup[0], dup[1], json.dumps(dup[2], sort_keys=True),
+                     now.isoformat()))
+                continue
 
         sent_today = int(conn.execute(
             "SELECT COUNT(*) FROM user_matches WHERE user_id = ? AND notified = TRUE "

@@ -142,6 +142,11 @@ def deal_intelligence(conn, window_h: int = 24, top: int = 5) -> dict:
                                          (since,)).fetchone()[0]),
         "subscriber_matches": int(conn.execute(
             "SELECT COUNT(*) FROM user_matches WHERE created_at >= ?", (since,)).fetchone()[0]),
+        # alerts not sent because the subscriber already had this car from
+        # another listing (saved_search_alerts / vehicle_identity)
+        "duplicates_suppressed": {r[0]: int(r[1]) for r in conn.execute(
+            "SELECT reason, COUNT(*) FROM alert_suppressions WHERE created_at >= ? "
+            "GROUP BY reason", (since,))},
         "notifications": {"queued": jobs.get("pending", 0) + jobs.get("running", 0),
                           "delivered_to_provider": jobs.get("done", 0) - not_sent,
                           "not_sent": not_sent,
