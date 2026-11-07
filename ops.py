@@ -122,6 +122,13 @@ def deal_intelligence(conn, window_h: int = 24, top: int = 5) -> dict:
     jobs = {(r[0]): int(r[1]) for r in conn.execute(
         "SELECT status, COUNT(*) FROM jobs WHERE kind = 'notify' AND created_at >= ? "
         "GROUP BY status", (since,))}
+
+    def _done_like(pattern: str) -> int:        # done jobs the handler chose not to send
+        return int(conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE kind = 'notify' AND status = 'done' "
+            "AND created_at >= ? AND result LIKE ?", (since, pattern)).fetchone()[0])
+    not_sent = _done_like('%"skipped"%')
+    stale = _done_like('%"skipped": "stale:%')
     return {
         "window_hours": window_h, "valued_listings": len(rows),
         "funnel": funnel,
@@ -136,10 +143,14 @@ def deal_intelligence(conn, window_h: int = 24, top: int = 5) -> dict:
         "subscriber_matches": int(conn.execute(
             "SELECT COUNT(*) FROM user_matches WHERE created_at >= ?", (since,)).fetchone()[0]),
         "notifications": {"queued": jobs.get("pending", 0) + jobs.get("running", 0),
-                          "delivered_to_provider": jobs.get("done", 0),
+                          "delivered_to_provider": jobs.get("done", 0) - not_sent,
+                          "not_sent": not_sent,
+                          "stale_suppressed": stale,
                           "failed_permanently": jobs.get("dead", 0),
                           "note": "delivered = accepted by the push/SMS provider; "
-                                  "arrival on the phone is not observable"},
+                                  "arrival on the phone is not observable. not sent = "
+                                  "dropped at send time: stale (listing changed, gone or "
+                                  "no longer shown) or the recipient is no longer eligible"},
     }
 
 

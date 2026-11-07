@@ -25,12 +25,26 @@ Delivery semantics
   again. None of these providers offers an idempotency key we can use, so a
   rare duplicate push is possible; a lost alert is not.
 
+Send-time check (stale_reason)
+  A job can wait — owner quiet hours, retries through a provider outage, a
+  worker that was down, an operator re-queueing dead jobs — and notify jobs
+  run before score jobs. Every attempt therefore re-reads the listing and
+  drops the alert (job done, result "skipped: stale: ...") when the listing
+  is gone, may no longer be shown (listing_display: eBay's 6 h limit, ended
+  auction, seller listing not live), its asking price is no longer the one
+  in the alert, or it carries a blocking risk flag — or, valued at this
+  price, a trust rating — that the alert was not based on. The basis (trust
+  and blocking flags when matched) is stored beside the deal in the job and
+  never sent. A price change always queues a re-score (sniper.ingest), and
+  that re-score decides what to send at the new price.
+
 User webhooks go through safe_http (connect-time SSRF checks, no redirects,
 size limits). Payloads carry only public listing facts — never a user's
 email, phone, id or other channels.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -60,6 +74,63 @@ PUBLIC_DEAL_FIELDS = (
 
 def public_deal(deal: dict) -> dict:
     return {k: deal.get(k) for k in PUBLIC_DEAL_FIELDS if deal.get(k) is not None}
+
+
+def alert_basis(deal: dict) -> dict:
+    """What the alert relied on beyond its public facts: the listing's trust
+    and blocking risk flags when it was matched. Kept with the job for the
+    send-time check; never sent."""
+    import sniper
+    return {"trust": deal.get("trust"),
+            "blocking_flags": sorted(set(deal.get("risk_flags") or [])
+                                     & sniper.BLOCKING_FLAGS)}
+
+
+def stale_reason(conn, deal: dict, basis: Optional[dict]) -> Optional[str]:
+    """Why a queued deal alert no longer holds, or None if it may be sent.
+    See "Send-time check" above. Jobs queued before the basis was recorded
+    (basis None) get the existence, display and price checks only."""
+    cid = deal.get("composite_id")
+    if not cid:
+        return "the alert names no listing to confirm"
+    r = conn.execute(
+        "SELECT l.composite_id, l.source, l.price, l.is_auction, l.auction_end_at, "
+        "  l.last_seen_at, l.first_seen_at, l.is_salvage, l.needs_work, l.scam_score, "
+        "  nm.trust, nm.risk_flags, nm.price_at_score "
+        "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
+        "WHERE l.composite_id = ?", (cid,)).fetchone()
+    if r is None:
+        return "listing no longer exists"
+    r = dict(r)
+    import listing_display
+    hidden = listing_display.hidden_reason(
+        r, listing_display.limits(conn, include_direct=r["source"] == "direct"))
+    if hidden:
+        return hidden
+    queued, price = deal.get("price"), r.get("price")
+    if queued is None or price is None:
+        return "no asking price to confirm"
+    if int(queued) != int(price):
+        return f"asking price is ${int(price):,} now, not the ${int(queued):,} in the alert"
+    if basis is None:
+        return None
+    import sniper
+    flags = sniper.listing_blocking_flags(r)
+    valued_now = r.get("price_at_score") is not None and int(r["price_at_score"]) == int(price)
+    if valued_now:
+        try:
+            flags |= set(json.loads(r.get("risk_flags") or "[]")) & sniper.BLOCKING_FLAGS
+        except (TypeError, ValueError):
+            pass
+    new = sorted(flags - set(basis.get("blocking_flags") or []))
+    if new:
+        return "risk flag(s) the alert was not based on: " + ", ".join(new)
+    if basis.get("trust") == "trusted":
+        if r.get("trust") is None and r.get("price_at_score") is None:
+            return "listing is no longer valued"
+        if valued_now and r.get("trust") != "trusted":
+            return f"no longer rated trusted at this price (now: {r['trust']})"
+    return None
 
 
 def normalize_phone(raw: str) -> str:
@@ -340,7 +411,8 @@ def enqueue_owner(conn, deal: dict, event_key: str,
     run_after = _quiet_until()
     for ch in chans:
         jobqueue.enqueue(conn, "notify", f"notify:{event_key}:owner:{ch}",
-                         {"audience": "owner", "channel": ch, "deal": public_deal(deal)},
+                         {"audience": "owner", "channel": ch, "deal": public_deal(deal),
+                          "basis": alert_basis(deal)},
                          priority=10, max_attempts=NOTIFY_MAX_ATTEMPTS,
                          run_after=run_after)
     return chans
@@ -352,7 +424,8 @@ def enqueue_user(conn, deal: dict, event_key: str, user_id: int,
     for ch in channels:
         jid = jobqueue.enqueue(conn, "notify", f"notify:{event_key}:u{user_id}:{ch}",
                                {"audience": "user", "user_id": user_id,
-                                "channel": ch, "deal": public_deal(deal)},
+                                "channel": ch, "deal": public_deal(deal),
+                                "basis": alert_basis(deal)},
                                priority=20, max_attempts=NOTIFY_MAX_ATTEMPTS,
                                user_id=user_id)
         if jid:
@@ -419,6 +492,11 @@ def deliver_job(job: dict) -> dict:
         kw = {"phone": phone, "ntfy_topic": os.environ.get("NTFY_TOPIC"),
               "webhook": (os.environ.get("DISCORD_WEBHOOK_URL") if ch == "discord"
                           else os.environ.get("ALERT_WEBHOOK_URL"))}
+    import db as _db
+    with _db.session() as conn:          # re-checked on every attempt, retries included
+        stale = stale_reason(conn, deal, p.get("basis"))
+    if stale:
+        return {"skipped": f"stale: {stale}"}
     try:
         detail = _deliver(ch, deal, **kw)
         _record_usage(p.get("user_id") if p.get("audience") == "user" else None, ch)

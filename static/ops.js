@@ -85,7 +85,7 @@ async function load() {
       ${kpi("Sources working", "activity", `${dh.working.length} / ${total}`, dh.failing.length ? `${dh.failing.length} failing` : "none failing", dh.working.length ? "ok" : "warn")}
       ${kpi("Listings discovered", "search", num(f.discovered), `scored ${num(f.scored)} · valued ${num(f.valued)}`)}
       ${kpi("Potential opportunities", "trend", num(f.potential_opportunities), "estimated — not verified deals", f.potential_opportunities ? "ok" : "")}
-      ${kpi("Alerts delivered", "bell", num(nt.delivered_to_provider), `${num(nt.failed_permanently)} failed · ${num(nt.queued)} queued`, nt.failed_permanently ? "bad" : "")}
+      ${kpi("Alerts delivered", "bell", num(nt.delivered_to_provider), `${num(nt.failed_permanently)} failed · ${num(nt.not_sent || 0)} not sent (stale ${num(nt.stale_suppressed || 0)}) · ${num(nt.queued)} queued`, nt.failed_permanently ? "bad" : "")}
       ${kpi("Job queue", "layers", num((q.pending || 0) + (q.running || 0)), `${num(q.dead || 0)} dead-lettered${sh.queue.retried ? ` · ${num(sh.queue.retried)} retried` : ""}`, q.dead ? "bad" : "")}
       ${kpi("Database", "database", dbc ? String(dbc.detail).split(/[ ,;(]/)[0] || "—" : "—", mig ? mig.detail : "", dbc && dbc.status !== "ok" ? "bad" : "")}
       ${kpi("Scheduler", "clock", sched ? (sched.status === "ok" ? "Ticking" : ST[checkStatus(sched)][0]) : "—", sched ? sched.detail : "", sched && sched.status !== "ok" ? "warn" : "ok")}

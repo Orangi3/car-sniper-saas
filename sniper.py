@@ -308,6 +308,26 @@ def _normalize_listing(l: NormalizedListing) -> None:
 
 BLOCKING_FLAGS = {"scam_signals", "too_good_to_be_true", "branded_title", "needs_work",
                   "auction_bid", "mileage_suspect"}
+SCAM_FLAG_SCORE = 50                 # scam_detector score at which "scam_signals" is set
+
+
+def listing_blocking_flags(l: dict) -> set[str]:
+    """The blocking flags that follow from the stored listing row alone, with
+    no valuation: what notifications can check at send time even when the
+    re-score of an edited listing has not run yet. assess_risk sets the same
+    flags from the same columns."""
+    out = set()
+    if (l.get("scam_score") or 0) >= SCAM_FLAG_SCORE:
+        out.add("scam_signals")
+    if l.get("is_auction"):
+        out.add("auction_bid")
+    if l.get("is_salvage"):
+        out.add("branded_title")
+    if l.get("needs_work"):
+        out.add("needs_work")
+    return out
+
+
 # An odometer far below normal driving for the car's age is more often a typo
 # ("18k" for "180k") or an odometer problem than a find, and the valuation
 # would credit it as a low-mileage car.
@@ -333,7 +353,7 @@ def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str
     flags = []
     scam, _ = scam_score_listing(l.get("title"), l.get("description"),
                                  l.get("price"), v.value_mid)
-    if max(scam, l.get("scam_score") or 0) >= 50:
+    if max(scam, l.get("scam_score") or 0) >= SCAM_FLAG_SCORE:
         flags.append("scam_signals")
     if discount > int(CONFIG.get("max_believable_discount_pct", 50)) / 100.0:
         flags.append("too_good_to_be_true")

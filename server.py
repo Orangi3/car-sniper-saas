@@ -2263,36 +2263,16 @@ def _deal_row(r: dict, psettings: dict, plan: Optional[str],
 def _display_limits() -> dict:
     """source -> max hours since last confirmed by a poll, for sources whose
     terms limit how stale displayed data may be (eBay: 6 h); plus the set of
-    seller listings that are currently discoverable (seller_listings)."""
-    import seller_listings as sl
-    out: dict = {m.SOURCE_ID: m.DISPLAY_MAX_AGE_HOURS for m in sources.all_sources()
-                 if getattr(m, "DISPLAY_MAX_AGE_HOURS", None)}
+    seller listings that are currently discoverable (seller_listings).
+    The rules live in listing_display, shared with outbound alerts."""
+    import listing_display
     with sniper.db() as conn:
-        out["__direct__"] = sl.discoverable_ids(conn)
-    return out
+        return listing_display.limits(conn)
 
 
 def _displayable(d: dict, limits: dict) -> bool:
-    from datetime import datetime, timedelta, timezone
-    if d.get("source") == "direct":
-        return d.get("composite_id") in limits.get("__direct__", set())
-    if d.get("is_auction") and d.get("auction_end_at"):
-        try:                                  # an ended auction is not for sale
-            end = datetime.fromisoformat(str(d["auction_end_at"]).replace("Z", "+00:00"))
-            if (end if end.tzinfo else end.replace(tzinfo=timezone.utc)) <= datetime.now(timezone.utc):
-                return False
-        except ValueError:
-            pass
-    hrs = limits.get(d.get("source"))
-    if not hrs:
-        return True
-    seen = d.get("last_seen_at") or d.get("first_seen_at")
-    try:
-        t = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
-        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return False
-    return datetime.now(timezone.utc) - t <= timedelta(hours=hrs)
+    import listing_display
+    return listing_display.displayable(d, limits)
 
 
 def _rank(rows: list[dict]) -> list[dict]:
