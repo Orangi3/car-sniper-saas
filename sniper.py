@@ -164,6 +164,14 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                     listing is re-scored — so a $9,000 → $6,500 drop becomes
                     a price-change opportunity instead of being discarded
                     as a duplicate.
+    Disclosed     → a re-poll that newly shows a branded title, a mechanical
+                    problem (wording, or a provider condition such as eBay's
+                    "for parts or not working") or scam wording is stored with
+                    its text and re-scored even at an unchanged price, so the
+                    car leaves the trusted feed, stops being a clean
+                    comparable and stops alerting. These flags are never
+                    cleared by a later poll: deleting the words does not make
+                    a branded title clean.
     Score jobs are keyed by (listing, price): unchanged re-polls never
     re-score or re-alert."""
     from scam_detector import score_listing as scam_score_listing
@@ -176,7 +184,8 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
             continue
         _normalize_listing(l)
         batch[l.composite_id()] = l
-    out = {"new": [], "price_changed": [], "seen": 0, "dropped_no_price": dropped}
+    out = {"new": [], "price_changed": [], "disclosed": [], "seen": 0,
+           "dropped_no_price": dropped}
     if not batch:
         return out
     with db() as conn:
@@ -186,7 +195,8 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
         for i in range(0, len(ids), 400):
             chunk = ids[i:i + 400]
             for r in conn.execute(
-                    f"SELECT composite_id, price, odometer FROM listings "
+                    f"SELECT composite_id, price, odometer, is_salvage, needs_work, "
+                    f"  scam_score, scam_reasons FROM listings "
                     f"WHERE composite_id IN ({','.join('?' for _ in chunk)})", chunk):
                 existing[r["composite_id"]] = dict(r)
         touched = []
@@ -199,26 +209,65 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                     enqueue_score(conn, cid, l.price)
                 continue
             out["seen"] += 1
+            flags, disclosed = _disclosure_flags(l, prev, scam_score_listing)
+            if disclosed:
+                out["disclosed"].append(l)
             if l.price and prev.get("price") and int(l.price) != int(prev["price"]):
                 conn.execute(
                     "UPDATE listings SET price = ?, previous_price = ?, "
                     "  price_changed_at = ?, last_seen_at = ?, title = ?, "
-                    "  description = ?, odometer = COALESCE(?, odometer) "
+                    "  description = ?, odometer = COALESCE(?, odometer), "
+                    "  is_salvage = ?, needs_work = ?, scam_score = ?, scam_reasons = ? "
                     "WHERE composite_id = ?",
                     (l.price, prev["price"], now, now, l.title, l.description,
-                     l.odometer, cid))
+                     l.odometer, *flags, cid))
                 conn.execute(
                     "INSERT INTO listing_prices(composite_id, price, event, observed_at) "
                     "VALUES (?,?,?,?)", (cid, l.price, "price_change", now))
                 out["price_changed"].append(l)
                 if l.year and l.make and l.model:
                     enqueue_score(conn, cid, l.price)
+            elif disclosed:
+                # same price: keep the stored text unless this poll has some
+                # (a source that omits descriptions must not blank it)
+                conn.execute(
+                    "UPDATE listings SET last_seen_at = ?, "
+                    "  title = COALESCE(NULLIF(?, ''), title), "
+                    "  description = COALESCE(NULLIF(?, ''), description), "
+                    "  is_salvage = ?, needs_work = ?, scam_score = ?, scam_reasons = ? "
+                    "WHERE composite_id = ?",
+                    (now, l.title or "", l.description or "", *flags, cid))
+                if l.year and l.make and l.model:
+                    enqueue_score(conn, cid, prev["price"],
+                                  reason="disclosed:" + "+".join(disclosed))
             else:
                 touched.append((now, cid))
         if touched:
             conn.executemany("UPDATE listings SET last_seen_at = ? WHERE composite_id = ?",
                              touched)
     return out
+
+
+def _disclosure_flags(l: NormalizedListing, prev: dict, scam_fn) -> tuple[tuple, list[str]]:
+    """For a re-polled listing: (is_salvage, needs_work, scam_score,
+    scam_reasons) to store, and the problems this poll newly discloses, named
+    as assess_risk names them. A flag only ever turns on and the scam score
+    only ever rises: an edit that deletes "salvage title" does not make the
+    title clean, and a disclosure followed by a retraction is itself a
+    warning sign."""
+    salvage = bool(prev.get("is_salvage")) or bool(l.is_salvage)
+    needs_work = bool(prev.get("needs_work")) or bool((l.extras or {}).get("needs_work"))
+    old = int(prev.get("scam_score") or 0)
+    score, why = scam_fn(l.title, l.description, l.price, None)
+    scam, reasons = (score, json.dumps(why)) if score > old else (old, prev.get("scam_reasons"))
+    disclosed = []
+    if salvage and not prev.get("is_salvage"):
+        disclosed.append("branded_title")
+    if needs_work and not prev.get("needs_work"):
+        disclosed.append("needs_work")
+    if scam >= SCAM_FLAG_SCORE > old:
+        disclosed.append("scam_signals")
+    return (salvage, needs_work, scam, reasons), disclosed
 
 
 def _location(l: NormalizedListing) -> tuple:
@@ -407,12 +456,14 @@ def _owner_alert_ok(l: dict, v, discount: float, trust: str) -> bool:
     return discount >= thr
 
 
-def enqueue_score(conn, composite_id: str, price) -> Optional[int]:
+def enqueue_score(conn, composite_id: str, price,
+                  reason: Optional[str] = None) -> Optional[int]:
     """One scoring job per (listing, price): a re-poll of an unchanged
-    listing is a no-op, a price change gets re-scored."""
-    return jobqueue.enqueue(conn, "score", f"score:{composite_id}:{price}",
-                            {"composite_id": composite_id}, priority=50,
-                            max_attempts=4)
+    listing is a no-op, a price change gets re-scored. `reason` keys one
+    more re-score at the same price (ingest: "disclosed:<flags>")."""
+    key = f"score:{composite_id}:{price}" + (f":{reason}" if reason else "")
+    return jobqueue.enqueue(conn, "score", key, {"composite_id": composite_id},
+                            priority=50, max_attempts=4)
 
 
 def score_job(job: dict) -> dict:
@@ -786,6 +837,7 @@ def poll_once(verbose: bool = True, only_sources: list[str] | None = None,
                          "requests_attempted": attempted, "requests_ok": ok,
                          "listings_discovered": len(listings), "listings_new": len(new),
                          "listings_dropped_no_price": res["dropped_no_price"],
+                         "listings_disclosed": len(res["disclosed"]),
                          "consecutive_empty": empty_streak,
                          "elapsed_s": elapsed.get(sid),
                          "ingest_latency_s": _ingest_latency(new, now),

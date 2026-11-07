@@ -179,6 +179,9 @@ def run(run_dir: Path, source_ids=("ebay",), zip_code: str = "35401", radius: in
                                       "http_status": a["status"]} for a in rep.attempts],
                         "listings": len(got), "new": len(res["new"]),
                         "price_changed": len(res["price_changed"]),
+                        # re-polls that newly disclosed a branded title,
+                        # mechanical problem or scam wording (re-scored)
+                        "disclosed": len(res["disclosed"]),
                         "dropped_no_price": res["dropped_no_price"],
                         "ids": [x.composite_id() for x in got]}) + "\n")
         with sniper.db() as conn:                      # final pass: full peer set
