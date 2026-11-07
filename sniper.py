@@ -235,7 +235,7 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                     "VALUES (?,?,?,?)", (cid, l.price, "price_change", now))
                 out["price_changed"].append(l)
                 if l.year and l.make and l.model:
-                    enqueue_score(conn, cid, l.price)
+                    enqueue_score(conn, cid, l.price, reason=price_change_reason(now))
             elif disclosed:
                 # same price: keep the stored text unless this poll has some
                 # (a source that omits descriptions must not blank it)
@@ -468,11 +468,26 @@ def _owner_alert_ok(l: dict, v, discount: float, trust: str) -> bool:
 def enqueue_score(conn, composite_id: str, price,
                   reason: Optional[str] = None) -> Optional[int]:
     """One scoring job per (listing, price): a re-poll of an unchanged
-    listing is a no-op, a price change gets re-scored. `reason` keys one
-    more re-score at the same price (ingest: "disclosed:<flags>")."""
+    listing is a no-op, a price change gets re-scored. `reason` keys a
+    further re-score: each price change (price_change_reason) and each
+    newly disclosed problem ("disclosed:<flags>")."""
     key = f"score:{composite_id}:{price}" + (f":{reason}" if reason else "")
     return jobqueue.enqueue(conn, "score", key, {"composite_id": composite_id},
                             priority=50, max_attempts=4)
+
+
+def price_change_reason(changed_at) -> str:
+    """Score-key suffix for one price change. Without it a price that returns
+    to an earlier value — "$8,100" typed as "$810" and then fixed — was never
+    valued again (the earlier job held the key) and kept the typo's "92%
+    below market". Normalized to UTC so the key backfill_unscored rebuilds
+    from price_changed_at (Postgres TIMESTAMPTZ) is the one ingest wrote."""
+    try:
+        t = datetime.fromisoformat(str(changed_at).replace("Z", "+00:00"))
+    except ValueError:                    # never written that way; don't crash backfill
+        return f"changed:{changed_at}"
+    t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    return "changed:" + t.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S.%f")
 
 
 def score_job(job: dict) -> dict:
@@ -624,7 +639,7 @@ def backfill_unscored(limit: int = 2000) -> int:
     (e.g. refused earlier by queue backpressure). Returns jobs queued."""
     with db() as conn:
         rows = conn.execute("""
-            SELECT l.composite_id, l.price FROM listings l
+            SELECT l.composite_id, l.price, l.price_changed_at FROM listings l
             LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id
             WHERE (nm.composite_id IS NULL OR nm.price_at_score IS NULL
                    OR nm.price_at_score <> l.price)
@@ -633,7 +648,9 @@ def backfill_unscored(limit: int = 2000) -> int:
             ORDER BY l.first_seen_at DESC LIMIT ?""", (limit,)).fetchall()
         queued = 0
         for r in rows:
-            if enqueue_score(conn, r["composite_id"], r["price"]):
+            reason = (price_change_reason(r["price_changed_at"])
+                      if r["price_changed_at"] else None)
+            if enqueue_score(conn, r["composite_id"], r["price"], reason=reason):
                 queued += 1
     return queued
 
