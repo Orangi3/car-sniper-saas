@@ -181,6 +181,10 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                     comparable and stops alerting. These flags are never
                     cleared by a later poll: deleting the words does not make
                     a branded title clean.
+    Mileage       → a re-poll with a different plausible odometer (see
+                    plausible_odometer) stores it and re-scores once, even at
+                    an unchanged price; a missing, zero or out-of-range reading
+                    never overwrites a stored one.
     Score jobs are keyed by (listing, price): unchanged re-polls never
     re-score or re-alert."""
     from scam_detector import score_listing as scam_score_listing
@@ -193,8 +197,8 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
             continue
         _normalize_listing(l)
         batch[l.composite_id()] = l
-    out = {"new": [], "price_changed": [], "disclosed": [], "seen": 0,
-           "dropped_no_price": dropped}
+    out = {"new": [], "price_changed": [], "disclosed": [], "odometer_changed": [],
+           "seen": 0, "dropped_no_price": dropped}
     if not batch:
         return out
     with db() as conn:
@@ -221,6 +225,8 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
             flags, disclosed = _disclosure_flags(l, prev, scam_score_listing)
             if disclosed:
                 out["disclosed"].append(l)
+            odo = plausible_odometer(l.odometer)     # None never overwrites
+            odo_changed = odo is not None and odo != prev.get("odometer")
             if l.price and prev.get("price") and int(l.price) != int(prev["price"]):
                 conn.execute(
                     "UPDATE listings SET price = ?, previous_price = ?, "
@@ -229,7 +235,7 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                     "  is_salvage = ?, needs_work = ?, scam_score = ?, scam_reasons = ? "
                     "WHERE composite_id = ?",
                     (l.price, prev["price"], now, now, l.title, l.description,
-                     l.odometer, *flags, cid))
+                     odo, *flags, cid))
                 conn.execute(
                     "INSERT INTO listing_prices(composite_id, price, event, observed_at) "
                     "VALUES (?,?,?,?)", (cid, l.price, "price_change", now))
@@ -243,12 +249,25 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                     "UPDATE listings SET last_seen_at = ?, "
                     "  title = COALESCE(NULLIF(?, ''), title), "
                     "  description = COALESCE(NULLIF(?, ''), description), "
+                    "  odometer = COALESCE(?, odometer), "
                     "  is_salvage = ?, needs_work = ?, scam_score = ?, scam_reasons = ? "
                     "WHERE composite_id = ?",
-                    (now, l.title or "", l.description or "", *flags, cid))
+                    (now, l.title or "", l.description or "", odo, *flags, cid))
                 if l.year and l.make and l.model:
                     enqueue_score(conn, cid, prev["price"],
                                   reason="disclosed:" + "+".join(disclosed))
+            elif odo_changed:
+                # same price, new mileage: a valuation input, re-scored once
+                conn.execute(
+                    "UPDATE listings SET last_seen_at = ?, odometer = ?, "
+                    "  title = COALESCE(NULLIF(?, ''), title), "
+                    "  description = COALESCE(NULLIF(?, ''), description) "
+                    "WHERE composite_id = ?",
+                    (now, odo, l.title or "", l.description or "", cid))
+                out["odometer_changed"].append(l)
+                if l.year and l.make and l.model:
+                    enqueue_score(conn, cid, prev["price"],
+                                  reason="odometer-" + price_change_reason(now))
             else:
                 touched.append((now, cid))
             if disclosed:
@@ -257,6 +276,20 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
             conn.executemany("UPDATE listings SET last_seen_at = ? WHERE composite_id = ?",
                              touched)
     return out
+
+
+MAX_PLAUSIBLE_ODOMETER = 500_000     # the bound extract_miles and the seller form use
+
+
+def plausible_odometer(v) -> Optional[int]:
+    """An odometer reading a re-poll may store over a stored one: a whole
+    number in (0, MAX_PLAUSIBLE_ODOMETER]. Missing, zero (providers send 0
+    for unknown) and out-of-range readings give None and never overwrite."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if 0 < n <= MAX_PLAUSIBLE_ODOMETER else None
 
 
 def _disclosure_flags(l: NormalizedListing, prev: dict, scam_fn) -> tuple[tuple, list[str]]:
@@ -894,6 +927,7 @@ def poll_once(verbose: bool = True, only_sources: list[str] | None = None,
                          "listings_discovered": len(listings), "listings_new": len(new),
                          "listings_dropped_no_price": res["dropped_no_price"],
                          "listings_disclosed": len(res["disclosed"]),
+                         "listings_odometer_changed": len(res["odometer_changed"]),
                          "consecutive_empty": empty_streak,
                          "elapsed_s": elapsed.get(sid),
                          "ingest_latency_s": _ingest_latency(new, now),

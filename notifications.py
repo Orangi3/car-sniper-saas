@@ -31,8 +31,8 @@ Send-time check (stale_reason)
   run before score jobs. Every attempt therefore re-reads the listing and
   drops the alert (job done, result "skipped: stale: ...") when the listing
   is gone, may no longer be shown (listing_display: eBay's 6 h limit, ended
-  auction, seller listing not live), its asking price is no longer the one
-  in the alert, or it carries a blocking risk flag — or, valued at this
+  auction, seller listing not live), its asking price or odometer is no
+  longer the one in the alert, or it carries a blocking risk flag — or, valued at this
   price, a trust rating — that the alert was not based on. The basis (trust
   and blocking flags when matched) is stored beside the deal in the job and
   never sent. A price change always queues a re-score (sniper.ingest), and
@@ -96,7 +96,7 @@ def stale_reason(conn, deal: dict, basis: Optional[dict]) -> Optional[str]:
     r = conn.execute(
         "SELECT l.composite_id, l.source, l.price, l.is_auction, l.auction_end_at, "
         "  l.last_seen_at, l.first_seen_at, l.is_salvage, l.needs_work, l.scam_score, "
-        "  nm.trust, nm.risk_flags, nm.price_at_score "
+        "  l.odometer, nm.trust, nm.risk_flags, nm.price_at_score "
         "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
         "WHERE l.composite_id = ?", (cid,)).fetchone()
     if r is None:
@@ -112,6 +112,9 @@ def stale_reason(conn, deal: dict, basis: Optional[dict]) -> Optional[str]:
         return "no asking price to confirm"
     if int(queued) != int(price):
         return f"asking price is ${int(price):,} now, not the ${int(queued):,} in the alert"
+    q_odo, odo = deal.get("odometer"), r.get("odometer")
+    if q_odo and odo and int(q_odo) != int(odo):   # a valuation input changed too
+        return f"odometer reads {int(odo):,} mi now, not the {int(q_odo):,} in the alert"
     if basis is None:
         return None
     import sniper
