@@ -107,3 +107,74 @@ def same_vehicle(a: dict, b: dict) -> tuple[bool, str, dict]:
         "title": title, "year": a.get("year"), "odometer": int(odo),
         "distance_mi": round(dist, 1), "identifying": identifying,
         "sources": sorted([a.get("source"), b.get("source")])}
+
+
+# ---------- vehicle-level facts across postings ------------------------------
+# A disclosed problem with the vehicle itself is true of every posting of that
+# vehicle; a problem with a posting (scam wording, price, auction format,
+# missing description, seller type, buyer reports) is not. Only these facts
+# travel, and only between high-confidence postings of one car (same VIN, or
+# same_vehicle above): listing flag -> (listings column, derived flag).
+VEHICLE_FACTS = {"branded_title": ("is_salvage", "branded_title_other_posting"),
+                 "needs_work": ("needs_work", "needs_work_other_posting")}
+# A branded title is permanent. A mechanical problem can be repaired, so it
+# travels only from a posting seen within the window alerting already treats
+# as one offering (saved_search_alerts.CROSS_POST_WINDOW_DAYS).
+CONDITION_MAX_AGE_DAYS = 14
+
+
+def same_vehicle_postings(conn, listing: dict, flagged_only: bool = False) -> list:
+    """[(row, basis)] for the other stored postings of this very vehicle:
+    same VIN (basis "same_vin"), or the strict no-VIN identity of
+    same_vehicle ("same_vehicle_no_vin"). flagged_only: only postings that
+    disclose a vehicle-level fact."""
+    cid = listing.get("composite_id")
+    flagged = " AND (is_salvage OR needs_work)" if flagged_only else ""
+    out, seen = [], set()
+    if listing.get("vehicle_key"):
+        for r in conn.execute("SELECT * FROM listings WHERE vehicle_key = ? "
+                              "AND composite_id <> ?" + flagged,
+                              (listing["vehicle_key"], cid)).fetchall():
+            out.append((dict(r), "same_vin"))
+            seen.add(r["composite_id"])
+    if not (listing.get("odometer") and listing.get("year") and listing.get("make")
+            and listing.get("model") and listing.get("source")):
+        return out
+    for r in conn.execute(
+            "SELECT * FROM listings WHERE year = ? AND odometer = ? "
+            "AND LOWER(make) = LOWER(?) AND LOWER(model) = LOWER(?) "
+            "AND source <> ? AND composite_id <> ?" + flagged,
+            (listing["year"], listing["odometer"], listing["make"], listing["model"],
+             listing["source"], cid)).fetchall():
+        row = dict(r)
+        if row["composite_id"] not in seen and same_vehicle(listing, row)[0]:
+            out.append((row, "same_vehicle_no_vin"))
+            seen.add(row["composite_id"])
+    return out
+
+
+def _seen_within(row: dict, days: int, now) -> bool:
+    from datetime import datetime, timedelta, timezone
+    try:
+        t = datetime.fromisoformat(str(row.get("last_seen_at") or row.get("first_seen_at"))
+                                   .replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - t <= timedelta(days=days)
+
+
+def vehicle_risk_elsewhere(conn, listing: dict, now=None) -> list[dict]:
+    """Vehicle-level facts disclosed on OTHER postings of this car and not on
+    this one: [{"flag": derived flag, "fact": flag, "from": composite_id,
+    "basis": "same_vin" | "same_vehicle_no_vin"}], one per fact."""
+    out: dict[str, dict] = {}
+    for row, basis in same_vehicle_postings(conn, listing, flagged_only=True):
+        for fact, (col, derived) in VEHICLE_FACTS.items():
+            if listing.get(col) or not row.get(col) or derived in out:
+                continue
+            if fact == "needs_work" and not _seen_within(row, CONDITION_MAX_AGE_DAYS, now):
+                continue
+            out[derived] = {"flag": derived, "fact": fact,
+                            "from": row["composite_id"], "basis": basis}
+    return list(out.values())

@@ -220,6 +220,10 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                 out["new"].append(l)
                 if l.year and l.make and l.model and room:
                     enqueue_score(conn, cid, l.price)
+                facts = [f for f, on in (("branded_title", l.is_salvage),
+                                         ("needs_work", (l.extras or {}).get("needs_work"))) if on]
+                if facts:
+                    _hold_same_vehicle(conn, cid, facts)
                 continue
             out["seen"] += 1
             flags, disclosed = _disclosure_flags(l, prev, scam_score_listing)
@@ -272,6 +276,9 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                 touched.append((now, cid))
             if disclosed:
                 _hold_disclosed_risk(conn, cid, disclosed)
+                facts = [f for f in disclosed if f in ("branded_title", "needs_work")]
+                if facts:
+                    _hold_same_vehicle(conn, cid, facts)
         if touched:
             conn.executemany("UPDATE listings SET last_seen_at = ? WHERE composite_id = ?",
                              touched)
@@ -334,6 +341,32 @@ def _hold_disclosed_risk(conn, composite_id: str, disclosed: list[str]) -> None:
     flags += [f for f in disclosed if f not in flags]
     conn.execute("UPDATE near_misses SET trust = 'risk', risk_flags = ? "
                  "WHERE composite_id = ?", (json.dumps(flags), composite_id))
+
+
+def _hold_same_vehicle(conn, composite_id: str, facts: list[str]) -> None:
+    """Listing `composite_id` now discloses vehicle-level `facts`. Its other
+    high-confidence postings (same VIN, or the strict no-VIN identity) leave
+    the trusted feed in this transaction, with the derived flag, and are
+    re-valued once; their own rows are not changed."""
+    import vehicle_identity
+    row = conn.execute("SELECT * FROM listings WHERE composite_id = ?",
+                       (composite_id,)).fetchone()
+    if row is None:
+        return
+    derived = sorted(vehicle_identity.VEHICLE_FACTS[f][1] for f in facts)
+    for twin, _basis in vehicle_identity.same_vehicle_postings(conn, dict(row)):
+        _hold_disclosed_risk(conn, twin["composite_id"], derived)
+        if twin.get("price") and twin.get("year") and twin.get("make") and twin.get("model"):
+            enqueue_score(conn, twin["composite_id"], twin["price"],
+                          reason="other-posting:" + "+".join(derived))
+
+
+def _vehicle_risk_reason(r: dict) -> str:
+    what = {"branded_title": "a branded (salvage/rebuilt) title",
+            "needs_work": "damage or a mechanical problem"}[r["fact"]]
+    how = ("same VIN" if r["basis"] == "same_vin" else
+           "matching details: title, odometer, location and photo or exact mileage")
+    return f"another posting of this car ({r['from']}, {how}) discloses {what}"
 
 
 def _location(l: NormalizedListing) -> tuple:
@@ -422,7 +455,10 @@ def _normalize_listing(l: NormalizedListing) -> None:
 # ---------- Opportunity assessment ----------------------------------------
 
 BLOCKING_FLAGS = {"scam_signals", "too_good_to_be_true", "branded_title", "needs_work",
-                  "auction_bid", "mileage_suspect"}
+                  "auction_bid", "mileage_suspect",
+                  # disclosed on another high-confidence posting of the same car
+                  # (vehicle_identity.VEHICLE_FACTS)
+                  "branded_title_other_posting", "needs_work_other_posting"}
 SCAM_FLAG_SCORE = 50                 # scam_detector score at which "scam_signals" is set
 
 
@@ -478,6 +514,8 @@ def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str
         flags.append("branded_title")
     if l.get("needs_work"):
         flags.append("needs_work")
+    for r in l.get("_vehicle_risk") or []:     # this car's other postings disclosed it
+        flags.append(r["flag"])
     if not str(l.get("description") or "").strip():
         flags.append("description_unchecked")   # title only: damage can't be screened
     seller = valuation.seller_kind(l)
@@ -590,12 +628,17 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
                            "WHERE composite_id = ?", (composite_id,)).fetchone()
         if cur:
             l.update(dict(cur))
+        import vehicle_identity
+        l["_vehicle_risk"] = vehicle_identity.vehicle_risk_elsewhere(conn, l)
         peers = valuation.load_peers(conn, l)
         v = valuation.value_listing(l, peers, sold)
         if sold_err:
             v.reasons.append(sold_err)
+        for r in l["_vehicle_risk"]:
+            v.reasons.append(_vehicle_risk_reason(r))
         if v.evidence_class == valuation.INSUFFICIENT or not v.value_mid:
-            _record_valuation(conn, l, v, None, 0.0, "risk", ["insufficient_data"],
+            _record_valuation(conn, l, v, None, 0.0, "risk",
+                              ["insufficient_data"] + [r["flag"] for r in l["_vehicle_risk"]],
                               f"[{l['source']}] {l['year']} {l['make']} {l['model']}: "
                               f"insufficient comparables", now)
             return {"composite_id": composite_id, "evidence_class": v.evidence_class}

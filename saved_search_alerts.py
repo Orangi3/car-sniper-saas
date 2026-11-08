@@ -66,6 +66,14 @@ def _flag(f: dict, k: str) -> bool:
     return str(f.get(k, "")).lower() in ("1", "true", "yes")
 
 
+def _salvage(deal: dict) -> bool:
+    """Branded title on this listing, or on another high-confidence posting
+    of the same car (vehicle_identity.VEHICLE_FACTS): the salvage opt-in
+    applies either way."""
+    return bool(deal.get("is_salvage")) or \
+        "branded_title_other_posting" in (deal.get("risk_flags") or [])
+
+
 def matches(f: dict, deal: dict) -> bool:
     """Listing-attribute filters shared with the dashboard's listing view.
     Unknown keys are ignored."""
@@ -78,7 +86,7 @@ def matches(f: dict, deal: dict) -> bool:
         return False
     if _flag(f, "hide_auction") and deal.get("is_auction"):
         return False
-    if _flag(f, "hide_salvage") and deal.get("is_salvage"):
+    if _flag(f, "hide_salvage") and _salvage(deal):
         return False
     for key, field, op in (("min_price", "price", "ge"), ("max_price", "price", "le"),
                            ("min_miles", "odometer", "ge"), ("max_miles", "odometer", "le"),
@@ -122,9 +130,10 @@ def criteria_match(f: dict, opp: dict, lim: dict) -> tuple[bool, str]:
         mode = "conservative"
     if (opp.get("scam_score") or 0) >= 80:
         return False, "scam signals"
-    if opp.get("is_salvage") and not _flag(f, "allow_salvage"):
+    if _salvage(opp) and not _flag(f, "allow_salvage"):
         return False, "salvage/branded title"
-    if opp.get("needs_work") and not _flag(f, "allow_needs_work"):
+    if (opp.get("needs_work") or "needs_work_other_posting" in (opp.get("risk_flags") or [])) \
+            and not _flag(f, "allow_needs_work"):
         return False, "needs mechanical work"
     if mode == "conservative" and opp.get("trust") != "trusted":
         return False, "risk-flagged (conservative mode)"

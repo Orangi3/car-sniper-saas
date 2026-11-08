@@ -21,6 +21,8 @@ const FLAGS = {
   too_good_to_be_true: ["Price looks too good", "danger", "Far below comparable cars — often a scam, a typo or a serious problem."],
   branded_title: ["Branded title", "danger", "A salvage, rebuilt or other branded title is mentioned. Resale value and financing are affected."],
   needs_work: ["Needs work", "danger", "The listing mentions damage or mechanical problems; repairs may exceed the repair allowance."],
+  branded_title_other_posting: ["Branded title (other posting)", "danger", "Another posting of this same car — same VIN, or matching details — mentions a salvage, rebuilt or other branded title. This listing doesn't say so; ask the seller for the title."],
+  needs_work_other_posting: ["Needs work (other posting)", "danger", "Another recent posting of this same car — same VIN, or matching details — mentions damage or mechanical problems. Ask the seller before you go."],
   auction_bid: ["Auction bid", "danger", "The price is the current bid in a running auction, not a price you can buy at. The final price is usually higher."],
   description_unchecked: ["Description not checked", "warn", "We only saw the listing's title. Read the full listing for damage or title problems before you go."],
   dealer: ["Dealer listing", "warn", "Sold by a dealer; prices and fees differ from private sales."],
