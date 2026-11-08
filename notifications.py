@@ -37,14 +37,20 @@ Send-time check (stale_reason)
   and blocking flags when matched) is stored beside the deal in the job and
   never sent. A price change always queues a re-score (sniper.ingest), and
   that re-score decides what to send at the new price — but it never
-  re-alerts a subscriber already matched to the car, and plans without
-  price-drop alerts (Lite) get no price-drop event. So a subscriber's
-  FIRST-match alert that went stale only because the price fell is
-  re-checked in the same job at the current price
+  re-alerts a subscriber already matched to the car: Lite gets no
+  price-drop event, and Pro gets one only for a drop that meets the
+  price-drop rule ($250 and 3%) and that its searches allow. So a
+  subscriber's FIRST-match alert that went stale only because the price
+  fell is decided in the same job. For a plan with price-drop alerts it
+  first waits (jobqueue.Defer: no attempt spent, at most REPLACEMENT_WAIT_S
+  after it was queued) for the listing's re-score and for any price-drop
+  alert that re-score created for this subscriber; one delivered on this
+  channel covers the car, and the first alert is not sent. Otherwise the
+  job re-checks the car at the current price
   (saved_search_alerts.rematch_at_current_price: plan, saved searches,
-  territory, risk, duplicates) and, if the car still qualifies, sent as an
-  ordinary first-match alert at that price — never as a price drop, and
-  never again once one was delivered.
+  territory, freshness, risk, duplicates) and, if it still qualifies,
+  sends an ordinary first-match alert at that price — never as a price
+  drop, and never again once one was delivered.
 
 User webhooks go through safe_http (connect-time SSRF checks, no redirects,
 size limits). Payloads carry only public listing facts — never a user's
@@ -152,6 +158,65 @@ def _first_alert_price_fell(conn, p: dict, deal: dict) -> bool:
     r = conn.execute("SELECT price FROM listings WHERE composite_id = ?",
                      (deal.get("composite_id"),)).fetchone()
     return r is not None and r[0] is not None and int(r[0]) < int(deal["price"])
+
+
+# How long (from when it was queued) a first alert waits for the listing's
+# re-score and for the price-drop alert that re-score may create, and how
+# often it looks again meanwhile.
+REPLACEMENT_WAIT_S = 1800
+REPLACEMENT_RECHECK_S = 15
+
+
+def _age_s(created_at) -> float:
+    try:
+        t = created_at if isinstance(created_at, datetime) else \
+            datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - t).total_seconds()
+    except (TypeError, ValueError):
+        return float("inf")               # unknown age: stop waiting
+
+
+def _price_drop_replacement(conn, job: dict, p: dict, deal: dict,
+                            rescore_may_replace: bool) -> str:
+    """For a first alert that went stale because the price fell: is the car
+    covered by a price-drop alert that a re-score actually created for this
+    subscriber and delivered on this channel? Returns why it is covered, ""
+    if nothing covers it (send the first alert at the current price), or
+    raises jobqueue.Defer while that cannot be known yet: a re-score of the
+    listing is still pending or running (only for plans with price-drop
+    alerts, the only ones it can create one for), or such an alert is still
+    pending or being sent. The wait is bounded. Past the bound the alert is
+    not sent and the reason is recorded: that can lose it, but it can never
+    duplicate it."""
+    uid, cid, ch = int(p["user_id"]), deal["composite_id"], p.get("channel")
+    waiting = []
+    if rescore_may_replace:
+        prefix = f"score:{cid}:"
+        if conn.execute("SELECT 1 FROM jobs WHERE kind = 'score' AND status IN (?, ?) "
+                        "AND substr(dedupe_key, 1, ?) = ? LIMIT 1",
+                        (jobqueue.PENDING, jobqueue.RUNNING, len(prefix), prefix)).fetchone():
+            waiting.append("the listing's re-score")
+    first = conn.execute("SELECT id FROM user_matches WHERE user_id = ? AND event_key = ?",
+                         (uid, f"{cid}:new")).fetchone()
+    for r in conn.execute(
+            "SELECT event_key, price FROM user_matches WHERE user_id = ? AND composite_id = ? "
+            "AND event = 'price_drop' AND notified = TRUE AND id > ? ORDER BY id",
+            (uid, cid, first[0] if first else 0)).fetchall():
+        j = conn.execute("SELECT status, result FROM jobs WHERE dedupe_key = ?",
+                         (f"notify:{r['event_key']}:u{uid}:{ch}",)).fetchone()
+        if j is None:
+            continue                      # not queued on this channel
+        if j["status"] in (jobqueue.PENDING, jobqueue.RUNNING):
+            waiting.append(f"the price-drop alert at ${int(r['price']):,}")
+        elif j["status"] == jobqueue.DONE and "sent" in (json.loads(j["result"] or "null") or {}):
+            return f"covered by the price-drop alert at ${int(r['price']):,}, delivered"
+    if not waiting:
+        return ""
+    if _age_s(job.get("created_at")) < REPLACEMENT_WAIT_S:
+        raise jobqueue.Defer("waiting for " + " and ".join(waiting), REPLACEMENT_RECHECK_S)
+    return (f"not re-sent: {' and '.join(waiting)} still unfinished after "
+            f"{REPLACEMENT_WAIT_S // 60} min")
 
 
 def normalize_phone(raw: str) -> str:
@@ -518,13 +583,20 @@ def deliver_job(job: dict) -> dict:
     with _db.session() as conn:          # re-checked on every attempt, retries included
         stale = stale_reason(conn, deal, p.get("basis"))
         if stale and _first_alert_price_fell(conn, p, deal):
-            import saved_search_alerts
-            opp, why = saved_search_alerts.rematch_at_current_price(
-                conn, int(p["user_id"]), deal["composite_id"])
-            if opp:
-                matched_at, deal, stale = deal["price"], public_deal(opp), None
+            import plans
+            covered = _price_drop_replacement(   # may raise jobqueue.Defer (waits)
+                conn, job, p, deal,
+                rescore_may_replace=bool(plans.limits(dest.get("plan")).get("price_drop_alerts")))
+            if covered:
+                stale = f"{stale}; {covered}"
             else:
-                stale = f"{stale}; not re-sent at the current price: {why}"
+                import saved_search_alerts
+                opp, why = saved_search_alerts.rematch_at_current_price(
+                    conn, int(p["user_id"]), deal["composite_id"])
+                if opp:
+                    matched_at, deal, stale = deal["price"], public_deal(opp), None
+                else:
+                    stale = f"{stale}; not re-sent at the current price: {why}"
     if stale:
         return {"skipped": f"stale: {stale}"}
     try:

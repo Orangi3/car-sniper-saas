@@ -325,9 +325,10 @@ def rematch_at_current_price(conn, uid: int, cid: str,
                              now: Optional[datetime] = None) -> tuple[Optional[dict], str]:
     """Re-run subscriber `uid`'s matching for listing `cid` at its CURRENT
     price — for a first-match alert that went stale because the price fell
-    before it was delivered (notifications.deliver_job). Only for plans
-    without price-drop alerts: Pro hears about the drop through its own
-    price-drop event instead. Uses the stored valuation, which comes from
+    before it was delivered (notifications.deliver_job). For a plan with
+    price-drop alerts the caller has already established that no delivered
+    price-drop alert covers the car (notifications._price_drop_replacement).
+    Uses the stored valuation, which comes from
     the comparables and not from the car's own price; recomputes everything
     that depends on the price with the scoring code (sniper.assess_risk:
     too-good-to-be-true, scam price ratio) plus the car's vehicle-level
@@ -351,8 +352,6 @@ def rematch_at_current_price(conn, uid: int, cid: str,
     lim = plans.limits(plan)
     if not plans.can_receive_alerts(plan):
         return None, f"plan '{plan}' not entitled"
-    if lim.get("price_drop_alerts"):
-        return None, "plan has price-drop alerts; the price-drop event covers it"
     row = conn.execute("SELECT * FROM listings WHERE composite_id = ?", (cid,)).fetchone()
     nm = conn.execute("SELECT * FROM near_misses WHERE composite_id = ?", (cid,)).fetchone()
     if row is None or nm is None or not nm["comp_avg"] or not row["price"]:
