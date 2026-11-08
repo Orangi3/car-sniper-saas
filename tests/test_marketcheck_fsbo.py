@@ -166,4 +166,5 @@ def test_price_change_flows_into_history_and_rescoring(mc):
     import db
     with db.session() as c:
         keys = {r[0] for r in c.execute("SELECT dedupe_key FROM jobs WHERE kind='score'")}
-    assert "score:marketcheck_fsbo:fsbo-1001:6900" in keys
+    # re-scored at the new price, keyed by this price change
+    assert any(k.startswith("score:marketcheck_fsbo:fsbo-1001:6900:changed:") for k in keys)

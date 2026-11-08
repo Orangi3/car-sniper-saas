@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 import safe_http
-from tests.conftest import register, login, set_plan
+from tests.conftest import insert_listing, login, register, set_plan
 
 
 def _fake_dns(monkeypatch, mapping):
@@ -158,8 +158,9 @@ def test_user_webhook_rebound_to_private_is_dead_lettered(client, monkeypatch):
     import db, jobqueue, notifications
     _fake_dns(monkeypatch, {"a.example.com": "93.184.216.34"})
     uid = _user_with_webhook(client, "a@example.com", "https://a.example.com/h", monkeypatch)
+    insert_listing("x:1", price=9500)          # an alert refers to a stored listing
     with db.session() as c:
-        notifications.enqueue_user(c, {"composite_id": "x:1", "title": "t"},
+        notifications.enqueue_user(c, {"composite_id": "x:1", "title": "t", "price": 9500},
                                    "alert1", uid, ["webhook"])
     _fake_dns(monkeypatch, {"a.example.com": "10.0.0.5"})     # rebinding
     done = jobqueue.drain({"notify": notifications.deliver_job})
@@ -177,8 +178,10 @@ def test_jobs_deliver_only_to_their_own_users_destination(client, monkeypatch):
     sent = []
     monkeypatch.setattr(notifications.safe_http, "post_json",
                         lambda url, payload, **k: sent.append((url, payload)) or 200)
+    insert_listing("x:1", price=9500)          # an alert refers to a stored listing
     with db.session() as c:
         notifications.enqueue_user(c, {"composite_id": "x:1", "title": "A's deal",
+                                       "price": 9500,
                                        "description": "secret seller phone 555"},
                                    "alert1", ua, ["webhook"])
     jobqueue.drain({"notify": notifications.deliver_job})

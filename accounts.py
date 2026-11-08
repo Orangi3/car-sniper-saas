@@ -28,7 +28,8 @@ import sys
 LIVE_SUBSCRIPTION = ("active", "trialing", "past_due", "unpaid", "incomplete")
 _USER_TABLES = ("jobs", "usage_events", "sessions", "saved_searches", "saved_v2",
                 "user_matches", "user_alerts", "seller_contacts", "contact_verifications",
-                "subscriptions", "opportunities", "seller_profiles", "listing_reports")
+                "subscriptions", "opportunities", "seller_profiles", "listing_reports",
+                "alert_suppressions")
 
 
 class Refused(Exception):
