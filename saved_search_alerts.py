@@ -319,3 +319,87 @@ def evaluate(conn, opp: dict) -> list[dict]:
         created.append({"user_id": uid, "match_id": row[0], "saved_search_id": hit["id"],
                         "event": u_event, "channels": chans, "notified": bool(chans)})
     return created
+
+
+def rematch_at_current_price(conn, uid: int, cid: str,
+                             now: Optional[datetime] = None) -> tuple[Optional[dict], str]:
+    """Re-run subscriber `uid`'s matching for listing `cid` at its CURRENT
+    price — for a first-match alert that went stale because the price fell
+    before it was delivered (notifications.deliver_job). Only for plans
+    without price-drop alerts: Pro hears about the drop through its own
+    price-drop event instead. Uses the stored valuation, which comes from
+    the comparables and not from the car's own price; recomputes everything
+    that depends on the price with the scoring code (sniper.assess_risk:
+    too-good-to-be-true, scam price ratio) plus the car's vehicle-level
+    risks; then the subscriber's current plan, saved searches, territory and
+    profit settings, and the cross-posting duplicate check, exactly as
+    evaluate() applies them. Returns (opportunity, "") or (None, reason)."""
+    from types import SimpleNamespace
+    import geo
+    import listing_display
+    import plans
+    import profit as profit_mod
+    import sniper
+    import vehicle_identity
+
+    now = now or datetime.now(timezone.utc)
+    u = conn.execute("SELECT plan, home_zip, radius_mi, profit_settings FROM users "
+                     "WHERE id = ?", (uid,)).fetchone()
+    if u is None:
+        return None, "subscriber no longer exists"
+    plan = u["plan"]
+    lim = plans.limits(plan)
+    if not plans.can_receive_alerts(plan):
+        return None, f"plan '{plan}' not entitled"
+    if lim.get("price_drop_alerts"):
+        return None, "plan has price-drop alerts; the price-drop event covers it"
+    row = conn.execute("SELECT * FROM listings WHERE composite_id = ?", (cid,)).fetchone()
+    nm = conn.execute("SELECT * FROM near_misses WHERE composite_id = ?", (cid,)).fetchone()
+    if row is None or nm is None or not nm["comp_avg"] or not row["price"]:
+        return None, "listing or its valuation is no longer available"
+    l = dict(row)
+    hidden = listing_display.hidden_reason(
+        l, listing_display.limits(conn, include_direct=l["source"] == "direct"))
+    if hidden:
+        return None, hidden
+    l["_vehicle_risk"] = vehicle_identity.vehicle_risk_elsewhere(conn, l)
+    value_mid = float(nm["comp_avg"])
+    discount = (value_mid - l["price"]) / value_mid
+    trust, flags = sniper.assess_risk(
+        l, SimpleNamespace(value_mid=value_mid, confidence=nm["confidence"]), discount)
+    try:
+        dealer_share = (json.loads(nm["evidence"] or "{}") or {}).get("dealer_share") or 0
+    except (TypeError, ValueError):
+        dealer_share = 0
+    opp = {**l, "discount_pct": round(discount * 100, 2), "value_low": nm["value_low"],
+           "value_mid": value_mid, "value_high": nm["value_high"], "comp_avg": value_mid,
+           "comp_n": nm["comp_n"], "basis": nm["basis"], "evidence_class": nm["evidence_class"],
+           "confidence": nm["confidence"], "trust": trust, "risk_flags": flags,
+           "event": "new", "dealer_share": dealer_share}
+    try:
+        psettings = json.loads(u["profit_settings"] or "{}")
+    except ValueError:
+        psettings = {}
+    dist = geo.distance_mi(u["home_zip"], l.get("latitude"), l.get("longitude"))
+    pr = profit_mod.compute(l["price"], nm["value_low"], value_mid, nm["value_high"],
+                            nm["evidence_class"], psettings, scenarios=False,
+                            distance_mi=dist, dealer_share=dealer_share)
+    opp_u = {**opp, "distance_mi": dist, "_home_zip": u["home_zip"],
+             "_home_radius": u["radius_mi"],
+             "est_profit": pr["scenarios"]["base"]["profit"] if pr else None}
+    searches = [dict(r) for r in conn.execute(
+        "SELECT id, filter_json FROM saved_searches WHERE user_id = ? AND notify_enabled = TRUE "
+        "ORDER BY created_at, id", (uid,)).fetchall()][: lim["saved_searches"]]
+    for s in searches:
+        try:
+            f = json.loads(s.get("filter_json") or "{}")
+        except ValueError:
+            continue
+        if isinstance(f, dict) and criteria_match(f, opp_u, lim)[0]:
+            break
+    else:
+        return None, f"no saved search matches at ${int(l['price']):,}"
+    dup = _already_alerted_vehicle(conn, uid, opp_u, now)
+    if dup:
+        return None, f"already alerted to this car through {dup[0]}"
+    return opp_u, ""

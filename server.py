@@ -2193,12 +2193,26 @@ def api_me_alerts():
             "  m.saved_search_id, s.name AS saved_search_name, m.discount_pct, "
             "  m.price, m.previous_price, m.value_mid, m.profit_base, m.confidence, "
             "  m.trust, l.composite_id, l.title, l.url, l.year, l.make, l.model, "
-            "  l.odometer, l.source, l.state, l.location, l.image_urls "
+            "  l.odometer, l.source, l.state, l.location, l.image_urls, "
+            "  l.price AS listing_price, l.last_seen_at, l.first_seen_at, l.is_auction, "
+            "  l.auction_end_at "
             "FROM user_matches m "
             "JOIN listings l ON l.composite_id = m.composite_id "
             "LEFT JOIN saved_searches s ON s.id = m.saved_search_id "
             "WHERE m.user_id = ? AND m.dismissed = FALSE "
             "ORDER BY m.created_at DESC, m.id DESC LIMIT ?", (u.id, limit)).fetchall()]
+    # `price` stays the price when the car matched (unchanged for API clients);
+    # the current price is shown only while the source still confirms the
+    # listing (the deal feeds' own display rules), never a stale one as an offer
+    limits = _display_limits()
+    for r in rows:
+        shown = _displayable(r, limits)
+        current = r.pop("listing_price")
+        for k in ("last_seen_at", "first_seen_at", "is_auction", "auction_end_at"):
+            r.pop(k, None)
+        r["matched_price"] = r["price"]
+        r["current_price"] = current if shown else None
+        r["current_price_confirmed"] = shown
     return jsonify(rows)
 
 

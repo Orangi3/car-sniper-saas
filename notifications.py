@@ -36,7 +36,15 @@ Send-time check (stale_reason)
   price, a trust rating — that the alert was not based on. The basis (trust
   and blocking flags when matched) is stored beside the deal in the job and
   never sent. A price change always queues a re-score (sniper.ingest), and
-  that re-score decides what to send at the new price.
+  that re-score decides what to send at the new price — but it never
+  re-alerts a subscriber already matched to the car, and plans without
+  price-drop alerts (Lite) get no price-drop event. So a subscriber's
+  FIRST-match alert that went stale only because the price fell is
+  re-checked in the same job at the current price
+  (saved_search_alerts.rematch_at_current_price: plan, saved searches,
+  territory, risk, duplicates) and, if the car still qualifies, sent as an
+  ordinary first-match alert at that price — never as a price drop, and
+  never again once one was delivered.
 
 User webhooks go through safe_http (connect-time SSRF checks, no redirects,
 size limits). Payloads carry only public listing facts — never a user's
@@ -134,6 +142,16 @@ def stale_reason(conn, deal: dict, basis: Optional[dict]) -> Optional[str]:
         if valued_now and r.get("trust") != "trusted":
             return f"no longer rated trusted at this price (now: {r['trust']})"
     return None
+
+
+def _first_alert_price_fell(conn, p: dict, deal: dict) -> bool:
+    """A subscriber's queued FIRST-match alert whose listing is now cheaper
+    than the alert says — what rematch_at_current_price re-checks."""
+    if p.get("audience") != "user" or deal.get("event") != "new" or deal.get("price") is None:
+        return False
+    r = conn.execute("SELECT price FROM listings WHERE composite_id = ?",
+                     (deal.get("composite_id"),)).fetchone()
+    return r is not None and r[0] is not None and int(r[0]) < int(deal["price"])
 
 
 def normalize_phone(raw: str) -> str:
@@ -496,8 +514,17 @@ def deliver_job(job: dict) -> dict:
               "webhook": (os.environ.get("DISCORD_WEBHOOK_URL") if ch == "discord"
                           else os.environ.get("ALERT_WEBHOOK_URL"))}
     import db as _db
+    matched_at = None
     with _db.session() as conn:          # re-checked on every attempt, retries included
         stale = stale_reason(conn, deal, p.get("basis"))
+        if stale and _first_alert_price_fell(conn, p, deal):
+            import saved_search_alerts
+            opp, why = saved_search_alerts.rematch_at_current_price(
+                conn, int(p["user_id"]), deal["composite_id"])
+            if opp:
+                matched_at, deal, stale = deal["price"], public_deal(opp), None
+            else:
+                stale = f"{stale}; not re-sent at the current price: {why}"
     if stale:
         return {"skipped": f"stale: {stale}"}
     try:
@@ -509,6 +536,9 @@ def deliver_job(job: dict) -> dict:
         if not e.retryable:
             raise jobqueue.PermanentError(str(e)) from None
         raise
+    if matched_at is not None:
+        return {"sent": detail, "first_alert_at_current_price":
+                {"matched": int(matched_at), "now": int(deal["price"])}}
     return {"sent": detail}
 
 
