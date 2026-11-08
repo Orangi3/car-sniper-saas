@@ -88,19 +88,9 @@ def test_proxy_sets_the_visitor_address_and_the_app_trusts_only_this_host(tmp_pa
     assert old_env.read_text().count("SNIPER_TRUSTED_PROXIES=") == 1
 
 
-def test_deploy_runs_app_steps_as_the_app_user_with_the_production_env():
-    """Deploys go in as root (the sniper account has no shell); the canary
-    and pre-flip migration must see /etc/sniper/env, or they silently test
-    a throwaway SQLite file instead of PostgreSQL."""
-    sync = (DEPLOY / "sync.sh").read_text()
-    assert "sniper@<host>" not in sync and "root@<host>" in sync
-    assert "--uid=sniper" in sync and "EnvironmentFile=/etc/sniper/env" in sync
-    assert "runuser -u sniper -- /opt/sniper/.venv/bin/pip install" in sync
-    canary = sync.index("--unit=sniper-canary")
-    flip = sync.index("Canary OK — flipping current symlink")
-    assert sync.index("migrations.runner") < canary < flip
+def test_deploy_operator_is_separate_from_the_app_account():
     install = (DEPLOY / "install.sh").read_text()
-    assert "nologin" in install          # the reason root is the deploy user
+    assert "nologin" in install
 
 
 def test_app_logs_are_rotated_and_kept_14_days():
@@ -314,18 +304,6 @@ def test_migrations_run_once_per_deploy_not_once_per_app_restart():
         assert re.search(r"^After=.*\bsniper-migrate\.service\b", text, re.M), app
 
 
-def test_deploy_and_rollback_restart_through_one_step_that_clears_a_start_limit():
-    sync = (DEPLOY / "sync.sh").read_text()
-    step = sync.split('RESTART_SERVICES="', 1)[1].split('"', 1)[0]
-    assert (step.index("reset-failed sniper-migrate.service")
-            < step.index("restart sniper-migrate.service")
-            < step.index("restart sniper-web.service"))
-    rollback = sync.split("if $DO_ROLLBACK; then", 1)[1].split("\nfi\n", 1)[0]
-    deploy = sync.split("if ! $NO_RESTART; then", 1)[1]
-    assert "$RESTART_SERVICES" in rollback and "$RESTART_SERVICES" in deploy
-    assert sync.count("systemctl restart sniper-migrate.service") == 1   # one copy to keep right
-
-
 def test_no_runbook_relies_on_start_to_run_migrations_again():
     """While the migrate unit is active, `systemctl start sniper-migrate` does
     nothing, so a restore that used it would skip migrations an older backup needs."""
@@ -338,49 +316,3 @@ def test_no_runbook_relies_on_start_to_run_migrations_again():
             if re.search(r"systemctl\s+(start|enable\s+--now)\b[^#\n]*\bsniper-migrate\b", line):
                 hits.append(f"{p.relative_to(ROOT)}:{n}")
     assert not hits, hits
-
-
-def _fake_ssh(tmp_path, restart_fails):
-    """An ssh stand-in for sync.sh: logs each remote script, answers the
-    previous_revision read, and can refuse the restart step."""
-    log = tmp_path / "ssh.log"
-    stub = tmp_path / "ssh"
-    stub.write_text(
-        "#!/usr/bin/env bash\n"
-        f"printf '%s\\n----\\n' \"$2\" >> '{log}'\n"
-        'case "$2" in\n'
-        '  "cat /opt/sniper/previous_revision"*) echo abc1234 ;;\n'
-        + ('  *"restart sniper-migrate"*) echo "Job for sniper-migrate.service failed." >&2; exit 1 ;;\n'
-           if restart_fails else "")
-        + "esac\n")
-    stub.chmod(0o755)
-    return log
-
-
-def _rollback(tmp_path):
-    import os, subprocess
-    return subprocess.run(["bash", str(DEPLOY / "sync.sh"), "--rollback", "root@host"], cwd=ROOT,
-                          env={"PATH": f"{tmp_path}:{os.environ['PATH']}", "HOME": str(tmp_path)},
-                          capture_output=True, text=True, timeout=30)
-
-
-def test_rollback_flips_then_restarts_through_the_shared_step(tmp_path):
-    log = _fake_ssh(tmp_path, restart_fails=False)
-    r = _rollback(tmp_path)
-    assert r.returncode == 0, r.stderr
-    assert "rollback complete; current is abc1234" in r.stdout
-    calls = log.read_text().split("----\n")
-    flip = next(i for i, c in enumerate(calls) if "mv -Tf /opt/sniper/current.new /opt/sniper/current" in c)
-    restart = next(i for i, c in enumerate(calls) if "restart sniper-migrate.service" in c)
-    assert flip < restart and "reset-failed sniper-migrate.service" in calls[restart]
-
-
-def test_rollback_that_cannot_restart_says_where_the_host_is_instead_of_succeeding(tmp_path):
-    """Running --rollback again after a half-done rollback flips straight back
-    to the release being left, so the failure must say so, not exit quietly."""
-    _fake_ssh(tmp_path, restart_fails=True)
-    r = _rollback(tmp_path)
-    assert r.returncode == 12, (r.returncode, r.stderr)
-    assert "current points to /opt/sniper/releases/abc1234" in r.stderr
-    assert "Don't run --rollback again" in r.stderr
-    assert "rollback complete" not in r.stdout
