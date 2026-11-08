@@ -129,6 +129,20 @@ release_dir_for() {
 }
 REL_DIR="$(release_dir_for "$SHA")"
 
+# Restarts after a flip (deploy and rollback): migrations first, then the
+# app. reset-failed clears a start-rate limit that crash-looping services
+# can leave on sniper-migrate (systemd refuses a 6th start within 10 s),
+# so that limit never refuses a deploy or a rollback.
+RESTART_SERVICES="sudo systemctl reset-failed sniper-migrate.service 2>/dev/null || true
+        sudo systemctl restart sniper-migrate.service
+        sudo systemctl restart sniper-web.service
+        if systemctl is-enabled --quiet sniper-scheduler.service; then
+            sudo systemctl restart sniper-scheduler.service
+        fi
+        if systemctl is-enabled --quiet sniper-worker.service; then
+            sudo systemctl restart sniper-worker.service
+        fi"
+
 # ---------------------------------------------------------------------------
 # --status
 # ---------------------------------------------------------------------------
@@ -168,15 +182,18 @@ if $DO_ROLLBACK; then
         echo \"\$CUR\" > /opt/sniper/previous_revision
         echo '$PREV' > /opt/sniper/current_revision
         ln -sfn $PREV_DIR /opt/sniper/current.new
-        mv -Tf /opt/sniper/current.new /opt/sniper/current
-        sudo systemctl restart sniper-migrate.service
-        sudo systemctl restart sniper-web.service
-        if systemctl is-enabled --quiet sniper-scheduler.service; then
-            sudo systemctl restart sniper-scheduler.service
-        fi
-        if systemctl is-enabled --quiet sniper-worker.service; then
-            sudo systemctl restart sniper-worker.service
-        fi"
+        mv -Tf /opt/sniper/current.new /opt/sniper/current"
+    # The flip is done. If a restart fails now, running --rollback again
+    # would flip straight back, so say what state the host is in instead.
+    if ! ssh "$HOST" "set -e
+        $RESTART_SERVICES"; then
+        echo "FATAL: current points to $PREV_DIR, but the services did not all restart." >&2
+        echo "       Don't run --rollback again: it would flip back. Find the cause with" >&2
+        echo "       journalctl -u sniper-migrate -u sniper-web -n 50, then on the host run" >&2
+        echo "       sudo systemctl restart sniper-migrate sniper-web (and sniper-worker" >&2
+        echo "       sniper-scheduler if they are enabled)." >&2
+        exit 12
+    fi
     echo "▸ rollback complete; current is $PREV"
     exit 0
 fi
@@ -371,14 +388,7 @@ ssh "$HOST" "set -euo pipefail
 
 if ! $NO_RESTART; then
     ssh "$HOST" "set -e
-        sudo systemctl restart sniper-migrate.service
-        sudo systemctl restart sniper-web.service
-        if systemctl is-enabled --quiet sniper-scheduler.service; then
-            sudo systemctl restart sniper-scheduler.service
-        fi
-        if systemctl is-enabled --quiet sniper-worker.service; then
-            sudo systemctl restart sniper-worker.service
-        fi
+        $RESTART_SERVICES
         for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
             sleep 2
             curl -fsS -m 5 http://127.0.0.1:8765/health >/dev/null 2>&1 && { echo '▸ sniper-web healthy'; exit 0; }
