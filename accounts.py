@@ -1,8 +1,14 @@
 """
-accounts.py — owner tool to delete a FlipFirst account on request.
+accounts.py — owner tools for FlipFirst accounts.
 
+    python -m accounts create-admin you@example.com    # prompts for a password
     python -m accounts delete pat@example.com          # dry run: shows what would go
     python -m accounts delete pat@example.com --yes    # deletes
+
+create-admin makes a new admin account on the Pro plan, or promotes an
+existing account to admin (its password is left unchanged). The password
+is read from a hidden prompt, or from stdin when piped — never from the
+command line, where it would land in shell history and process lists.
 
 What a deletion removes:
   * the user's seller listings, through seller_listings.remove() (listing,
@@ -94,13 +100,56 @@ def delete(email: str, *, confirm: bool = False) -> dict:
     return {"email": email, "deleted": True, "removed": rows}
 
 
+ADMIN_MIN_PASSWORD = 12
+
+
+def create_admin(email: str, password: str | None) -> dict:
+    """Create an admin (plan pro) or promote an existing account to admin.
+    `password` is required only when the account does not exist yet."""
+    import auth
+    email = (email or "").strip().lower()
+    user = auth.get_user_by_email(email)
+    if user:
+        auth.set_role(user.id, "admin")
+        return {"email": email, "created": False}
+    if not password or len(password) < ADMIN_MIN_PASSWORD:
+        raise Refused(f"admin password must be at least {ADMIN_MIN_PASSWORD} characters")
+    try:
+        auth.create_user(email, password, role="admin", plan="pro")
+    except ValueError as e:
+        raise Refused(str(e)) from e
+    return {"email": email, "created": True}
+
+
+def _read_password() -> str:
+    if not sys.stdin.isatty():
+        return sys.stdin.readline().rstrip("\r\n")
+    import getpass
+    first = getpass.getpass("New admin password: ")
+    if getpass.getpass("Repeat password: ") != first:
+        raise Refused("passwords did not match")
+    return first
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m accounts")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("delete", help="delete an account on the owner's request")
     d.add_argument("email")
     d.add_argument("--yes", action="store_true", help="really delete (default: dry run)")
+    c = sub.add_parser("create-admin", help="create an admin account, or promote an existing one")
+    c.add_argument("email")
     a = ap.parse_args(argv)
+    if a.cmd == "create-admin":
+        try:
+            import auth
+            exists = auth.get_user_by_email(a.email.strip().lower()) is not None
+            r = create_admin(a.email, None if exists else _read_password())
+        except Refused as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 1
+        print(("created admin " if r["created"] else "promoted to admin ") + r["email"])
+        return 0
     try:
         r = delete(a.email.strip().lower(), confirm=a.yes)
     except Refused as e:
