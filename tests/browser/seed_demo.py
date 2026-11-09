@@ -31,8 +31,10 @@ comps.raw_sold = lambda y, mk, md: ({}, 0)     # no network in the smoke test
 
 def L(sid, price, odo, title="2015 Toyota Camry SE", desc="clean title"):
     return NormalizedListing(
-        source="craigslist", source_id=f"demo:{sid}",
-        url=f"https://example.com/demo/{sid}", title=f"{title} - ${price:,}",
+        # a dedicated source, never a real marketplace's name, and no
+        # external URL: nothing here may pass for a real seller's listing
+        source="demo", source_id=sid,
+        url="", title=f"{title} - ${price:,}",
         price=price, year=2015, make="Toyota", model="Camry", odometer=odo,
         description=desc, state="AL", location="Tuscaloosa", zip="35401",
         is_cash_only=True)
