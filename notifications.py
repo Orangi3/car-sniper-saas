@@ -459,6 +459,30 @@ def send_test(phone: Optional[str] = None) -> dict[str, tuple[bool, str]]:
     return out
 
 
-def send_user_test(phone=None, ntfy_topic=None, webhook=None) -> dict[str, tuple[bool, str]]:
-    return {ch: _try(ch, phone=phone, ntfy_topic=ntfy_topic, webhook=webhook)
-            for ch in user_channels(phone, ntfy_topic, webhook)}
+def _sms_used_this_month(user_id: Optional[int]) -> int:
+    import db as _db
+    from saved_search_alerts import _month_start
+    with _db.session() as conn:
+        return int(conn.execute(
+            "SELECT COALESCE(SUM(units), 0) FROM usage_events WHERE user_id = ? "
+            "AND kind = 'sms' AND created_at >= ?",
+            (user_id, _month_start(datetime.now(timezone.utc)))).fetchone()[0])
+
+
+def send_user_test(phone=None, ntfy_topic=None, webhook=None, *, plan=None,
+                   user_id=None) -> dict[str, tuple[bool, str]]:
+    """A test send to a subscriber's own channels under the same rules as a
+    real alert (saved_search_alerts.evaluate): only the channels the plan
+    includes, SMS only within the plan's monthly cap, and every send is
+    metered, because it costs the same. No plan means no channel."""
+    import plans
+    chans = [c for c in user_channels(phone, ntfy_topic, webhook)
+             if plans.channel_allowed(plan, c)]
+    if "twilio" in chans and _sms_used_this_month(user_id) >= plans.limits(plan)["sms_per_month"]:
+        chans.remove("twilio")
+    out = {}
+    for ch in chans:
+        out[ch] = _try(ch, phone=phone, ntfy_topic=ntfy_topic, webhook=webhook)
+        if out[ch][0]:
+            _record_usage(user_id, ch)
+    return out
