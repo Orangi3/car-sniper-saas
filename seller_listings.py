@@ -23,7 +23,11 @@ OFF by default (SNIPER_SELLER_SUBMISSIONS=1). Lifecycle:
 Contact verification (mailer.py): a single-use token, stored only as a
 SHA-256 hash, expiring after TOKEN_TTL_H, bound to the account AND the
 address; changing the address revokes earlier verification and tokens;
-sends and failed attempts are rate-limited. Without SMTP configured, nothing
+sends and failed attempts are rate-limited: per account (MAX_SENDS_PER_DAY,
+RESEND_MIN_GAP_S), per recipient address across all accounts
+(MAX_SENDS_PER_RECIPIENT_PER_DAY), and for the whole site
+(SELLER_MAX_VERIFY_EMAILS_PER_DAY), so the message can't be aimed at a third
+party again and again from several accounts. Without SMTP configured, nothing
 is published. The `issue-link` CLI (hand-delivered link) exists for isolated
 development/testing only: it refuses to run in commercial mode or without
 SNIPER_ALLOW_MANUAL_VERIFY_LINKS=1, every issue is audited
@@ -65,6 +69,8 @@ CONFIRM_DAYS = int(os.environ.get("SELLER_CONFIRM_DAYS", "30"))
 TOKEN_TTL_H = 24
 RESEND_MIN_GAP_S = 60
 MAX_SENDS_PER_DAY = 5
+MAX_SENDS_PER_RECIPIENT_PER_DAY = 5      # one address, all accounts together
+MAX_VERIFY_EMAILS_PER_DAY = int(os.environ.get("SELLER_MAX_VERIFY_EMAILS_PER_DAY", "100"))
 MAX_FAILED_VERIFY_PER_HOUR = 10
 ATTESTATIONS = ("authorized_to_sell", "details_accurate", "share_contact_with_buyers")
 TITLE_STATUSES = ("clean", "rebuilt", "salvage", "unknown")
@@ -278,6 +284,23 @@ def _issue_token(conn, user_id: int, email: str) -> str:
         last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
         if (now - last).total_seconds() < RESEND_MIN_GAP_S:
             raise SubmissionError(["please wait a minute before requesting another email"], 429)
+    # Limits that don't depend on how many accounts someone controls. Withdrawn
+    # (undelivered) tokens are deleted, so only emails actually sent count.
+    day_ago = (now - timedelta(days=1)).isoformat()
+    if conn.execute("SELECT COUNT(*) FROM contact_verifications WHERE LOWER(email) = LOWER(?) "
+                    "AND created_at >= ?", (email, day_ago)).fetchone()[0] \
+            >= MAX_SENDS_PER_RECIPIENT_PER_DAY:
+        raise SubmissionError(["this address has had too many verification emails today — "
+                               "try tomorrow"], 429)
+    site = conn.execute("SELECT COUNT(*) FROM contact_verifications WHERE created_at >= ?",
+                        (day_ago,)).fetchone()[0]
+    if site >= MAX_VERIFY_EMAILS_PER_DAY:
+        import logging
+        logging.getLogger("sniper").warning(
+            "seller verification emails paused: %d sent in 24 h "
+            "(SELLER_MAX_VERIFY_EMAILS_PER_DAY=%d)", site, MAX_VERIFY_EMAILS_PER_DAY)
+        raise SubmissionError(["verification emails are paused for today — please try "
+                               "again tomorrow"], 429)
     token = secrets.token_urlsafe(32)
     conn.execute("INSERT INTO contact_verifications(user_id, email, token_hash, created_at, "
                  "expires_at) VALUES (?, ?, ?, ?, ?)",
