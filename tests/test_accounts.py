@@ -145,3 +145,83 @@ def test_set_password_refuses_unknown_accounts_and_short_passwords(client, monke
     assert accounts.main(["set-password", "kim@example.com", "--stdin"]) == 1
     assert "refused" in capsys.readouterr().err
     assert login(client, "kim@example.com").status_code == 200       # unchanged
+
+
+def test_set_password_cli_drops_a_windows_line_ending(client, monkeypatch):
+    import io
+    import accounts
+    register(client, "lee@example.com")
+    logout(client)
+    monkeypatch.setattr("sys.stdin", io.StringIO("chosen-by-lee-42\r\n"))   # piped from a CRLF file
+    assert accounts.main(["set-password", "lee@example.com", "--stdin"]) == 0
+    assert login(client, "lee@example.com", "chosen-by-lee-42").status_code == 200
+
+
+def test_set_password_on_a_terminal_refuses_two_different_entries(client, monkeypatch, capsys):
+    import getpass
+    import io
+    import accounts
+
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    register(client, "max@example.com")
+    logout(client)
+    entries = iter(["first-choice-42", "second-choice-42"])
+    monkeypatch.setattr("sys.stdin", Terminal())
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": next(entries))
+    assert accounts.main(["set-password", "max@example.com", "--stdin"]) == 1
+    assert "differ" in capsys.readouterr().err
+    assert login(client, "max@example.com").status_code == 200       # unchanged
+
+
+def test_set_password_on_a_terminal_hides_the_typing_and_asks_twice(client):
+    """In a real (pseudo-)terminal: a prompt is shown, the password typed
+    never appears on screen, it is asked for twice, and then it works."""
+    pty = pytest.importorskip("pty")
+    import os
+    import select
+    import signal
+    import sys
+    import time
+    from pathlib import Path
+    register(client, "tty@example.com")
+    logout(client)
+    secret = b"typed-by-tty-42"
+    pid, fd = pty.fork()
+    if pid == 0:                                   # child: the owner at a terminal
+        os.chdir(Path(__file__).resolve().parents[1])
+        os.execv(sys.executable, [sys.executable, "-m", "accounts", "set-password",
+                                  "tty@example.com", "--stdin"])
+    screen = bytearray()
+
+    def until(marker):                             # read the screen until marker or exit
+        end = time.time() + 30
+        while (marker is None or marker not in screen) and time.time() < end:
+            if select.select([fd], [], [], 0.2)[0]:
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:                    # EIO: the command has exited
+                    return
+                if not chunk:
+                    return
+                screen.extend(chunk)
+
+    try:
+        until(b"New password: ")
+        os.write(fd, secret + b"\n")
+        until(b"Type it again: ")
+        os.write(fd, secret + b"\n")
+        until(None)
+    finally:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        os.waitpid(pid, 0)
+        os.close(fd)
+    assert b"New password: " in screen and b"Type it again: " in screen
+    assert b"password set for tty@example.com" in screen
+    assert secret not in screen                    # the typing was never shown
+    assert login(client, "tty@example.com", secret.decode()).status_code == 200

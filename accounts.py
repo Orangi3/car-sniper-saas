@@ -73,14 +73,28 @@ def set_password(email: str, password: str | None = None) -> dict:
             "sessions_revoked": auth.revoke_sessions(user.id)}
 
 
+def _read_chosen_password() -> str:
+    """The password the person chose. On a terminal it is typed twice with
+    the typing hidden; piped in, it is the first line without its line ending
+    (LF or CRLF), never the command line."""
+    if sys.stdin.isatty():
+        import getpass
+        first = getpass.getpass("New password: ")
+        if getpass.getpass("Type it again: ") != first:
+            raise Refused("the two entries differ; nothing was changed")
+        return first
+    return sys.stdin.readline().rstrip("\r\n")
+
+
 def _set_password_main(argv) -> int:
     ap = argparse.ArgumentParser(prog="python -m accounts set-password")
     ap.add_argument("email")
     ap.add_argument("--stdin", action="store_true",
-                    help="read the new password from stdin (never from the command line)")
+                    help="use a password the person chose: typed hidden (twice) on a "
+                         "terminal, or the first line of piped input")
     a = ap.parse_args(argv)
-    chosen = sys.stdin.readline().rstrip("\n") if a.stdin else None
     try:
+        chosen = _read_chosen_password() if a.stdin else None
         r = set_password(a.email.strip().lower(), chosen)
     except (Refused, ValueError) as e:
         print(f"refused: {e}", file=sys.stderr)
