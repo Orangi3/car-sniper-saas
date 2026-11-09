@@ -24,12 +24,13 @@ Contact verification (mailer.py): a single-use token, stored only as a
 SHA-256 hash, expiring after TOKEN_TTL_H, bound to the account AND the
 address; changing the address revokes earlier verification and tokens;
 sends and failed attempts are rate-limited: per account (MAX_SENDS_PER_DAY,
-RESEND_MIN_GAP_S), per recipient address across all accounts
-(MAX_SENDS_PER_RECIPIENT_PER_DAY), and for the whole site
-(SELLER_MAX_VERIFY_EMAILS_PER_DAY), so the message can't be aimed at a third
-party again and again from several accounts. Without SMTP configured, nothing
-is published. The `issue-link` CLI (hand-delivered link) exists for isolated
-development/testing only: it refuses to run in commercial mode or without
+RESEND_MIN_GAP_S), per recipient inbox across all accounts
+(MAX_SENDS_PER_RECIPIENT_PER_DAY; +tags and Gmail dots count as one inbox)
+and for the whole site (SELLER_MAX_VERIFY_EMAILS_PER_DAY), so the message
+can't be aimed at a third party again and again from several accounts.
+Without SMTP configured, nothing is published. The `issue-link` CLI
+(hand-delivered link) exists for isolated development/testing only: it
+refuses to run in commercial mode or without
 SNIPER_ALLOW_MANUAL_VERIFY_LINKS=1, every issue is audited
 (usage_events 'seller_manual_verify_link', units = token id) and a
 verification through such a link is audited separately
@@ -272,6 +273,17 @@ def set_contact(user, email: str | None = None) -> dict:
     return {"email": email, "verified": False}
 
 
+def _mailbox(email: str) -> str:
+    """The inbox an address delivers to, for counting sends: lower case,
+    without a +tag, and for Gmail without dots (Gmail ignores them), so
+    victim+1@gmail.com and v.ictim@gmail.com are one recipient."""
+    local, _, domain = str(email or "").strip().lower().rpartition("@")
+    local = local.split("+", 1)[0]
+    if domain in ("gmail.com", "googlemail.com"):
+        local, domain = local.replace(".", ""), "gmail.com"
+    return f"{local}@{domain}"
+
+
 def _issue_token(conn, user_id: int, email: str) -> str:
     now = _now()
     sent = conn.execute("SELECT created_at FROM contact_verifications WHERE user_id = ? "
@@ -285,15 +297,16 @@ def _issue_token(conn, user_id: int, email: str) -> str:
         if (now - last).total_seconds() < RESEND_MIN_GAP_S:
             raise SubmissionError(["please wait a minute before requesting another email"], 429)
     # Limits that don't depend on how many accounts someone controls. Withdrawn
-    # (undelivered) tokens are deleted, so only emails actually sent count.
-    day_ago = (now - timedelta(days=1)).isoformat()
-    if conn.execute("SELECT COUNT(*) FROM contact_verifications WHERE LOWER(email) = LOWER(?) "
-                    "AND created_at >= ?", (email, day_ago)).fetchone()[0] \
-            >= MAX_SENDS_PER_RECIPIENT_PER_DAY:
+    # (undelivered) tokens are deleted, so only emails actually sent count. The
+    # site cap bounds how many rows this reads.
+    recent = [r[0] for r in conn.execute(
+        "SELECT email FROM contact_verifications WHERE created_at >= ?",
+        ((now - timedelta(days=1)).isoformat(),))]
+    box = _mailbox(email)
+    if sum(1 for e in recent if _mailbox(e) == box) >= MAX_SENDS_PER_RECIPIENT_PER_DAY:
         raise SubmissionError(["this address has had too many verification emails today — "
                                "try tomorrow"], 429)
-    site = conn.execute("SELECT COUNT(*) FROM contact_verifications WHERE created_at >= ?",
-                        (day_ago,)).fetchone()[0]
+    site = len(recent)
     if site >= MAX_VERIFY_EMAILS_PER_DAY:
         import logging
         logging.getLogger("sniper").warning(

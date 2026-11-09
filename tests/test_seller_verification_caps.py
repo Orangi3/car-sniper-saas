@@ -59,3 +59,19 @@ def test_a_seller_still_verifies_their_own_address_and_publishes(client, world, 
                     json={"token": token_from(mail, "seller@example.com")})
     assert r.status_code == 200 and r.get_json()["verified"] is True
     assert r.get_json()["published"] == 1
+
+
+def test_plus_tags_and_gmail_dots_count_as_one_inbox(client, world, mail):
+    """victim+1@gmail.com, v.ictim@gmail.com and VICTIM@googlemail.com all
+    reach one Gmail inbox; counting them apart would let the per-recipient
+    limit be walked around by varying the address."""
+    variants = ["victim+1@gmail.com", "v.ictim@gmail.com", "VICTIM+x@googlemail.com",
+                "vic.tim+2@gmail.com", "victim@gmail.com", "victim+again@gmail.com"]
+    codes = [_ask(client, f"alias{i}@example.com", to) for i, to in enumerate(variants)]
+    assert codes == [200] * 5 + [429]
+
+
+def test_dots_still_matter_outside_gmail(client, world, mail):
+    codes = [_ask(client, f"dots{i}@example.com", to)
+             for i, to in enumerate(["a.b@example.org", "ab@example.org"] * 3)]
+    assert codes == [200] * 6                     # two different inboxes, 3 each
