@@ -127,7 +127,8 @@ def _main(argv=None) -> int:
     i.add_argument("--count", type=int, default=1)
     i.add_argument("--note", help="who it is for, e.g. 'Pat (seller)' — not secret")
     i.add_argument("--days", type=int, default=DEFAULT_DAYS)
-    i.add_argument("--origin", default=os.environ.get("BILLING_ORIGIN", ""))
+    i.add_argument("--origin", default=os.environ.get("BILLING_ORIGIN")
+                   or os.environ.get("RENDER_EXTERNAL_URL", ""))   # Render shell
     sub.add_parser("list")
     r = sub.add_parser("revoke")
     r.add_argument("id", type=int)

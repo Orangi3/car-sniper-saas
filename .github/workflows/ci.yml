@@ -93,3 +93,51 @@ jobs:
           path: |
             /tmp/m-*.png
             /tmp/flow-*.png
+
+  # The one-container cloud deploy (Dockerfile + deploy/paas/start.sh,
+  # used by render.yaml): build the image, boot it against Postgres, and
+  # check that migrations, worker, scheduler and web all came up.
+  container-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: flipfirst }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t flipfirst:ci .
+      - name: Image holds no secrets, tests or local databases
+        run: |
+          docker run --rm --entrypoint sh flipfirst:ci -c \
+            'test ! -e .env && test ! -e overrides.json && test ! -d tests && test ! -d .git \
+             && ! ls *.db *.sqlite 2>/dev/null && test -f server.py && test -d static && test -d migrations'
+      - name: Boot the container
+        run: |
+          docker run -d --name ff --network host \
+            -e DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/flipfirst \
+            -e PORT=10000 -e SNIPER_COMMERCIAL_MODE=1 -e ALLOW_REGISTRATION=1 \
+            -e RENDER_EXTERNAL_URL=http://127.0.0.1:10000 flipfirst:ci
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:10000/health && break; sleep 1; done
+      - name: Pages, signup and background processes
+        run: |
+          set -e
+          curl -sf -o /dev/null http://127.0.0.1:10000/login
+          curl -sf -o /dev/null -w '%{http_code}\n' http://127.0.0.1:10000/m
+          curl -sf -H 'content-type: application/json' -H 'Origin: http://127.0.0.1:10000' \
+            -d '{"email":"ci@example.com","password":"container-pass-1"}' \
+            http://127.0.0.1:10000/api/auth/register
+          for i in $(seq 1 30); do docker logs ff 2>&1 | grep -q '"event": "started"' && break; sleep 1; done
+          docker logs ff 2>&1 | grep -q 'new migration(s) applied'
+          docker logs ff 2>&1 | grep -q '"event": "started"'          # scheduler holds the lease
+          echo "Pr0per-admin-pass" | docker exec -i ff python -m accounts create-admin owner@example.com
+      - name: Stops cleanly
+        run: |
+          docker stop -t 20 ff
+          test "$(docker inspect -f '{{.State.ExitCode}}' ff)" = "0"
+      - if: always()
+        run: docker logs ff 2>&1 | tail -n 80 || true
