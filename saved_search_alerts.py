@@ -125,9 +125,9 @@ def criteria_match(f: dict, opp: dict, lim: dict) -> tuple[bool, str]:
             return False, "price-drop alerts not in plan"
         if str(f.get("price_drops", "true")).lower() in ("0", "false", "no"):
             return False, "search excludes price drops"
-    mode = str(f.get("risk_mode") or "conservative").lower()
-    if mode == "aggressive" and not lim.get("aggressive_mode"):
-        mode = "conservative"
+    mode = str(f.get("risk_mode") or "conservative").strip().lower()
+    if mode != "aggressive" or not lim.get("aggressive_mode"):
+        mode = "conservative"     # any other value, or a plan without it: conservative
     if (opp.get("scam_score") or 0) >= 80:
         return False, "scam signals"
     if _salvage(opp) and not _flag(f, "allow_salvage"):

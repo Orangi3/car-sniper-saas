@@ -2055,10 +2055,14 @@ def api_saved_searches_create():
                                  f"{lim['saved_searches']} saved searches",
                         "limit": lim["saved_searches"], "current_plan": u.plan,
                         "upgrade_to": "pro" if u.plan != "pro" else None}), 402
-    if str(filter_obj.get("risk_mode", "")).lower() == "aggressive" \
-            and not lim["aggressive_mode"]:
-        return jsonify({"error": "aggressive mode is a Pro feature",
-                        "required_plan": "pro"}), 402
+    if filter_obj.get("risk_mode") not in (None, ""):
+        risk_mode = str(filter_obj["risk_mode"]).strip().lower()
+        if risk_mode not in ("conservative", "aggressive"):
+            return jsonify({"error": "risk_mode must be conservative or aggressive"}), 400
+        if risk_mode == "aggressive" and not lim["aggressive_mode"]:
+            return jsonify({"error": "aggressive mode is a Pro feature",
+                            "required_plan": "pro"}), 402
+        filter_obj["risk_mode"] = risk_mode
     with _db.transaction() as conn:
         cur = conn.cursor()
         if _db.IS_PG:
@@ -2172,9 +2176,10 @@ def api_me_alert_channels_test():
         r = dict(cur.fetchone() or {})
     from notifications import send_user_test
     results = send_user_test(phone=r.get("notify_phone"), ntfy_topic=r.get("ntfy_topic"),
-                             webhook=r.get("alert_webhook"))
+                             webhook=r.get("alert_webhook"), plan=u.plan, user_id=u.id)
     if not results:
-        return jsonify({"ok": False, "error": "no alert channel set"}), 400
+        return jsonify({"ok": False,
+                        "error": "no alert channel set that your plan includes"}), 400
     ok = any(v[0] for v in results.values())
     return jsonify({"ok": ok, "channels": {ch: {"ok": v[0], "detail": v[1]}
                                            for ch, v in results.items()}}), (200 if ok else 502)
