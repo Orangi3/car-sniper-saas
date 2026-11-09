@@ -108,3 +108,40 @@ def test_deletion_clears_the_invitation_name_and_redacts_stripe_events(client, w
     assert events["evt_pat"] == '{"redacted": true}'          # event id kept for idempotency
     assert "patXexample.com" in events["evt_other"]           # "_"/"%" are not wildcards here
     assert q("SELECT 1 FROM sessions WHERE user_id = ?", (uid,)) == []
+
+
+# ---------- set-password: owner tool for a locked-out user --------------------------
+
+def test_set_password_replaces_it_and_ends_every_session(client):
+    import accounts
+    assert register(client, "pat@example.com").status_code == 200   # registered and signed in
+    assert client.get("/api/me").status_code == 200
+    r = accounts.set_password("pat@example.com")
+    assert r["generated"] and len(r["password"]) >= 12 and r["sessions_revoked"] >= 1
+    assert client.get("/api/me").status_code == 401                  # the old session ended
+    assert login(client, "pat@example.com").status_code == 401       # the old password fails
+    assert login(client, "pat@example.com", r["password"]).status_code == 200
+
+
+def test_set_password_cli_reads_a_chosen_password_from_stdin(client, monkeypatch, capsys):
+    import io
+    import accounts
+    register(client, "sam@example.com")
+    logout(client)
+    monkeypatch.setattr("sys.stdin", io.StringIO("chosen-by-sam-42\n"))
+    assert accounts.main(["set-password", "SAM@example.com", "--stdin"]) == 0
+    out = capsys.readouterr().out
+    assert "password set for sam@example.com" in out and "chosen-by-sam-42" not in out
+    assert login(client, "sam@example.com", "chosen-by-sam-42").status_code == 200
+
+
+def test_set_password_refuses_unknown_accounts_and_short_passwords(client, monkeypatch, capsys):
+    import io
+    import accounts
+    register(client, "kim@example.com")
+    logout(client)
+    assert accounts.main(["set-password", "nobody@example.com"]) == 1
+    monkeypatch.setattr("sys.stdin", io.StringIO("short\n"))
+    assert accounts.main(["set-password", "kim@example.com", "--stdin"]) == 1
+    assert "refused" in capsys.readouterr().err
+    assert login(client, "kim@example.com").status_code == 200       # unchanged

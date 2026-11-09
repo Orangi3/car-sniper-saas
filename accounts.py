@@ -1,8 +1,15 @@
 """
-accounts.py — owner tool to delete a FlipFirst account on request.
+accounts.py — owner tools for FlipFirst accounts.
 
     python -m accounts delete pat@example.com          # dry run: shows what would go
     python -m accounts delete pat@example.com --yes    # deletes
+    python -m accounts set-password pat@example.com    # locked out: new random password
+    python -m accounts set-password pat@example.com --stdin   # one the person chose
+
+set-password exists because there is no self-serve password reset yet. It
+replaces the password and signs the account out everywhere. Give the new
+password to the person over a channel you already trust, never by email to
+an address the account has not verified.
 
 What a deletion removes:
   * the user's seller listings, through seller_listings.remove() (listing,
@@ -94,13 +101,49 @@ def delete(email: str, *, confirm: bool = False) -> dict:
     return {"email": email, "deleted": True, "removed": rows}
 
 
+def set_password(email: str, password: str | None = None) -> dict:
+    """Owner tool for a locked-out user: set a new password (a random one
+    unless `password` is given; at least 8 characters either way) and end
+    every session of the account."""
+    import secrets
+    import auth
+    import db as _db
+    user = auth.get_user_by_email(email)
+    if user is None:
+        raise Refused(f"no account for {email}")
+    new = password if password is not None else secrets.token_urlsafe(12)
+    pw_hash = auth.hash_password(new)          # refuses < 8 or > 200 characters
+    with _db.session() as conn:
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (pw_hash, user.id))
+    return {"email": user.email, "password": new, "generated": password is None,
+            "sessions_revoked": auth.revoke_sessions(user.id)}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m accounts")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("delete", help="delete an account on the owner's request")
     d.add_argument("email")
     d.add_argument("--yes", action="store_true", help="really delete (default: dry run)")
+    p = sub.add_parser("set-password", help="give a locked-out user a new password")
+    p.add_argument("email")
+    p.add_argument("--stdin", action="store_true",
+                   help="read the new password from stdin (never from the command line)")
     a = ap.parse_args(argv)
+    if a.cmd == "set-password":
+        chosen = sys.stdin.readline().rstrip("\n") if a.stdin else None
+        try:
+            r = set_password(a.email.strip().lower(), chosen)
+        except (Refused, ValueError) as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 1
+        if r["generated"]:
+            print(f"new password for {r['email']} (shown once; give it to them privately): "
+                  f"{r['password']}")
+        else:
+            print(f"password set for {r['email']}")
+        print(f"signed out of {r['sessions_revoked']} session(s)")
+        return 0
     try:
         r = delete(a.email.strip().lower(), confirm=a.yes)
     except Refused as e:
