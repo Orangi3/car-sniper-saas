@@ -38,6 +38,16 @@ that does not match its expected output.
 - Abort rule: if any verification step fails, stop, keep the old unit in
   place, and report the step and its output. Do not restart services
   against a half-installed unit.
+- Release directories are root-owned. The older `install.sh` created
+  `/opt/sniper` (the `sniper` user's home) and `/opt/sniper/releases`
+  owned by `sniper`. `release_transition.py` refuses every operation
+  (status, apply, rollback, recover) on that layout, which is correct
+  because a service account must not be able to swap releases. Fix it
+  once, before the first release operation:
+  `chown root:root /opt/sniper /opt/sniper/releases && chmod 0755 /opt/sniper /opt/sniper/releases`
+  Then confirm with `stat -c '%U:%G %a %n' /opt/sniper /opt/sniper/releases`
+  (expect `root:root 755` for both). Services keep reading the release
+  tree; they never write to these two directories.
 
 ## Steps
 
@@ -103,6 +113,15 @@ that does not match its expected output.
   health output and the revision mismatch, and escalate to the owner.
   A rollback decision at this point is an owner decision, not an
   automatic step.
+- If the owner decides to go back after a release switch failed (unit
+  sync, a restart, or the health check), roll back with exact pins:
+  `--rollback --expect <new revision> --target <previous revision>`.
+  It takes over the failed transition's journal only when that journal
+  records the completed switch from `<previous revision>` to
+  `<new revision>`, and the pointer and revision markers show it. Any
+  other pending journal is still refused: use `--recover`, or reconcile
+  by hand. Deleting `.release-transition.json` by hand is no longer
+  needed for this case.
 
 ## First-install behaviour (for contrast)
 

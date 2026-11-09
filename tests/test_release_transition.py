@@ -253,6 +253,51 @@ class TransitionTests(unittest.TestCase):
         self.assert_state(OLD, (OLD, PREVIOUS))
         self.assertIsNone(self.t.load())
 
+    def unhealthy(self, *cmd, **kwargs):
+        """run_command whose health probe fails (curl exit 7) until healed."""
+        if cmd and cmd[0] == "curl" and not self.healed:
+            self.calls.append(cmd)
+            return SimpleNamespace(stdout="", returncode=7)
+        return self.run_command(*cmd, **kwargs)
+
+    def test_rollback_takes_over_a_switch_whose_health_check_failed(self):
+        # A switch that fails after the pointer moved leaves its journal,
+        # and --recover only retries forward. Before this fix the owner
+        # had no tool path back: rollback answered "Pending transition".
+        self.healed = False
+        broken = host.Transition(self.root, self.unhealthy)
+        with patch.object(host.time, "sleep"), contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaisesRegex(RuntimeError, "Health check failed"):
+            broken.rollback(OLD, PREVIOUS)               # switch to PREVIOUS: unhealthy
+        self.assert_state(PREVIOUS, (PREVIOUS, OLD))
+        self.assertEqual(self.t.load()["service"], "health")
+        with patch.object(host.time, "sleep"), \
+                self.assertRaisesRegex(RuntimeError, "Health check failed"):
+            host.Transition(self.root, self.unhealthy).recover()   # forward only
+        self.healed = True                                # the old release is healthy
+        with contextlib.redirect_stderr(io.StringIO()) as note:
+            host.Transition(self.root, self.unhealthy).rollback(PREVIOUS, OLD)
+        self.assertIn("Taking over the failed transition", note.getvalue())
+        self.assert_state(OLD, (OLD, PREVIOUS))
+        self.assertIsNone(self.t.load())
+
+    def test_rollback_still_refuses_any_other_pending_journal(self):
+        # Pins that do not describe the recorded switch, and a journal
+        # whose switch never happened, still need --recover or a person.
+        (self.t.releases / THIRD).mkdir()
+        self.t.prepare(OLD, PREVIOUS, PREVIOUS, "ready")    # pointer never moved
+        for pins in ((PREVIOUS, OLD), (OLD, PREVIOUS), (OLD, THIRD)):
+            with self.subTest(pins=pins), self.assertRaisesRegex(RuntimeError, "Pending transition"):
+                self.t.rollback(*pins)
+        self.assert_state(OLD, (OLD, PREVIOUS))
+        self.assertEqual(self.t.load()["target"], PREVIOUS)
+        self.assertFalse(self.calls)
+
+    def test_unsafe_directory_refusal_says_how_to_fix_an_older_host(self):
+        message = host.unsafe_directory_message(host.ROOT)
+        self.assertIn("chown root:root", message)
+        self.assertIn("UPGRADE_EXISTING_HOST.md", message)
+
 
 if __name__ == "__main__":
     unittest.main()
