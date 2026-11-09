@@ -32,6 +32,10 @@ const fail = msg => {
   await page.waitForSelector(".page__head h1");
   if (!/#\/discover\/trusted$/.test(page.url())) fail("new user not routed to top deals: " + page.url());
   if (!(await text("#main")).includes("Create a search")) fail("no create-a-search prompt for a new user");
+  // the demo database is synthetic: every screen must say so, and no card
+  // may link out to a "real" listing
+  if (!(await text(".demo-banner")).includes("DEMO DATA — NOT LIVE MARKETPLACE LISTINGS")) fail("demo banner missing");
+  if (await page.$('a[aria-label="Open original listing (new tab)"]')) fail("a demo listing links to an external listing");
 
   // guided search setup (4 steps)
   await page.click('a[href="#/alerts/new"]');
