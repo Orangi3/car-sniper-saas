@@ -372,11 +372,20 @@ def _json_error(e):
         if request.path.startswith("/api/"):
             return jsonify({"error": e.description, "code": e.code}), e.code
         return e.description or "HTTP error", e.code or 500
-    tb = traceback.format_exc()
-    _logger.error(f"UNCAUGHT {request.method} {request.path}: {e}\n{tb}")
+    return _internal_error(e)
+
+
+def _internal_error(e: Exception):
+    """An unexpected error: the full text goes to the log under a short
+    reference; the client gets only the reference. Exception text can carry
+    database details, customer data, connection strings or paths."""
+    import secrets
+    ref = secrets.token_hex(4)
+    _logger.error(f"UNCAUGHT [{ref}] {request.method} {request.path}: {e}\n"
+                  f"{traceback.format_exc()}")
     if request.path.startswith("/api/"):
-        return jsonify({"error": str(e), "type": type(e).__name__}), 500
-    return f"Internal error: {e}", 500
+        return jsonify({"error": f"internal error (reference {ref})", "ref": ref}), 500
+    return f"Internal error (reference {ref})", 500
 
 
 def _rows(query: str, params=()) -> list[dict]:
@@ -1088,7 +1097,7 @@ def api_vin():
     try:
         return jsonify(vin_mod.report(v))
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(e)
 
 
 # ============= v3 VIN endpoints ==========================================
@@ -1214,7 +1223,7 @@ def api_comps():
     except (KeyError, ValueError) as e:
         return jsonify({"error": f"need year/make/model: {e}"}), 400
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(e)
 
 
 @app.get("/api/share_settings")
