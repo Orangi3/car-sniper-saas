@@ -99,6 +99,15 @@ def find_vin(*texts: str) -> Optional[str]:
     return None
 
 
+def listing_vin(l: NormalizedListing) -> Optional[str]:
+    """The vehicle's VIN: one printed in the title or description, else the
+    provider's own VIN field (MarketCheck: extras["vin"]) — the same car on
+    two marketplaces arrives as two records whose text may carry no VIN.
+    Both are held to the same bar: the check digit must verify."""
+    raw = (l.extras or {}).get("vin")
+    return find_vin(l.title, l.description) or (find_vin(str(raw)) if raw else None)
+
+
 def _norm_title(t: str) -> str:
     """Title without its price tag ("… - $9,000", "$9k"): a relist at a new
     price must still compare equal."""
@@ -164,6 +173,18 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                     listing is re-scored — so a $9,000 → $6,500 drop becomes
                     a price-change opportunity instead of being discarded
                     as a duplicate.
+    Disclosed     → a re-poll that newly shows a branded title, a mechanical
+                    problem (wording, or a provider condition such as eBay's
+                    "for parts or not working") or scam wording is stored with
+                    its text and re-scored even at an unchanged price, so the
+                    car leaves the trusted feed, stops being a clean
+                    comparable and stops alerting. These flags are never
+                    cleared by a later poll: deleting the words does not make
+                    a branded title clean.
+    Mileage       → a re-poll with a different plausible odometer (see
+                    plausible_odometer) stores it and re-scores once, even at
+                    an unchanged price; a missing, zero or out-of-range reading
+                    never overwrites a stored one.
     Score jobs are keyed by (listing, price): unchanged re-polls never
     re-score or re-alert."""
     from scam_detector import score_listing as scam_score_listing
@@ -176,7 +197,8 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
             continue
         _normalize_listing(l)
         batch[l.composite_id()] = l
-    out = {"new": [], "price_changed": [], "seen": 0, "dropped_no_price": dropped}
+    out = {"new": [], "price_changed": [], "disclosed": [], "odometer_changed": [],
+           "seen": 0, "dropped_no_price": dropped}
     if not batch:
         return out
     with db() as conn:
@@ -186,7 +208,8 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
         for i in range(0, len(ids), 400):
             chunk = ids[i:i + 400]
             for r in conn.execute(
-                    f"SELECT composite_id, price, odometer FROM listings "
+                    f"SELECT composite_id, price, odometer, is_salvage, needs_work, "
+                    f"  scam_score, scam_reasons FROM listings "
                     f"WHERE composite_id IN ({','.join('?' for _ in chunk)})", chunk):
                 existing[r["composite_id"]] = dict(r)
         touched = []
@@ -197,28 +220,153 @@ def ingest(listings: Iterable[NormalizedListing]) -> dict:
                 out["new"].append(l)
                 if l.year and l.make and l.model and room:
                     enqueue_score(conn, cid, l.price)
+                facts = [f for f, on in (("branded_title", l.is_salvage),
+                                         ("needs_work", (l.extras or {}).get("needs_work"))) if on]
+                if facts:
+                    _hold_same_vehicle(conn, cid, facts)
                 continue
             out["seen"] += 1
+            flags, disclosed = _disclosure_flags(l, prev, scam_score_listing)
+            if disclosed:
+                out["disclosed"].append(l)
+            odo = plausible_odometer(l.odometer)     # None never overwrites
+            odo_changed = odo is not None and odo != prev.get("odometer")
             if l.price and prev.get("price") and int(l.price) != int(prev["price"]):
                 conn.execute(
                     "UPDATE listings SET price = ?, previous_price = ?, "
                     "  price_changed_at = ?, last_seen_at = ?, title = ?, "
-                    "  description = ?, odometer = COALESCE(?, odometer) "
+                    "  description = ?, odometer = COALESCE(?, odometer), "
+                    "  is_salvage = ?, needs_work = ?, scam_score = ?, scam_reasons = ? "
                     "WHERE composite_id = ?",
                     (l.price, prev["price"], now, now, l.title, l.description,
-                     l.odometer, cid))
+                     odo, *flags, cid))
                 conn.execute(
                     "INSERT INTO listing_prices(composite_id, price, event, observed_at) "
                     "VALUES (?,?,?,?)", (cid, l.price, "price_change", now))
                 out["price_changed"].append(l)
                 if l.year and l.make and l.model:
-                    enqueue_score(conn, cid, l.price)
+                    enqueue_score(conn, cid, l.price, reason=price_change_reason(now))
+            elif disclosed:
+                # same price: keep the stored text unless this poll has some
+                # (a source that omits descriptions must not blank it)
+                conn.execute(
+                    "UPDATE listings SET last_seen_at = ?, "
+                    "  title = COALESCE(NULLIF(?, ''), title), "
+                    "  description = COALESCE(NULLIF(?, ''), description), "
+                    "  odometer = COALESCE(?, odometer), "
+                    "  is_salvage = ?, needs_work = ?, scam_score = ?, scam_reasons = ? "
+                    "WHERE composite_id = ?",
+                    (now, l.title or "", l.description or "", odo, *flags, cid))
+                if l.year and l.make and l.model:
+                    enqueue_score(conn, cid, prev["price"],
+                                  reason="disclosed:" + "+".join(disclosed))
+            elif odo_changed:
+                # same price, new mileage: a valuation input, re-scored once
+                conn.execute(
+                    "UPDATE listings SET last_seen_at = ?, odometer = ?, "
+                    "  title = COALESCE(NULLIF(?, ''), title), "
+                    "  description = COALESCE(NULLIF(?, ''), description) "
+                    "WHERE composite_id = ?",
+                    (now, odo, l.title or "", l.description or "", cid))
+                out["odometer_changed"].append(l)
+                if l.year and l.make and l.model:
+                    enqueue_score(conn, cid, prev["price"],
+                                  reason="odometer-" + price_change_reason(now))
             else:
                 touched.append((now, cid))
+            if disclosed:
+                _hold_disclosed_risk(conn, cid, disclosed)
+                facts = [f for f in disclosed if f in ("branded_title", "needs_work")]
+                if facts:
+                    _hold_same_vehicle(conn, cid, facts)
         if touched:
             conn.executemany("UPDATE listings SET last_seen_at = ? WHERE composite_id = ?",
                              touched)
     return out
+
+
+MAX_PLAUSIBLE_ODOMETER = 500_000     # the bound extract_miles and the seller form use
+
+
+def plausible_odometer(v) -> Optional[int]:
+    """An odometer reading a re-poll may store over a stored one: a whole
+    number in (0, MAX_PLAUSIBLE_ODOMETER]. Missing, zero (providers send 0
+    for unknown) and out-of-range readings give None and never overwrite."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if 0 < n <= MAX_PLAUSIBLE_ODOMETER else None
+
+
+def _disclosure_flags(l: NormalizedListing, prev: dict, scam_fn) -> tuple[tuple, list[str]]:
+    """For a re-polled listing: (is_salvage, needs_work, scam_score,
+    scam_reasons) to store, and the problems this poll newly discloses, named
+    as assess_risk names them. A flag only ever turns on and the scam score
+    only ever rises: an edit that deletes "salvage title" does not make the
+    title clean, and a disclosure followed by a retraction is itself a
+    warning sign."""
+    salvage = bool(prev.get("is_salvage")) or bool(l.is_salvage)
+    needs_work = bool(prev.get("needs_work")) or bool((l.extras or {}).get("needs_work"))
+    old = int(prev.get("scam_score") or 0)
+    score, why = scam_fn(l.title, l.description, l.price, None)
+    scam, reasons = (score, json.dumps(why)) if score > old else (old, prev.get("scam_reasons"))
+    disclosed = []
+    if salvage and not prev.get("is_salvage"):
+        disclosed.append("branded_title")
+    if needs_work and not prev.get("needs_work"):
+        disclosed.append("needs_work")
+    if scam >= SCAM_FLAG_SCORE > old:
+        disclosed.append("scam_signals")
+    return (salvage, needs_work, scam, reasons), disclosed
+
+
+def _hold_disclosed_risk(conn, composite_id: str, disclosed: list[str]) -> None:
+    """Take a car that just disclosed a problem out of the trusted feed now,
+    in the transaction that stores the disclosure — not when its re-score
+    runs. That job can wait behind a saturated score queue, sit with a
+    crashed worker until its lease expires, or dead-letter (backfill only
+    re-queues price changes), and the feeds read the stored valuation
+    meanwhile. Only lowers trust and adds the disclosed flags, all blocking:
+    the re-score sees the same sticky flags, reaches the same verdict and
+    refreshes the rest."""
+    r = conn.execute("SELECT risk_flags FROM near_misses WHERE composite_id = ?",
+                     (composite_id,)).fetchone()
+    if r is None:
+        return                        # never valued: nothing shows it as trusted
+    try:
+        flags = list(json.loads(r[0] or "[]"))
+    except (TypeError, ValueError):
+        flags = []
+    flags += [f for f in disclosed if f not in flags]
+    conn.execute("UPDATE near_misses SET trust = 'risk', risk_flags = ? "
+                 "WHERE composite_id = ?", (json.dumps(flags), composite_id))
+
+
+def _hold_same_vehicle(conn, composite_id: str, facts: list[str]) -> None:
+    """Listing `composite_id` now discloses vehicle-level `facts`. Its other
+    high-confidence postings (same VIN, or the strict no-VIN identity) leave
+    the trusted feed in this transaction, with the derived flag, and are
+    re-valued once; their own rows are not changed."""
+    import vehicle_identity
+    row = conn.execute("SELECT * FROM listings WHERE composite_id = ?",
+                       (composite_id,)).fetchone()
+    if row is None:
+        return
+    derived = sorted(vehicle_identity.VEHICLE_FACTS[f][1] for f in facts)
+    for twin, _basis in vehicle_identity.same_vehicle_postings(conn, dict(row)):
+        _hold_disclosed_risk(conn, twin["composite_id"], derived)
+        if twin.get("price") and twin.get("year") and twin.get("make") and twin.get("model"):
+            enqueue_score(conn, twin["composite_id"], twin["price"],
+                          reason="other-posting:" + "+".join(derived))
+
+
+def _vehicle_risk_reason(r: dict) -> str:
+    what = {"branded_title": "a branded (salvage/rebuilt) title",
+            "needs_work": "damage or a mechanical problem"}[r["fact"]]
+    how = ("same VIN" if r["basis"] == "same_vin" else
+           "matching details: title, odometer, location and photo or exact mileage")
+    return f"another posting of this car ({r['from']}, {how}) discloses {what}"
 
 
 def _location(l: NormalizedListing) -> tuple:
@@ -244,7 +392,7 @@ def _location(l: NormalizedListing) -> tuple:
 def _insert_listing(conn, l: NormalizedListing, now: str, scam_fn) -> None:
     cid = l.composite_id()
     sc, reasons = scam_fn(l.title, l.description, l.price, None)
-    vin = find_vin(l.title, l.description)
+    vin = listing_vin(l)
     vehicle_key = f"vin:{vin}" if vin else None
     trim = valuation.parse_trim(l.title, l.model)
     relist = _find_relist(conn, l, vehicle_key, cid)
@@ -307,7 +455,30 @@ def _normalize_listing(l: NormalizedListing) -> None:
 # ---------- Opportunity assessment ----------------------------------------
 
 BLOCKING_FLAGS = {"scam_signals", "too_good_to_be_true", "branded_title", "needs_work",
-                  "auction_bid", "mileage_suspect"}
+                  "auction_bid", "mileage_suspect",
+                  # disclosed on another high-confidence posting of the same car
+                  # (vehicle_identity.VEHICLE_FACTS)
+                  "branded_title_other_posting", "needs_work_other_posting"}
+SCAM_FLAG_SCORE = 50                 # scam_detector score at which "scam_signals" is set
+
+
+def listing_blocking_flags(l: dict) -> set[str]:
+    """The blocking flags that follow from the stored listing row alone, with
+    no valuation: what notifications can check at send time even when the
+    re-score of an edited listing has not run yet. assess_risk sets the same
+    flags from the same columns."""
+    out = set()
+    if (l.get("scam_score") or 0) >= SCAM_FLAG_SCORE:
+        out.add("scam_signals")
+    if l.get("is_auction"):
+        out.add("auction_bid")
+    if l.get("is_salvage"):
+        out.add("branded_title")
+    if l.get("needs_work"):
+        out.add("needs_work")
+    return out
+
+
 # An odometer far below normal driving for the car's age is more often a typo
 # ("18k" for "180k") or an odometer problem than a find, and the valuation
 # would credit it as a low-mileage car.
@@ -333,7 +504,7 @@ def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str
     flags = []
     scam, _ = scam_score_listing(l.get("title"), l.get("description"),
                                  l.get("price"), v.value_mid)
-    if max(scam, l.get("scam_score") or 0) >= 50:
+    if max(scam, l.get("scam_score") or 0) >= SCAM_FLAG_SCORE:
         flags.append("scam_signals")
     if discount > int(CONFIG.get("max_believable_discount_pct", 50)) / 100.0:
         flags.append("too_good_to_be_true")
@@ -343,6 +514,8 @@ def assess_risk(l: dict, v: "valuation.Valuation", discount: float) -> tuple[str
         flags.append("branded_title")
     if l.get("needs_work"):
         flags.append("needs_work")
+    for r in l.get("_vehicle_risk") or []:     # this car's other postings disclosed it
+        flags.append(r["flag"])
     if not str(l.get("description") or "").strip():
         flags.append("description_unchecked")   # title only: damage can't be screened
     seller = valuation.seller_kind(l)
@@ -387,12 +560,29 @@ def _owner_alert_ok(l: dict, v, discount: float, trust: str) -> bool:
     return discount >= thr
 
 
-def enqueue_score(conn, composite_id: str, price) -> Optional[int]:
+def enqueue_score(conn, composite_id: str, price,
+                  reason: Optional[str] = None) -> Optional[int]:
     """One scoring job per (listing, price): a re-poll of an unchanged
-    listing is a no-op, a price change gets re-scored."""
-    return jobqueue.enqueue(conn, "score", f"score:{composite_id}:{price}",
-                            {"composite_id": composite_id}, priority=50,
-                            max_attempts=4)
+    listing is a no-op, a price change gets re-scored. `reason` keys a
+    further re-score: each price change (price_change_reason) and each
+    newly disclosed problem ("disclosed:<flags>")."""
+    key = f"score:{composite_id}:{price}" + (f":{reason}" if reason else "")
+    return jobqueue.enqueue(conn, "score", key, {"composite_id": composite_id},
+                            priority=50, max_attempts=4)
+
+
+def price_change_reason(changed_at) -> str:
+    """Score-key suffix for one price change. Without it a price that returns
+    to an earlier value — "$8,100" typed as "$810" and then fixed — was never
+    valued again (the earlier job held the key) and kept the typo's "92%
+    below market". Normalized to UTC so the key backfill_unscored rebuilds
+    from price_changed_at (Postgres TIMESTAMPTZ) is the one ingest wrote."""
+    try:
+        t = datetime.fromisoformat(str(changed_at).replace("Z", "+00:00"))
+    except ValueError:                    # never written that way; don't crash backfill
+        return f"changed:{changed_at}"
+    t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    return "changed:" + t.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S.%f")
 
 
 def score_job(job: dict) -> dict:
@@ -432,12 +622,23 @@ def _score_one_listing(composite_id: str) -> Optional[dict]:
     sold, sold_err = _sold_evidence(l)          # network; outside the txn
     now = datetime.now(timezone.utc).isoformat()
     with db() as conn:
+        # a disclosure stored during the lookup above must not be overwritten
+        # by a verdict from the row read before it (the flags are sticky)
+        cur = conn.execute("SELECT is_salvage, needs_work, scam_score FROM listings "
+                           "WHERE composite_id = ?", (composite_id,)).fetchone()
+        if cur:
+            l.update(dict(cur))
+        import vehicle_identity
+        l["_vehicle_risk"] = vehicle_identity.vehicle_risk_elsewhere(conn, l)
         peers = valuation.load_peers(conn, l)
         v = valuation.value_listing(l, peers, sold)
         if sold_err:
             v.reasons.append(sold_err)
+        for r in l["_vehicle_risk"]:
+            v.reasons.append(_vehicle_risk_reason(r))
         if v.evidence_class == valuation.INSUFFICIENT or not v.value_mid:
-            _record_valuation(conn, l, v, None, 0.0, "risk", ["insufficient_data"],
+            _record_valuation(conn, l, v, None, 0.0, "risk",
+                              ["insufficient_data"] + [r["flag"] for r in l["_vehicle_risk"]],
                               f"[{l['source']}] {l['year']} {l['make']} {l['model']}: "
                               f"insufficient comparables", now)
             return {"composite_id": composite_id, "evidence_class": v.evidence_class}
@@ -544,7 +745,7 @@ def backfill_unscored(limit: int = 2000) -> int:
     (e.g. refused earlier by queue backpressure). Returns jobs queued."""
     with db() as conn:
         rows = conn.execute("""
-            SELECT l.composite_id, l.price FROM listings l
+            SELECT l.composite_id, l.price, l.price_changed_at FROM listings l
             LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id
             WHERE (nm.composite_id IS NULL OR nm.price_at_score IS NULL
                    OR nm.price_at_score <> l.price)
@@ -553,7 +754,9 @@ def backfill_unscored(limit: int = 2000) -> int:
             ORDER BY l.first_seen_at DESC LIMIT ?""", (limit,)).fetchall()
         queued = 0
         for r in rows:
-            if enqueue_score(conn, r["composite_id"], r["price"]):
+            reason = (price_change_reason(r["price_changed_at"])
+                      if r["price_changed_at"] else None)
+            if enqueue_score(conn, r["composite_id"], r["price"], reason=reason):
                 queued += 1
     return queued
 
@@ -766,6 +969,8 @@ def poll_once(verbose: bool = True, only_sources: list[str] | None = None,
                          "requests_attempted": attempted, "requests_ok": ok,
                          "listings_discovered": len(listings), "listings_new": len(new),
                          "listings_dropped_no_price": res["dropped_no_price"],
+                         "listings_disclosed": len(res["disclosed"]),
+                         "listings_odometer_changed": len(res["odometer_changed"]),
                          "consecutive_empty": empty_streak,
                          "elapsed_s": elapsed.get(sid),
                          "ingest_latency_s": _ingest_latency(new, now),

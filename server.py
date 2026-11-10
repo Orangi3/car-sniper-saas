@@ -2193,12 +2193,26 @@ def api_me_alerts():
             "  m.saved_search_id, s.name AS saved_search_name, m.discount_pct, "
             "  m.price, m.previous_price, m.value_mid, m.profit_base, m.confidence, "
             "  m.trust, l.composite_id, l.title, l.url, l.year, l.make, l.model, "
-            "  l.odometer, l.source, l.state, l.location, l.image_urls "
+            "  l.odometer, l.source, l.state, l.location, l.image_urls, "
+            "  l.price AS listing_price, l.last_seen_at, l.first_seen_at, l.is_auction, "
+            "  l.auction_end_at "
             "FROM user_matches m "
             "JOIN listings l ON l.composite_id = m.composite_id "
             "LEFT JOIN saved_searches s ON s.id = m.saved_search_id "
             "WHERE m.user_id = ? AND m.dismissed = FALSE "
             "ORDER BY m.created_at DESC, m.id DESC LIMIT ?", (u.id, limit)).fetchall()]
+    # `price` stays the price when the car matched (unchanged for API clients);
+    # the current price is shown only while the source still confirms the
+    # listing (the deal feeds' own display rules), never a stale one as an offer
+    limits = _display_limits()
+    for r in rows:
+        shown = _displayable(r, limits)
+        current = r.pop("listing_price")
+        for k in ("last_seen_at", "first_seen_at", "is_auction", "auction_end_at"):
+            r.pop(k, None)
+        r["matched_price"] = r["price"]
+        r["current_price"] = current if shown else None
+        r["current_price_confirmed"] = shown
     return jsonify(rows)
 
 
@@ -2263,36 +2277,16 @@ def _deal_row(r: dict, psettings: dict, plan: Optional[str],
 def _display_limits() -> dict:
     """source -> max hours since last confirmed by a poll, for sources whose
     terms limit how stale displayed data may be (eBay: 6 h); plus the set of
-    seller listings that are currently discoverable (seller_listings)."""
-    import seller_listings as sl
-    out: dict = {m.SOURCE_ID: m.DISPLAY_MAX_AGE_HOURS for m in sources.all_sources()
-                 if getattr(m, "DISPLAY_MAX_AGE_HOURS", None)}
+    seller listings that are currently discoverable (seller_listings).
+    The rules live in listing_display, shared with outbound alerts."""
+    import listing_display
     with sniper.db() as conn:
-        out["__direct__"] = sl.discoverable_ids(conn)
-    return out
+        return listing_display.limits(conn)
 
 
 def _displayable(d: dict, limits: dict) -> bool:
-    from datetime import datetime, timedelta, timezone
-    if d.get("source") == "direct":
-        return d.get("composite_id") in limits.get("__direct__", set())
-    if d.get("is_auction") and d.get("auction_end_at"):
-        try:                                  # an ended auction is not for sale
-            end = datetime.fromisoformat(str(d["auction_end_at"]).replace("Z", "+00:00"))
-            if (end if end.tzinfo else end.replace(tzinfo=timezone.utc)) <= datetime.now(timezone.utc):
-                return False
-        except ValueError:
-            pass
-    hrs = limits.get(d.get("source"))
-    if not hrs:
-        return True
-    seen = d.get("last_seen_at") or d.get("first_seen_at")
-    try:
-        t = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
-        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return False
-    return datetime.now(timezone.utc) - t <= timedelta(hours=hrs)
+    import listing_display
+    return listing_display.displayable(d, limits)
 
 
 def _rank(rows: list[dict]) -> list[dict]:

@@ -21,6 +21,8 @@ const FLAGS = {
   too_good_to_be_true: ["Price looks too good", "danger", "Far below comparable cars — often a scam, a typo or a serious problem."],
   branded_title: ["Branded title", "danger", "A salvage, rebuilt or other branded title is mentioned. Resale value and financing are affected."],
   needs_work: ["Needs work", "danger", "The listing mentions damage or mechanical problems; repairs may exceed the repair allowance."],
+  branded_title_other_posting: ["Branded title (other posting)", "danger", "Another posting of this same car — same VIN, or matching details — mentions a salvage, rebuilt or other branded title. This listing doesn't say so; ask the seller for the title."],
+  needs_work_other_posting: ["Needs work (other posting)", "danger", "Another recent posting of this same car — same VIN, or matching details — mentions damage or mechanical problems. Ask the seller before you go."],
   auction_bid: ["Auction bid", "danger", "The price is the current bid in a running auction, not a price you can buy at. The final price is usually higher."],
   description_unchecked: ["Description not checked", "warn", "We only saw the listing's title. Read the full listing for damage or title problems before you go."],
   dealer: ["Dealer listing", "warn", "Sold by a dealer; prices and fees differ from private sales."],
@@ -1011,6 +1013,17 @@ function describeFilter(f) {
   if (String(f.price_drops) === "false") out.push("No price-drop alerts");
   return out;
 }
+// An alert keeps the price it matched at; the current price is shown only
+// while the source still confirms the listing (current_price is null then).
+function trayPrice(a) {
+  const disc = n(a.discount_pct) != null ? `${pct(a.discount_pct)} below market` : "";
+  const at = a.event === "price_drop" ? `Price drop ${money(a.previous_price)} → ${money(a.price)}` : null;
+  if (a.current_price_confirmed === false)
+    return `${at || `Matched at ${money(a.price)}`}${disc ? ` (${disc})` : ""} · no longer confirmed by the source`;
+  if (n(a.current_price) != null && a.current_price !== a.price)
+    return `${at || `Matched at ${money(a.price)}`}${disc ? ` (${disc})` : ""} · now ${money(a.current_price)}`;
+  return `${at || `New listing at ${money(a.price)}`}${disc ? ` · ${disc}` : ""}`;
+}
 async function viewAlerts(m, tok) {
   setNav("alerts"); topbar(); S.lastList = "#/alerts";
   render(html`<div class="page__head"><div><h1>Alerts</h1><p>Saved searches watch every new listing and push matches to your phone.</p></div>
@@ -1050,7 +1063,7 @@ async function viewAlerts(m, tok) {
       ${recent.length ? html`<div class="card"><div class="card__body"><ul class="list" style="list-style:none;margin:0;padding:0">${recent.map(a => html`<li class="list__row">
           <span class="${a.event === "price_drop" ? "pos" : "muted"}">${icon(a.event === "price_drop" ? "trend-down" : "bell")}</span>
           <div class="list__main"><div class="list__title"><a href="#/deal/${encodeURIComponent(a.composite_id)}">${a.title}</a></div>
-            <div class="list__sub">${a.event === "price_drop" ? `Price drop ${money(a.previous_price)} → ${money(a.price)}` : `New listing at ${money(a.price)}`}${n(a.discount_pct) != null ? ` · ${pct(a.discount_pct)} below market` : ""}${a.saved_search_name ? ` · ${a.saved_search_name}` : ""} · ${ago(a.created_at)}</div></div>
+            <div class="list__sub">${trayPrice(a)}${a.saved_search_name ? ` · ${a.saved_search_name}` : ""} · ${ago(a.created_at)}</div></div>
           ${a.seen ? "" : html`<span class="dot dot--accent" title="New" aria-label="New"></span>`}</li>`)}</ul></div></div>`
         : html`<div class="card">${emptyState("bell", "No alerts yet", "When a listing matches one of your searches, it appears here and on your phone.")}</div>`}
     </section>`);

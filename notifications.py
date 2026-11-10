@@ -25,12 +25,40 @@ Delivery semantics
   again. None of these providers offers an idempotency key we can use, so a
   rare duplicate push is possible; a lost alert is not.
 
+Send-time check (stale_reason)
+  A job can wait — owner quiet hours, retries through a provider outage, a
+  worker that was down, an operator re-queueing dead jobs — and notify jobs
+  run before score jobs. Every attempt therefore re-reads the listing and
+  drops the alert (job done, result "skipped: stale: ...") when the listing
+  is gone, may no longer be shown (listing_display: eBay's 6 h limit, ended
+  auction, seller listing not live), its asking price or odometer is no
+  longer the one in the alert, or it carries a blocking risk flag — or, valued at this
+  price, a trust rating — that the alert was not based on. The basis (trust
+  and blocking flags when matched) is stored beside the deal in the job and
+  never sent. A price change always queues a re-score (sniper.ingest), and
+  that re-score decides what to send at the new price — but it never
+  re-alerts a subscriber already matched to the car: Lite gets no
+  price-drop event, and Pro gets one only for a drop that meets the
+  price-drop rule ($250 and 3%) and that its searches allow. So a
+  subscriber's FIRST-match alert that went stale only because the price
+  fell is decided in the same job. For a plan with price-drop alerts it
+  first waits (jobqueue.Defer: no attempt spent, at most REPLACEMENT_WAIT_S
+  after it was queued) for the listing's re-score and for any price-drop
+  alert that re-score created for this subscriber; one delivered on this
+  channel covers the car, and the first alert is not sent. Otherwise the
+  job re-checks the car at the current price
+  (saved_search_alerts.rematch_at_current_price: plan, saved searches,
+  territory, freshness, risk, duplicates) and, if it still qualifies,
+  sends an ordinary first-match alert at that price — never as a price
+  drop, and never again once one was delivered.
+
 User webhooks go through safe_http (connect-time SSRF checks, no redirects,
 size limits). Payloads carry only public listing facts — never a user's
 email, phone, id or other channels.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -60,6 +88,135 @@ PUBLIC_DEAL_FIELDS = (
 
 def public_deal(deal: dict) -> dict:
     return {k: deal.get(k) for k in PUBLIC_DEAL_FIELDS if deal.get(k) is not None}
+
+
+def alert_basis(deal: dict) -> dict:
+    """What the alert relied on beyond its public facts: the listing's trust
+    and blocking risk flags when it was matched. Kept with the job for the
+    send-time check; never sent."""
+    import sniper
+    return {"trust": deal.get("trust"),
+            "blocking_flags": sorted(set(deal.get("risk_flags") or [])
+                                     & sniper.BLOCKING_FLAGS)}
+
+
+def stale_reason(conn, deal: dict, basis: Optional[dict]) -> Optional[str]:
+    """Why a queued deal alert no longer holds, or None if it may be sent.
+    See "Send-time check" above. Jobs queued before the basis was recorded
+    (basis None) get the existence, display and price checks only."""
+    cid = deal.get("composite_id")
+    if not cid:
+        return "the alert names no listing to confirm"
+    r = conn.execute(
+        "SELECT l.composite_id, l.source, l.price, l.is_auction, l.auction_end_at, "
+        "  l.last_seen_at, l.first_seen_at, l.is_salvage, l.needs_work, l.scam_score, "
+        "  l.odometer, nm.trust, nm.risk_flags, nm.price_at_score "
+        "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
+        "WHERE l.composite_id = ?", (cid,)).fetchone()
+    if r is None:
+        return "listing no longer exists"
+    r = dict(r)
+    import listing_display
+    hidden = listing_display.hidden_reason(
+        r, listing_display.limits(conn, include_direct=r["source"] == "direct"))
+    if hidden:
+        return hidden
+    queued, price = deal.get("price"), r.get("price")
+    if queued is None or price is None:
+        return "no asking price to confirm"
+    if int(queued) != int(price):
+        return f"asking price is ${int(price):,} now, not the ${int(queued):,} in the alert"
+    q_odo, odo = deal.get("odometer"), r.get("odometer")
+    if q_odo and odo and int(q_odo) != int(odo):   # a valuation input changed too
+        return f"odometer reads {int(odo):,} mi now, not the {int(q_odo):,} in the alert"
+    if basis is None:
+        return None
+    import sniper
+    flags = sniper.listing_blocking_flags(r)
+    valued_now = r.get("price_at_score") is not None and int(r["price_at_score"]) == int(price)
+    if valued_now:
+        try:
+            flags |= set(json.loads(r.get("risk_flags") or "[]")) & sniper.BLOCKING_FLAGS
+        except (TypeError, ValueError):
+            pass
+    new = sorted(flags - set(basis.get("blocking_flags") or []))
+    if new:
+        return "risk flag(s) the alert was not based on: " + ", ".join(new)
+    if basis.get("trust") == "trusted":
+        if r.get("trust") is None and r.get("price_at_score") is None:
+            return "listing is no longer valued"
+        if valued_now and r.get("trust") != "trusted":
+            return f"no longer rated trusted at this price (now: {r['trust']})"
+    return None
+
+
+def _first_alert_price_fell(conn, p: dict, deal: dict) -> bool:
+    """A subscriber's queued FIRST-match alert whose listing is now cheaper
+    than the alert says — what rematch_at_current_price re-checks."""
+    if p.get("audience") != "user" or deal.get("event") != "new" or deal.get("price") is None:
+        return False
+    r = conn.execute("SELECT price FROM listings WHERE composite_id = ?",
+                     (deal.get("composite_id"),)).fetchone()
+    return r is not None and r[0] is not None and int(r[0]) < int(deal["price"])
+
+
+# How long (from when it was queued) a first alert waits for the listing's
+# re-score and for the price-drop alert that re-score may create, and how
+# often it looks again meanwhile.
+REPLACEMENT_WAIT_S = 1800
+REPLACEMENT_RECHECK_S = 15
+
+
+def _age_s(created_at) -> float:
+    try:
+        t = created_at if isinstance(created_at, datetime) else \
+            datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - t).total_seconds()
+    except (TypeError, ValueError):
+        return float("inf")               # unknown age: stop waiting
+
+
+def _price_drop_replacement(conn, job: dict, p: dict, deal: dict,
+                            rescore_may_replace: bool) -> str:
+    """For a first alert that went stale because the price fell: is the car
+    covered by a price-drop alert that a re-score actually created for this
+    subscriber and delivered on this channel? Returns why it is covered, ""
+    if nothing covers it (send the first alert at the current price), or
+    raises jobqueue.Defer while that cannot be known yet: a re-score of the
+    listing is still pending or running (only for plans with price-drop
+    alerts, the only ones it can create one for), or such an alert is still
+    pending or being sent. The wait is bounded. Past the bound the alert is
+    not sent and the reason is recorded: that can lose it, but it can never
+    duplicate it."""
+    uid, cid, ch = int(p["user_id"]), deal["composite_id"], p.get("channel")
+    waiting = []
+    if rescore_may_replace:
+        prefix = f"score:{cid}:"
+        if conn.execute("SELECT 1 FROM jobs WHERE kind = 'score' AND status IN (?, ?) "
+                        "AND substr(dedupe_key, 1, ?) = ? LIMIT 1",
+                        (jobqueue.PENDING, jobqueue.RUNNING, len(prefix), prefix)).fetchone():
+            waiting.append("the listing's re-score")
+    first = conn.execute("SELECT id FROM user_matches WHERE user_id = ? AND event_key = ?",
+                         (uid, f"{cid}:new")).fetchone()
+    for r in conn.execute(
+            "SELECT event_key, price FROM user_matches WHERE user_id = ? AND composite_id = ? "
+            "AND event = 'price_drop' AND notified = TRUE AND id > ? ORDER BY id",
+            (uid, cid, first[0] if first else 0)).fetchall():
+        j = conn.execute("SELECT status, result FROM jobs WHERE dedupe_key = ?",
+                         (f"notify:{r['event_key']}:u{uid}:{ch}",)).fetchone()
+        if j is None:
+            continue                      # not queued on this channel
+        if j["status"] in (jobqueue.PENDING, jobqueue.RUNNING):
+            waiting.append(f"the price-drop alert at ${int(r['price']):,}")
+        elif j["status"] == jobqueue.DONE and "sent" in (json.loads(j["result"] or "null") or {}):
+            return f"covered by the price-drop alert at ${int(r['price']):,}, delivered"
+    if not waiting:
+        return ""
+    if _age_s(job.get("created_at")) < REPLACEMENT_WAIT_S:
+        raise jobqueue.Defer("waiting for " + " and ".join(waiting), REPLACEMENT_RECHECK_S)
+    return (f"not re-sent: {' and '.join(waiting)} still unfinished after "
+            f"{REPLACEMENT_WAIT_S // 60} min")
 
 
 def normalize_phone(raw: str) -> str:
@@ -340,7 +497,8 @@ def enqueue_owner(conn, deal: dict, event_key: str,
     run_after = _quiet_until()
     for ch in chans:
         jobqueue.enqueue(conn, "notify", f"notify:{event_key}:owner:{ch}",
-                         {"audience": "owner", "channel": ch, "deal": public_deal(deal)},
+                         {"audience": "owner", "channel": ch, "deal": public_deal(deal),
+                          "basis": alert_basis(deal)},
                          priority=10, max_attempts=NOTIFY_MAX_ATTEMPTS,
                          run_after=run_after)
     return chans
@@ -352,7 +510,8 @@ def enqueue_user(conn, deal: dict, event_key: str, user_id: int,
     for ch in channels:
         jid = jobqueue.enqueue(conn, "notify", f"notify:{event_key}:u{user_id}:{ch}",
                                {"audience": "user", "user_id": user_id,
-                                "channel": ch, "deal": public_deal(deal)},
+                                "channel": ch, "deal": public_deal(deal),
+                                "basis": alert_basis(deal)},
                                priority=20, max_attempts=NOTIFY_MAX_ATTEMPTS,
                                user_id=user_id)
         if jid:
@@ -419,6 +578,27 @@ def deliver_job(job: dict) -> dict:
         kw = {"phone": phone, "ntfy_topic": os.environ.get("NTFY_TOPIC"),
               "webhook": (os.environ.get("DISCORD_WEBHOOK_URL") if ch == "discord"
                           else os.environ.get("ALERT_WEBHOOK_URL"))}
+    import db as _db
+    matched_at = None
+    with _db.session() as conn:          # re-checked on every attempt, retries included
+        stale = stale_reason(conn, deal, p.get("basis"))
+        if stale and _first_alert_price_fell(conn, p, deal):
+            import plans
+            covered = _price_drop_replacement(   # may raise jobqueue.Defer (waits)
+                conn, job, p, deal,
+                rescore_may_replace=bool(plans.limits(dest.get("plan")).get("price_drop_alerts")))
+            if covered:
+                stale = f"{stale}; {covered}"
+            else:
+                import saved_search_alerts
+                opp, why = saved_search_alerts.rematch_at_current_price(
+                    conn, int(p["user_id"]), deal["composite_id"])
+                if opp:
+                    matched_at, deal, stale = deal["price"], public_deal(opp), None
+                else:
+                    stale = f"{stale}; not re-sent at the current price: {why}"
+    if stale:
+        return {"skipped": f"stale: {stale}"}
     try:
         detail = _deliver(ch, deal, **kw)
         _record_usage(p.get("user_id") if p.get("audience") == "user" else None, ch)
@@ -428,6 +608,9 @@ def deliver_job(job: dict) -> dict:
         if not e.retryable:
             raise jobqueue.PermanentError(str(e)) from None
         raise
+    if matched_at is not None:
+        return {"sent": detail, "first_alert_at_current_price":
+                {"matched": int(matched_at), "now": int(deal["price"])}}
     return {"sent": detail}
 
 

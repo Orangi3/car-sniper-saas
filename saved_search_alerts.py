@@ -13,7 +13,9 @@ against each entitled subscriber's own saved searches:
   * each search's own criteria decide (see `criteria_match`)
   * one match per user per event: several matching searches → one
     notification (UNIQUE(user_id, event_key) in user_matches); the same car
-    cross-posted on another source is not re-sent within 14 days
+    cross-posted on another source is not re-sent within 14 days — same VIN,
+    or without a VIN the conservative identity in vehicle_identity.py — and
+    each such suppression is recorded in alert_suppressions
   * plan limits are enforced here, server-side: entitled plans only, at
     most N active searches, alerts/day cap (extra matches still land in the
     tray, unnotified), price-drop alerts and aggressive mode for Pro, SMS
@@ -64,6 +66,14 @@ def _flag(f: dict, k: str) -> bool:
     return str(f.get(k, "")).lower() in ("1", "true", "yes")
 
 
+def _salvage(deal: dict) -> bool:
+    """Branded title on this listing, or on another high-confidence posting
+    of the same car (vehicle_identity.VEHICLE_FACTS): the salvage opt-in
+    applies either way."""
+    return bool(deal.get("is_salvage")) or \
+        "branded_title_other_posting" in (deal.get("risk_flags") or [])
+
+
 def matches(f: dict, deal: dict) -> bool:
     """Listing-attribute filters shared with the dashboard's listing view.
     Unknown keys are ignored."""
@@ -76,7 +86,7 @@ def matches(f: dict, deal: dict) -> bool:
         return False
     if _flag(f, "hide_auction") and deal.get("is_auction"):
         return False
-    if _flag(f, "hide_salvage") and deal.get("is_salvage"):
+    if _flag(f, "hide_salvage") and _salvage(deal):
         return False
     for key, field, op in (("min_price", "price", "ge"), ("max_price", "price", "le"),
                            ("min_miles", "odometer", "ge"), ("max_miles", "odometer", "le"),
@@ -120,9 +130,10 @@ def criteria_match(f: dict, opp: dict, lim: dict) -> tuple[bool, str]:
         mode = "conservative"
     if (opp.get("scam_score") or 0) >= 80:
         return False, "scam signals"
-    if opp.get("is_salvage") and not _flag(f, "allow_salvage"):
+    if _salvage(opp) and not _flag(f, "allow_salvage"):
         return False, "salvage/branded title"
-    if opp.get("needs_work") and not _flag(f, "allow_needs_work"):
+    if (opp.get("needs_work") or "needs_work_other_posting" in (opp.get("risk_flags") or [])) \
+            and not _flag(f, "allow_needs_work"):
         return False, "needs mechanical work"
     if mode == "conservative" and opp.get("trust") != "trusted":
         return False, "risk-flagged (conservative mode)"
@@ -153,6 +164,42 @@ def _day_start(now: datetime) -> str:
 
 def _month_start(now: datetime) -> str:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
+def _already_alerted_vehicle(conn, uid: int, opp: dict,
+                             now: datetime) -> Optional[tuple[str, str, dict]]:
+    """(earlier listing, reason, evidence) when this subscriber was matched to
+    the same vehicle through another listing within CROSS_POST_WINDOW_DAYS;
+    else None. Same VIN first (unchanged rule), then the no-VIN identity of
+    vehicle_identity.same_vehicle over the few earlier matches that share
+    year, make, model and odometer."""
+    import vehicle_identity
+    since = (now - timedelta(days=CROSS_POST_WINDOW_DAYS)).isoformat()
+    cid = opp["composite_id"]
+    if opp.get("vehicle_key"):
+        r = conn.execute(
+            "SELECT m.composite_id FROM user_matches m "
+            "JOIN listings l ON l.composite_id = m.composite_id "
+            "WHERE m.user_id = ? AND l.vehicle_key = ? AND m.composite_id <> ? "
+            "  AND m.created_at > ? ORDER BY m.created_at, m.id LIMIT 1",
+            (uid, opp["vehicle_key"], cid, since)).fetchone()
+        if r:
+            return r[0], "same_vin", {"vehicle_key": opp["vehicle_key"]}
+    if not (opp.get("year") and opp.get("odometer") and opp.get("make") and opp.get("model")):
+        return None
+    rows = conn.execute(
+        "SELECT l.* FROM user_matches m JOIN listings l ON l.composite_id = m.composite_id "
+        "WHERE m.user_id = ? AND m.composite_id <> ? AND m.created_at > ? "
+        "  AND l.source <> ? AND l.year = ? AND l.odometer = ? "
+        "  AND LOWER(l.make) = LOWER(?) AND LOWER(l.model) = LOWER(?) "
+        "ORDER BY m.created_at, m.id",
+        (uid, cid, since, opp.get("source") or "", opp["year"], opp["odometer"],
+         opp["make"], opp["model"])).fetchall()
+    for r in rows:
+        same, reason, evidence = vehicle_identity.same_vehicle(dict(r), opp)
+        if same:
+            return r["composite_id"], reason, evidence
+    return None
 
 
 def evaluate(conn, opp: dict) -> list[dict]:
@@ -223,15 +270,16 @@ def evaluate(conn, opp: dict) -> list[dict]:
         if hit is None:
             continue
 
-        if u_event == "new" and opp.get("vehicle_key"):
-            dup = conn.execute(
-                "SELECT 1 FROM user_matches m JOIN listings l ON l.composite_id = m.composite_id "
-                "WHERE m.user_id = ? AND l.vehicle_key = ? AND m.composite_id <> ? "
-                "  AND m.created_at > ?",
-                (uid, opp["vehicle_key"], cid,
-                 (now - timedelta(days=CROSS_POST_WINDOW_DAYS)).isoformat())).fetchone()
-            if dup:
-                continue                  # same car already sent from another source
+        if u_event == "new":
+            dup = _already_alerted_vehicle(conn, uid, opp, now)
+            if dup:                       # same car already sent from another listing
+                conn.execute(
+                    "INSERT INTO alert_suppressions(user_id, composite_id, duplicate_of, "
+                    "  reason, evidence, created_at) VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(user_id, composite_id) DO NOTHING",
+                    (uid, cid, dup[0], dup[1], json.dumps(dup[2], sort_keys=True),
+                     now.isoformat()))
+                continue
 
         sent_today = int(conn.execute(
             "SELECT COUNT(*) FROM user_matches WHERE user_id = ? AND notified = TRUE "
@@ -271,3 +319,86 @@ def evaluate(conn, opp: dict) -> list[dict]:
         created.append({"user_id": uid, "match_id": row[0], "saved_search_id": hit["id"],
                         "event": u_event, "channels": chans, "notified": bool(chans)})
     return created
+
+
+def rematch_at_current_price(conn, uid: int, cid: str,
+                             now: Optional[datetime] = None) -> tuple[Optional[dict], str]:
+    """Re-run subscriber `uid`'s matching for listing `cid` at its CURRENT
+    price — for a first-match alert that went stale because the price fell
+    before it was delivered (notifications.deliver_job). For a plan with
+    price-drop alerts the caller has already established that no delivered
+    price-drop alert covers the car (notifications._price_drop_replacement).
+    Uses the stored valuation, which comes from
+    the comparables and not from the car's own price; recomputes everything
+    that depends on the price with the scoring code (sniper.assess_risk:
+    too-good-to-be-true, scam price ratio) plus the car's vehicle-level
+    risks; then the subscriber's current plan, saved searches, territory and
+    profit settings, and the cross-posting duplicate check, exactly as
+    evaluate() applies them. Returns (opportunity, "") or (None, reason)."""
+    from types import SimpleNamespace
+    import geo
+    import listing_display
+    import plans
+    import profit as profit_mod
+    import sniper
+    import vehicle_identity
+
+    now = now or datetime.now(timezone.utc)
+    u = conn.execute("SELECT plan, home_zip, radius_mi, profit_settings FROM users "
+                     "WHERE id = ?", (uid,)).fetchone()
+    if u is None:
+        return None, "subscriber no longer exists"
+    plan = u["plan"]
+    lim = plans.limits(plan)
+    if not plans.can_receive_alerts(plan):
+        return None, f"plan '{plan}' not entitled"
+    row = conn.execute("SELECT * FROM listings WHERE composite_id = ?", (cid,)).fetchone()
+    nm = conn.execute("SELECT * FROM near_misses WHERE composite_id = ?", (cid,)).fetchone()
+    if row is None or nm is None or not nm["comp_avg"] or not row["price"]:
+        return None, "listing or its valuation is no longer available"
+    l = dict(row)
+    hidden = listing_display.hidden_reason(
+        l, listing_display.limits(conn, include_direct=l["source"] == "direct"))
+    if hidden:
+        return None, hidden
+    l["_vehicle_risk"] = vehicle_identity.vehicle_risk_elsewhere(conn, l)
+    value_mid = float(nm["comp_avg"])
+    discount = (value_mid - l["price"]) / value_mid
+    trust, flags = sniper.assess_risk(
+        l, SimpleNamespace(value_mid=value_mid, confidence=nm["confidence"]), discount)
+    try:
+        dealer_share = (json.loads(nm["evidence"] or "{}") or {}).get("dealer_share") or 0
+    except (TypeError, ValueError):
+        dealer_share = 0
+    opp = {**l, "discount_pct": round(discount * 100, 2), "value_low": nm["value_low"],
+           "value_mid": value_mid, "value_high": nm["value_high"], "comp_avg": value_mid,
+           "comp_n": nm["comp_n"], "basis": nm["basis"], "evidence_class": nm["evidence_class"],
+           "confidence": nm["confidence"], "trust": trust, "risk_flags": flags,
+           "event": "new", "dealer_share": dealer_share}
+    try:
+        psettings = json.loads(u["profit_settings"] or "{}")
+    except ValueError:
+        psettings = {}
+    dist = geo.distance_mi(u["home_zip"], l.get("latitude"), l.get("longitude"))
+    pr = profit_mod.compute(l["price"], nm["value_low"], value_mid, nm["value_high"],
+                            nm["evidence_class"], psettings, scenarios=False,
+                            distance_mi=dist, dealer_share=dealer_share)
+    opp_u = {**opp, "distance_mi": dist, "_home_zip": u["home_zip"],
+             "_home_radius": u["radius_mi"],
+             "est_profit": pr["scenarios"]["base"]["profit"] if pr else None}
+    searches = [dict(r) for r in conn.execute(
+        "SELECT id, filter_json FROM saved_searches WHERE user_id = ? AND notify_enabled = TRUE "
+        "ORDER BY created_at, id", (uid,)).fetchall()][: lim["saved_searches"]]
+    for s in searches:
+        try:
+            f = json.loads(s.get("filter_json") or "{}")
+        except ValueError:
+            continue
+        if isinstance(f, dict) and criteria_match(f, opp_u, lim)[0]:
+            break
+    else:
+        return None, f"no saved search matches at ${int(l['price']):,}"
+    dup = _already_alerted_vehicle(conn, uid, opp_u, now)
+    if dup:
+        return None, f"already alerted to this car through {dup[0]}"
+    return opp_u, ""

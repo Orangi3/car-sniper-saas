@@ -510,6 +510,8 @@ def remove(user, sid: int) -> dict:
         for table in ("user_matches", "alerts", "near_misses", "saved_v2", "saved",
                       "listing_prices"):
             conn.execute(f"DELETE FROM {table} WHERE composite_id = ?", (cid,))
+        conn.execute("DELETE FROM alert_suppressions WHERE composite_id = ? "
+                     "OR duplicate_of = ?", (cid, cid))
         conn.execute("DELETE FROM jobs WHERE status IN ('pending', 'running') AND "
                      "(dedupe_key LIKE ? OR payload LIKE ?)",
                      (f"score:{cid}:%", f'%"composite_id": "{cid}"%'))

@@ -50,6 +50,16 @@ class PermanentError(Exception):
     """Raise from a handler for failures that retrying cannot fix."""
 
 
+class Defer(Exception):
+    """Raise from a handler that cannot decide yet because it is waiting for
+    other jobs to finish. The job runs again after `delay_s` WITHOUT spending
+    one of its attempts. The handler must bound how long it keeps waiting."""
+
+    def __init__(self, reason: str, delay_s: float = 15.0):
+        super().__init__(reason)
+        self.delay_s = float(delay_s)
+
+
 def ts(dt: Optional[datetime] = None) -> str:
     """Fixed-width UTC ISO timestamp (always with microseconds) so SQLite's
     text comparison orders correctly."""
@@ -206,6 +216,23 @@ def fail(job_id: int, worker: str, error: str, *, permanent: bool = False,
         return PENDING
 
 
+def defer(job_id: int, worker: str, delay_s: float) -> str:
+    """Put a claimed job back to wait (see Defer). The attempt counted at
+    claim time is refunded, so waiting can never dead-letter a job, and
+    last_error is left alone because waiting is not a failure. Returns
+    'pending', or '' if this worker no longer owns the job."""
+    now_dt = datetime.now(timezone.utc)
+    with _db.session() as conn:
+        cur = conn.execute(
+            "UPDATE jobs SET status = ?, attempts = CASE WHEN attempts > 0 "
+            "  THEN attempts - 1 ELSE 0 END, locked_by = NULL, locked_until = NULL, "
+            "  run_after = ?, updated_at = ? "
+            "WHERE id = ? AND locked_by = ? AND status = ?",
+            (PENDING, ts(now_dt + timedelta(seconds=max(1.0, float(delay_s)))),
+             ts(now_dt), job_id, worker, RUNNING))
+        return PENDING if cur.rowcount == 1 else ""
+
+
 # ---------- worker loop ---------------------------------------------------
 
 Handler = Callable[[dict], Optional[dict]]
@@ -220,6 +247,9 @@ def run_one(handlers: dict[str, Handler], worker: str,
     fn = handlers[job["kind"]]
     try:
         result = fn(job)
+    except Defer as e:
+        status = defer(job["id"], worker, e.delay_s)
+        return {"id": job["id"], "kind": job["kind"], "status": status, "deferred": str(e)}
     except PermanentError as e:
         status = fail(job["id"], worker, f"permanent: {e}", permanent=True)
         return {"id": job["id"], "kind": job["kind"], "status": status, "error": str(e)}
