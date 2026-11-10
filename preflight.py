@@ -80,6 +80,7 @@ def run() -> dict:
 
     # ---- 2. internal infrastructure --------------------------------------
     infra_ok = True
+    demo_rows = 0
     try:
         with _db.session() as conn:
             conn.execute("SELECT 1").fetchone()
@@ -97,6 +98,8 @@ def run() -> dict:
                                      ).fetchone()[0]
             health_rows = {r["source_id"]: dict(r) for r in
                            conn.execute("SELECT * FROM source_health")}
+            demo_rows = int(conn.execute("SELECT COUNT(*) FROM listings WHERE source = 'demo'"
+                                         ).fetchone()[0])
         add("infrastructure", "database connection", OK, _db.describe().get("engine"))
     except Exception as e:
         add("infrastructure", "database connection", FAIL, f"{type(e).__name__}: {e}",
@@ -180,6 +183,10 @@ def run() -> dict:
         add("data", "licensed data available", FAIL,
             "no source that is licensed for commercial use has delivered listings in "
             "the last 48h", "controlled_free_beta")
+    if demo_rows:
+        add("data", "no demo data", FAIL,
+            f"{demo_rows} synthetic demo listing(s) in this database (tests/browser/"
+            f"seed_demo.py): use a fresh database for real users", "controlled_free_beta")
 
     # ---- 6. payments -----------------------------------------------------
     sk = _env("STRIPE_SECRET_KEY")

@@ -1524,6 +1524,18 @@ def api_logout():
     return resp
 
 
+DEMO_SOURCE = "demo"          # tests/browser/seed_demo.py; never a real marketplace
+
+
+def _demo_data_present() -> bool:
+    """True while the database holds synthetic demo listings. The app then
+    shows a "DEMO DATA" banner on every screen, and preflight refuses any
+    beta (indexed lookup on listings.source)."""
+    with sniper.db() as conn:
+        return conn.execute("SELECT 1 FROM listings WHERE source = ? LIMIT 1",
+                            (DEMO_SOURCE,)).fetchone() is not None
+
+
 @app.get("/api/me")
 def api_me():
     """Frontend hits this on load. Returns the current user (or 401 anon)
@@ -1533,11 +1545,12 @@ def api_me():
         # the login page shows "create account" only when sign-up is open;
         # with invite-only registration the invitation link opens it.
         # ?optional=1 answers 200 so a signed-out page load logs no error.
-        body = {"user": None, "registration": "open" if auth.ALLOW_REGISTRATION else "invite"}
+        body = {"user": None, "registration": "open" if auth.ALLOW_REGISTRATION else "invite",
+                "demo_data": _demo_data_present()}
         if request.args.get("optional") == "1":
             return jsonify(body)
         return jsonify({"error": "not authenticated", **body}), 401
-    return jsonify({"user": u.public_dict()})
+    return jsonify({"user": u.public_dict(), "demo_data": _demo_data_present()})
 
 
 # ===========================================================================

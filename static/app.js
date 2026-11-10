@@ -45,7 +45,7 @@ const REPORT_REASONS = [["scam", "Looks like a scam"], ["sold", "Already sold"],
   ["offensive", "Offensive"], ["other", "Something else"]];
 // A running auction's price is its current bid, never an asking price
 const priceWord = d => (d.is_auction ? "Current bid" : "Asking");
-const SOURCE_NAMES = {ebay: "eBay", craigslist: "Craigslist", direct: "FlipFirst seller", marketcheck: "MarketCheck",
+const SOURCE_NAMES = {demo: "Demo data (synthetic)", ebay: "eBay", craigslist: "Craigslist", direct: "FlipFirst seller", marketcheck: "MarketCheck",
   marketcheck_fsbo: "MarketCheck private sellers", demo: "Demo data", bat: "Bring a Trailer", govdeals: "GovDeals",
   hemmings: "Hemmings", marketplace: "Marketplace import", email_imap: "Email digest", cars_and_bids: "Cars & Bids",
   gsa_auctions: "GSA Auctions", publicsurplus: "Public Surplus", copart_live: "Copart", iaa_live: "IAA"};
@@ -1752,10 +1752,20 @@ function billingReturn() {
   } else if (ret === "cancel") toast("Checkout canceled — nothing was charged.");
 }
 
+function demoBanner() {
+  // Synthetic listings (seed_demo.py) are in this database: say so on every
+  // screen, so a demo can never pass for live marketplace inventory.
+  const b = document.createElement("div");
+  b.className = "demo-banner"; b.setAttribute("role", "note");
+  b.textContent = "DEMO DATA — NOT LIVE MARKETPLACE LISTINGS";
+  document.body.prepend(b);
+}
+
 /* ---------------- boot ---------------- */
 (async function boot() {
   let me;
   try { me = await api("/api/me"); } catch (e) { return; }
+  if (me.demo_data) demoBanner();
   S.me = me.user || {}; S.plan = S.me.plan || "free"; S.isAdmin = S.me.role === "admin";
   $$("[data-admin]").forEach(a => { a.hidden = !S.isAdmin; });
   billingReturn();
