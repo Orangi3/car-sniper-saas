@@ -3325,7 +3325,7 @@ _replace_view("api_poll_all", _legacy_poll_gone)
 if __name__ == "__main__":
     import socket, sys, threading
     BIND = "0.0.0.0"
-    PORT = 8765
+    PORT = int(os.environ.get("PORT") or 8765)   # hosts like Render/Railway set PORT
 
     # ----- Pre-flight: verify the port isn't already taken -----
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
