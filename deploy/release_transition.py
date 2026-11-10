@@ -456,14 +456,30 @@ class Transition:
         sync_dir(self.root)
 
     def rollback(self, expected, target):
-        old, previous = self.clean_state()
-        require(old == expected and previous == target,
-                "Rollback pins do not match the active release and rollback target")
+        # A transition that switched the pointer and then failed (unit
+        # sync, a restart or the health check) leaves its journal, and
+        # --recover only retries forward. The owner may still decide to
+        # go back. Take over exactly that journal: the pointer switch
+        # from `target` to `expected` happened and was published. Any
+        # other journal still needs --recover or operator reconciliation.
+        pending = self.load()
+        if pending is not None:
+            require(pending["phase"] == "ready" and pending["target"] == expected
+                    and pending["old"] == target and self.active() == expected
+                    and self.markers() == (expected, target),
+                    "Pending transition. Use --recover or reconcile with operator")
         release_dir = self.target(target)
         # Fail closed BEFORE the journal is written and before the
         # pointer moves: a target whose units need a per-release venv
         # must carry one, or the rollback is refused with state intact.
         self.require_release_venv(release_dir)
+        if pending is not None:
+            print(f"Taking over the failed transition to {expected}; rolling back to {target}.",
+                  file=sys.stderr)
+            self.clear()
+        old, previous = self.clean_state()
+        require(old == expected and previous == target,
+                "Rollback pins do not match the active release and rollback target")
         j = self.prepare(old, previous, target, "ready")
         self.flip(j)
         self.finish(j)
@@ -637,6 +653,17 @@ class Transition:
         print("Running service revision requires separate runtime evidence.")
 
 
+def unsafe_directory_message(directory):
+    """Refusal for a release directory that is not root-owned 0755. Hosts
+    set up by the older install.sh have /opt/sniper and releases/ owned
+    by sniper: say how to fix that instead of only refusing."""
+    return (f"Unsafe release directory ownership or permissions: {directory}. "
+            f"It must be root-owned and not group/world-writable. On a host set up "
+            f"by the older install.sh run: chown root:root {ROOT} {ROOT / 'releases'} "
+            f"&& chmod 0755 {ROOT} {ROOT / 'releases'} "
+            f"(see deploy/UPGRADE_EXISTING_HOST.md)")
+
+
 def main(args):
     t = None
     try:
@@ -645,7 +672,7 @@ def main(args):
             info = directory.lstat()
             require(stat.S_ISDIR(info.st_mode) and directory.resolve() == directory
                     and info.st_uid == 0 and not info.st_mode & 0o022,
-                    f"Unsafe release directory ownership or permissions: {directory}")
+                    unsafe_directory_message(directory))
         with host_lock(ROOT / ".release.lock") as fd:
             def run(*command, capture=False, check=True):
                 return subprocess.run(command, text=True, capture_output=capture,
