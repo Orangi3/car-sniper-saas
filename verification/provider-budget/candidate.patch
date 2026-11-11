@@ -1,0 +1,273 @@
+diff --git a/provider_budget.py b/provider_budget.py
+index eb1a442..ddbc0b0 100644
+--- a/provider_budget.py
++++ b/provider_budget.py
+@@ -3,7 +3,7 @@ provider_budget.py — hard monthly caps on paid provider calls.
+ 
+ Paid listing APIs bill per call. Every call an adapter makes is recorded in
+ usage_events (user_id NULL, kind 'provider:<source>'), and an adapter must
+-check `remaining()` before calling. When the month's budget is spent the
++successfully commit `reserve()` before calling. When the month's budget is spent the
+ source reports itself rate-limited until the 1st of next month instead of
+ running up an unbounded bill.
+ 
+@@ -13,6 +13,7 @@ cost per call: env <SOURCE>_COST_PER_CALL_CENTS. Defaults are conservative.
+ from __future__ import annotations
+ 
+ import os
++import math
+ from datetime import datetime, timezone
+ 
+ DEFAULT_BUDGET = {"marketcheck_fsbo": 4000, "marketcheck": 500}
+@@ -39,11 +40,17 @@ def cost_cents(source: str) -> float:
+ 
+ def month_start(now: datetime | None = None) -> datetime:
+     now = now or datetime.now(timezone.utc)
++    if now.tzinfo is None:
++        raise ValueError("timezone-aware datetime required")
++    now = now.astimezone(timezone.utc)
+     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+ 
+ 
+ def seconds_to_next_month(now: datetime | None = None) -> float:
+     now = now or datetime.now(timezone.utc)
++    if now.tzinfo is None:
++        raise ValueError("timezone-aware datetime required")
++    now = now.astimezone(timezone.utc)
+     s = month_start(now)
+     nxt = s.replace(year=s.year + 1, month=1) if s.month == 12 else s.replace(month=s.month + 1)
+     return (nxt - now).total_seconds()
+@@ -70,3 +77,48 @@ def record(source: str, calls: int = 1) -> None:
+             "VALUES (NULL, ?, ?, ?, ?)",
+             (f"provider:{source}", calls, calls * cost_cents(source),
+              datetime.now(timezone.utc).isoformat()))
++
++
++def reserve(source: str, calls: int = 1) -> bool:
++    """Commit a call reservation before transport. Never refund automatically.
++
++    SQLite serializes writers with BEGIN IMMEDIATE. PostgreSQL uses a table
++    lock (no schema change), with READ COMMITTED so a waiter reads the latest
++    committed ledger. This deliberately serializes usage_events writers too.
++    Exceptions propagate: configuration/storage/commit failure NEVER grants a call.
++    Legacy record() is accounting-only, not authorization; adapters use reserve().
++    """
++    import db as _db
++    if type(calls) is not int or calls <= 0:
++        raise ValueError("calls must be a positive integer")
++    raw = _env(source, "MONTHLY_CALL_BUDGET")
++    limit = DEFAULT_BUDGET.get(source, 1000) if raw is None else int(raw)
++    if limit < 0:
++        raise ValueError("monthly allowance must be nonnegative")
++    raw_cost = _env(source, "COST_PER_CALL_CENTS")
++    cost = DEFAULT_COST_CENTS.get(source, 0.0) if raw_cost is None else float(raw_cost)
++    if not math.isfinite(cost) or cost < 0 or not math.isfinite(calls * cost):
++        raise ValueError("cost must be finite and nonnegative")
++    with _db.session() as conn:
++        if _db.IS_PG:
++            conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
++            conn.execute("LOCK TABLE usage_events IN SHARE ROW EXCLUSIVE MODE")
++        else:
++            conn.execute("BEGIN IMMEDIATE")
++        # Sample time after acquiring the lock: a wait can cross a UTC month.
++        now = datetime.now(timezone.utc)
++        start = month_start(now)
++        end = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
++        used_calls = int(conn.execute(
++            "SELECT COALESCE(SUM(units), 0) FROM usage_events "
++            "WHERE user_id IS NULL AND kind = ? AND created_at >= ? AND created_at < ?",
++            (f"provider:{source}", start.isoformat(), end.isoformat())).fetchone()[0])
++        if used_calls < 0:
++            raise ValueError("invalid negative usage ledger")
++        if used_calls + calls > limit:
++            return False
++        conn.execute(
++            "INSERT INTO usage_events(user_id, kind, units, cost_cents, created_at) "
++            "VALUES (NULL, ?, ?, ?, ?)",
++            (f"provider:{source}", calls, calls * cost, now.isoformat()))
++    return True  # __exit__ has successfully committed before authorization
+diff --git a/sources/marketcheck.py b/sources/marketcheck.py
+index 018fe4b..eb0b4d9 100644
+--- a/sources/marketcheck.py
++++ b/sources/marketcheck.py
+@@ -41,6 +41,7 @@ def config_issue(cfg: dict):
+ def poll(cfg: dict) -> list[NormalizedListing]:
+     key = os.environ.get("MARKETCHECK_API_KEY")
+     if not key:
++        health.report(SOURCE_ID).record("config", health.AUTH, detail="MARKETCHECK_API_KEY not set")
+         return []
+     src_cfg = cfg.get("sources", {}).get(SOURCE_ID, {})
+     zip_code = src_cfg.get("zip") or cfg.get("zip", "35401")
+@@ -58,12 +59,16 @@ def poll(cfg: dict) -> list[NormalizedListing]:
+     }
+     import provider_budget
+     rep = health.report(SOURCE_ID)
+-    if provider_budget.remaining(SOURCE_ID) <= 0:
++    try:
++        reserved = provider_budget.reserve(SOURCE_ID)
++    except Exception:
++        rep.record("active", health.HTTP_ERROR, detail="budget reservation failed; no request sent")
++        return []
++    if not reserved:
+         rep.retry_after_s = provider_budget.seconds_to_next_month()
+         rep.record("active", health.RATE_LIMITED, detail="monthly call budget exhausted")
+         return []
+     r = rep.fetch("active", ACTIVE_URL, params=params, timeout=30)
+-    provider_budget.record(SOURCE_ID)
+     if r is None:
+         return []
+     try:
+diff --git a/sources/marketcheck_fsbo.py b/sources/marketcheck_fsbo.py
+index 82970f4..717e43d 100644
+--- a/sources/marketcheck_fsbo.py
++++ b/sources/marketcheck_fsbo.py
+@@ -154,7 +154,12 @@ def poll(cfg: dict) -> list[NormalizedListing]:
+     zip_code, radius, lo, hi = _territory(cfg)
+     out: list[NormalizedListing] = []
+     for page in range(MAX_PAGES):
+-        if provider_budget.remaining(SOURCE_ID) <= 0:
++        try:
++            reserved = provider_budget.reserve(SOURCE_ID)
++        except Exception:
++            rep.record(f"page{page}", health.HTTP_ERROR, detail="budget reservation failed; no request sent")
++            break
++        if not reserved:
+             rep.retry_after_s = provider_budget.seconds_to_next_month()
+             rep.record(f"page{page}", health.RATE_LIMITED,
+                        detail="monthly call budget exhausted")
+@@ -163,7 +168,6 @@ def poll(cfg: dict) -> list[NormalizedListing]:
+                   "price_range": f"{lo}-{hi}", "rows": ROWS, "start": page * ROWS,
+                   "sort_by": SORT_BY, "sort_order": SORT_ORDER}
+         r = rep.fetch(f"page{page}", SEARCH_URL, params=params, timeout=30)
+-        provider_budget.record(SOURCE_ID)
+         if r is None:
+             last = rep.attempts[-1]
+             if last["outcome"] == health.RATE_LIMITED and "quota" in str(last.get("detail", "")):
+diff --git a/tests/test_provider_reservation_standalone.py b/tests/test_provider_reservation_standalone.py
+new file mode 100644
+index 0000000..92edab2
+--- /dev/null
++++ b/tests/test_provider_reservation_standalone.py
+@@ -0,0 +1,122 @@
++"""Standard-library, temporary SQLite only; no network or application imports."""
++import os
++import sys
++from pathlib import Path
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++import db
++import provider_budget as pb
++import tempfile
++import unittest
++from unittest.mock import patch
++from concurrent.futures import ThreadPoolExecutor
++from threading import Barrier
++from datetime import datetime, timezone, timedelta
++
++class ReservationTests(unittest.TestCase):
++    def setUp(self):
++        # Application fixtures reload db between tests; bind the current module.
++        global db
++        import importlib
++        db = importlib.import_module("db")
++        self.tmp = tempfile.TemporaryDirectory()
++        self.engine = patch.object(db, "IS_PG", False)
++        self.engine.start()
++        self.old_path = db.SQLITE_PATH
++        db.SQLITE_PATH = Path(self.tmp.name) / 'test.db'
++        with db.session() as c:
++            c.execute('CREATE TABLE usage_events(id INTEGER PRIMARY KEY, user_id INTEGER, kind TEXT, units INTEGER, cost_cents REAL, created_at TEXT)')
++        self.env = patch.dict(os.environ, {'MARKETCHECK_MONTHLY_CALL_BUDGET':'1'})
++        self.env.start()
++
++    def tearDown(self):
++        self.env.stop()
++        self.engine.stop()
++        db.SQLITE_PATH = self.old_path
++        self.tmp.cleanup()
++
++    def race(self, workers, allowance):
++        os.environ['MARKETCHECK_MONTHLY_CALL_BUDGET'] = str(allowance)
++        barrier = Barrier(workers)
++        def worker(_):
++            if hasattr(pb, 'reserve'):
++                barrier.wait(timeout=10)
++                return pb.reserve('marketcheck')
++            allowed = pb.remaining('marketcheck') > 0
++            barrier.wait(timeout=10)  # deterministically expose check/record window
++            if allowed:
++                pb.record('marketcheck')
++            return allowed
++        with ThreadPoolExecutor(max_workers=workers) as pool:
++            results = list(pool.map(worker, range(workers)))
++        self.assertEqual(sum(results), allowance)
++        self.assertEqual(pb.used('marketcheck'), allowance)
++
++    def test_one_remaining_two_workers(self): self.race(2, 1)
++    def test_many_workers(self): self.race(8, 3)
++    def test_zero(self): self.race(2, 0)
++    def test_exhausted(self):
++        self.assertTrue(pb.reserve('marketcheck'))
++        self.assertFalse(pb.reserve('marketcheck'))
++    def test_invalid_config(self):
++        for value in ['oops','-1','1.5','']:
++            with self.subTest(value=value), patch.dict(os.environ, {'MARKETCHECK_MONTHLY_CALL_BUDGET':value}):
++                with self.assertRaises(ValueError): pb.reserve('marketcheck')
++        self.assertEqual(pb.used('marketcheck'), 0)
++    def test_database_error(self):
++        with patch.object(db, 'session', side_effect=RuntimeError('fixture database failure')):
++            with self.assertRaises(RuntimeError): pb.reserve('marketcheck')
++    def test_failed_insert_rolls_back(self):
++        with db.session() as c:
++            c.execute("CREATE TRIGGER reject_usage BEFORE INSERT ON usage_events BEGIN SELECT RAISE(ABORT, 'fixture'); END")
++        with self.assertRaises(__import__("sqlite3").IntegrityError): pb.reserve('marketcheck')
++        self.assertEqual(pb.used('marketcheck'), 0)
++    def test_no_refund_after_transport_failure(self):
++        self.assertTrue(pb.reserve('marketcheck'))
++        # Caller fails before/during/after transport: reservation stays consumed.
++        self.assertFalse(pb.reserve('marketcheck'))
++    def test_month_rollover(self):
++        class Clock(datetime):
++            instant = datetime(2026,12,31,23,59,59,tzinfo=timezone.utc)
++            @classmethod
++            def now(cls, tz=None): return cls.instant
++        with patch.object(pb, 'datetime', Clock):
++            self.assertTrue(pb.reserve('marketcheck'))
++            Clock.instant = datetime(2027,1,1,tzinfo=timezone.utc)
++            self.assertTrue(pb.reserve('marketcheck'))
++            self.assertFalse(pb.reserve('marketcheck'))
++    def test_utc_boundary(self):
++        dt = datetime(2027,1,1,1,tzinfo=timezone(timedelta(hours=2)))
++        self.assertEqual(pb.month_start(dt), datetime(2026,12,1,tzinfo=timezone.utc))
++        self.assertEqual(pb.seconds_to_next_month(dt), 3600)
++
++    def test_commit_failure_denies_authorization(self):
++        with patch.object(db.Conn, 'commit', side_effect=RuntimeError('fixture commit failure')):
++            with self.assertRaises(RuntimeError): pb.reserve('marketcheck')
++        self.assertEqual(pb.used('marketcheck'), 0)
++
++    def test_adapter_reservation_contract(self):
++        # Execute actual adapter poll bodies with fixture dependencies, not HTTP.
++        # Full adapter imports require dependencies absent in this environment.
++        import ast
++        from types import SimpleNamespace
++        from unittest.mock import Mock
++        for source in ['marketcheck', 'marketcheck_fsbo']:
++            tree = ast.parse((Path(__file__).resolve().parents[1] / 'sources' / (source + '.py')).read_text())
++            funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('poll', '_territory')]
++            for scenario in ['failure', 'exhausted', 'transport_failure', 'missing_key']:
++                with self.subTest(source=source, scenario=scenario):
++                    report = Mock(attempts=[{'outcome':'timeout'}])
++                    report.fetch.return_value = None
++                    health = SimpleNamespace(report=lambda _: report, RATE_LIMITED='rate_limited', HTTP_ERROR='http_error', AUTH='auth')
++                    ns = {'os':os, 'health':health, 'SOURCE_ID':source, 'MAX_PAGES':2, 'ROWS':50, 'SORT_BY':'dom', 'SORT_ORDER':'asc', 'ACTIVE_URL':'fixture', 'SEARCH_URL':'fixture'}
++                    exec(compile(ast.fix_missing_locations(ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)] + funcs, type_ignores=[])), '<actual adapter functions>', 'exec'), ns)
++                    with patch.dict(os.environ, {'MARKETCHECK_API_KEY': '' if scenario=='missing_key' else 'synthetic-test-key'}), patch.object(pb, 'reserve') as reserve:
++                        reserve.return_value = scenario=='transport_failure'
++                        if scenario=='failure': reserve.side_effect = RuntimeError('fixture database error')
++                        self.assertEqual(ns['poll']({}), [])
++                        self.assertEqual(report.fetch.call_count, int(scenario=='transport_failure'))
++                        self.assertEqual(reserve.call_count, int(scenario!='missing_key'))
++                        if scenario=='failure':
++                            self.assertIn('no request sent', report.record.call_args.kwargs['detail'])
++
++if __name__ == '__main__': unittest.main(verbosity=2)

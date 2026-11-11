@@ -1,0 +1,79 @@
+name: One-time provider budget PostgreSQL verification
+on:
+  push:
+    branches: [verification/provider-budget-pg-6a7da298]
+    paths: [.github/workflows/provider-budget-postgres.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: fixture_admin
+          POSTGRES_PASSWORD: ephemeral-fixture-only
+          POSTGRES_DB: provider_budget_fixture
+        ports: ['55439:5432']
+        options: >-
+          --health-cmd "pg_isready -U fixture_admin -d provider_budget_fixture"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: handoff
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Orangi3/car-sniper-saas
+          ref: b2f72af83f6dae74a73639a5f9022002265a0d4f
+          path: candidate
+          persist-credentials: false
+      - name: Verify exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          cd handoff/verification/provider-budget
+          sha256sum --check SHA256SUMS
+          cd ../../../candidate
+          git apply --check ../handoff/verification/provider-budget/candidate.patch
+          git apply ../handoff/verification/provider-budget/candidate.patch
+          git add provider_budget.py sources/marketcheck.py sources/marketcheck_fsbo.py tests/test_provider_reservation_standalone.py
+          test "$(git write-tree)" = "34232a7ac77f9847e79a925da6acecea7404961f"
+          git write-tree > ../evidence/candidate-tree.txt
+          git diff --cached --name-status > ../evidence/changed-files.txt
+      - name: Install isolated test dependencies
+        working-directory: candidate
+        run: |
+          python3 -m venv ../venv
+          ../venv/bin/pip install -r requirements.txt
+          ../venv/bin/pip freeze > ../evidence/dependencies.txt
+      - name: PostgreSQL synthetic contention and recovery
+        working-directory: candidate
+        env:
+          FIXTURE_PG_DSN: postgresql://fixture_admin:ephemeral-fixture-only@127.0.0.1:55439/provider_budget_fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          ../venv/bin/python ../handoff/verification/provider-budget/postgres_check.py 2>&1 | tee ../evidence/postgres-check.txt
+      - name: Actual PostgreSQL adapter health and scheduler suites
+        if: ${{ !cancelled() }}
+        working-directory: candidate
+        env:
+          SNIPER_TEST_PG_URL: postgresql://fixture_admin:ephemeral-fixture-only@127.0.0.1:55439/postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          ../venv/bin/python ../handoff/verification/provider-budget/run_guarded.py -q tests/test_marketcheck_fsbo.py tests/test_source_health.py tests/test_scheduler_isolation.py 2>&1 | tee ../evidence/postgres-regression.txt
+      - name: Preserve evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-budget-verification-evidence
+          path: |
+            evidence/
+            candidate/postgres-reservation-results.json
+          retention-days: 7
