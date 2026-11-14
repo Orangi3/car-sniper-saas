@@ -69,6 +69,7 @@ MAX_FAILED_VERIFY_PER_HOUR = 10
 ATTESTATIONS = ("authorized_to_sell", "details_accurate", "share_contact_with_buyers")
 TITLE_STATUSES = ("clean", "rebuilt", "salvage", "unknown")
 LIVE = ("pending", "active")
+CONTACT_PLANS = ("starter", "pro")       # the plans that include a seller's contact address
 DEALER = "dealer"
 REPORT_REASONS = ("scam", "sold", "wrong_details", "offensive", "other")
 IMPORT_MAX_BYTES = 256 * 1024
@@ -569,14 +570,19 @@ def dealer_name(conn, composite_id: str) -> str | None:
     return r[0] if r else None
 
 
-def contact_for(conn, composite_id: str, viewer_plan: str) -> dict | None:
+def contact_for(conn, composite_id: str, viewer_plan: str | None) -> dict | None:
     """Seller contact for a discoverable 'direct' listing: paid plans only,
-    and only a verified address."""
+    and only a verified address.
+
+    Fails closed: the address is shown only when the viewer's plan is exactly
+    one of CONTACT_PLANS. Free, missing, misspelled, or any other value (a
+    billing status such as "canceled", a future plan name) gets the upgrade
+    notice, as the free plan does."""
     if not composite_id.startswith(f"{SOURCE}:"):
         return None
     if composite_id not in discoverable_ids(conn):
         return None
-    if (viewer_plan or "free") == "free":
+    if not (isinstance(viewer_plan, str) and viewer_plan in CONTACT_PLANS):
         return {"available": False, "why": "upgrade to see the seller's contact"}
     r = conn.execute("SELECT contact_email FROM seller_listings WHERE id = ?",
                      (int(composite_id.split(":", 1)[1]),)).fetchone()
