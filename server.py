@@ -160,6 +160,20 @@ if _os.environ.get("SNIPER_SKIP_MIGRATION_CHECK", "0") != "1":
         raise
 
 # ---------- Structured request logging + global error handling ----------
+class _StderrHandler(logging.StreamHandler):
+    """WARNING and above, written to stderr as it is when the line is logged."""
+
+    def __init__(self):
+        super().__init__()
+        self.setLevel(logging.WARNING)
+        self.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+
+    def emit(self, record):
+        import sys
+        self.stream = sys.stderr
+        super().emit(record)
+
+
 _logger = logging.getLogger("sniper")
 if not _logger.handlers:
     # SNIPER_LOG_DIR: deployed hosts set /var/log/sniper (release dirs are
@@ -167,6 +181,10 @@ if not _logger.handlers:
     _h = logging.FileHandler(Path(_os.environ.get("SNIPER_LOG_DIR") or ROOT) / "sniper-requests.log")
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     _logger.addHandler(_h)
+    # Warnings and errors also go to stderr. A container host (Render) shows
+    # stderr in its log stream and wipes the file above on every restart;
+    # systemd puts stderr in the journal. Request lines (INFO) stay in the file.
+    _logger.addHandler(_StderrHandler())
     _logger.setLevel(logging.INFO)
 
 
