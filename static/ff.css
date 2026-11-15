@@ -625,3 +625,8 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .sidenav a.sidebar__plan:hover, .sidebar__plan:hover { text-decoration: none; border-color: var(--line-strong); background: var(--surface-3); color: var(--ink); }
 @media (min-width: 1024px) { .topbar--root { display: none; } }
 @media (min-width: 768px) { .hide-mobile { display: initial; } .hide-desktop { display: none; } }
+
+/* Shown only while synthetic demo listings exist (server /api/me demo_data). */
+.demo-banner { background: var(--warn-soft); color: var(--warn); border-bottom: 2px solid var(--warn);
+  font-weight: 700; font-size: .875rem; letter-spacing: .02em; text-align: center;
+  padding: .5rem 1rem; overflow-wrap: anywhere; }

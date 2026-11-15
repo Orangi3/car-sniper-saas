@@ -338,6 +338,35 @@ MarketCheck / eBay / VinAudit written permission (F) ──► FIRST_LIVE_TEST.m
 | 14 | Close stale PRs #2, #3, #4 | OPTIONAL | — | — | each 0 commits ahead of `main` | close on GitHub |
 | 15 | Self-serve account deletion | OPTIONAL | not built | after pilot | in-app listing reports are built (PR #14); you delete accounts on request (`accounts delete`) | post-pilot |
 
+## Rollback fix — branch `fix/rollback-start-limit` (2026-11-02)
+
+PR #18 merged on 2026-11-02: `main` = `d47a60d`. `release_check.sh post d3f5eef`
+passes, and CI is green on `main`. Branch protection on `main` is on (checked
+through the API): the three CI checks are required, admins are included, and force
+pushes and deletions are blocked. The *Status* table in `AGENTS.md` still says it's off.
+
+The rehearsal of `d47a60d` on a disposable Ubuntu 24.04 host found one defect. A
+rollback run a few seconds after another was refused at `systemctl restart
+sniper-migrate` (systemd's limit of 5 starts in 10 s). That left `current`
+flipped while the app kept running the old code. The cause: every app restart
+re-ran the migrate oneshot, 4 starts per deploy or rollback. The fix
+(`RemainAfterExit=yes`, plus a shared restart step that clears the limit first)
+was checked on that host before and after:
+
+| Check | `d47a60d` | fix |
+|---|---|---|
+| 3 back-to-back rollbacks | 3rd refused (exit 1); app left on the old release | all pass |
+| 6 rollbacks in 13 s | — | all pass; 6 migrate runs, 0 refused |
+| rollback while web, worker and scheduler crash-loop | migrate re-ran 12 times in 25 s (2 refused); this rollback passed | migrate not re-run; rollback passes |
+| restart failure during a rollback | exit 1, no guidance | exit 12, says where the host is and not to run `--rollback` again |
+| full rehearsal (install, 3 deploys, rollbacks, go-live gates, restore drill, reboot) | 1 failure (the rollback above) | all pass |
+| SQLite / PostgreSQL suites | 658 + 2 skipped / 660 | 663 + 2 skipped / 665 |
+
+When the owner merges the fix, the new `main` merge commit replaces `d47a60d` as
+`APPROVED_SHA` in `FIRST_DEPLOY.md`. A host that is already installed needs the
+updated `deploy/systemd/sniper-migrate.service` copied into `/etc/systemd/system/`
+(followed by `systemctl daemon-reload`): `sync.sh` doesn't install unit files.
+
 ## Brand release — PR #18 (2026-11-01)
 
 The black-and-gold identity: the Wings emblem, the FLIPFIRST logotype and the

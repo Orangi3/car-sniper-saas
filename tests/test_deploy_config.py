@@ -88,19 +88,9 @@ def test_proxy_sets_the_visitor_address_and_the_app_trusts_only_this_host(tmp_pa
     assert old_env.read_text().count("SNIPER_TRUSTED_PROXIES=") == 1
 
 
-def test_deploy_runs_app_steps_as_the_app_user_with_the_production_env():
-    """Deploys go in as root (the sniper account has no shell); the canary
-    and pre-flip migration must see /etc/sniper/env, or they silently test
-    a throwaway SQLite file instead of PostgreSQL."""
-    sync = (DEPLOY / "sync.sh").read_text()
-    assert "sniper@<host>" not in sync and "root@<host>" in sync
-    assert "--uid=sniper" in sync and "EnvironmentFile=/etc/sniper/env" in sync
-    assert "runuser -u sniper -- /opt/sniper/.venv/bin/pip install" in sync
-    canary = sync.index("--unit=sniper-canary")
-    flip = sync.index("Canary OK — flipping current symlink")
-    assert sync.index("migrations.runner") < canary < flip
+def test_deploy_operator_is_separate_from_the_app_account():
     install = (DEPLOY / "install.sh").read_text()
-    assert "nologin" in install          # the reason root is the deploy user
+    assert "nologin" in install
 
 
 def test_app_logs_are_rotated_and_kept_14_days():
@@ -298,3 +288,31 @@ def test_golive_needs_a_test_email_and_an_admin_and_install_needs_ubuntu_2404():
 def test_seller_price_change_promises_no_notification():
     app = (ROOT / "static" / "app.js").read_text()
     assert "Buyers watching for price drops are notified" not in app
+
+
+def test_migrations_run_once_per_deploy_not_once_per_app_restart():
+    """web, worker and scheduler each Wants= sniper-migrate. While the oneshot
+    went inactive after each run, every app restart ran it again: a deploy or
+    rollback started it 4 times in a second, and systemd's start limit (5 in
+    10 s) then refused the next rollback half-way. Seen on the disposable host."""
+    unit = (DEPLOY / "systemd" / "sniper-migrate.service").read_text()
+    assert re.search(r"^Type=oneshot$", unit, re.M)
+    assert re.search(r"^RemainAfterExit=yes$", unit, re.M)
+    for app in ("sniper-web", "sniper-worker", "sniper-scheduler"):
+        text = (DEPLOY / "systemd" / f"{app}.service").read_text()
+        assert re.search(r"^Wants=.*\bsniper-migrate\.service\b", text, re.M), app
+        assert re.search(r"^After=.*\bsniper-migrate\.service\b", text, re.M), app
+
+
+def test_no_runbook_relies_on_start_to_run_migrations_again():
+    """While the migrate unit is active, `systemctl start sniper-migrate` does
+    nothing, so a restore that used it would skip migrations an older backup needs."""
+    skip = {".git", ".venv", "node_modules"}
+    hits = []
+    for p in sorted(ROOT.rglob("*")):
+        if p.suffix not in (".md", ".sh") or skip & set(p.relative_to(ROOT).parts):
+            continue
+        for n, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
+            if re.search(r"systemctl\s+(start|enable\s+--now)\b[^#\n]*\bsniper-migrate\b", line):
+                hits.append(f"{p.relative_to(ROOT)}:{n}")
+    assert not hits, hits

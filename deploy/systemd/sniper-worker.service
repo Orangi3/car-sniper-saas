@@ -12,7 +12,7 @@ WorkingDirectory=/opt/sniper/current
 EnvironmentFile=/etc/sniper/env
 # Any number of workers may run (claims are atomic, leases recover crashed
 # jobs). Scale by raising --threads or running more instances.
-ExecStart=/opt/sniper/.venv/bin/python3 -m jobs.worker --threads 4
+ExecStart=/opt/sniper/current/.venv/bin/python3 -m jobs.worker --threads 4
 Restart=always
 RestartSec=5
 # SIGTERM: finish the in-flight job, then exit. A job interrupted by a

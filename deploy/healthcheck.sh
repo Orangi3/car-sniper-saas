@@ -12,7 +12,7 @@
 set -u
 rc=0
 APP_DIR=${SNIPER_APP_DIR:-/opt/sniper/current}
-PY=${SNIPER_PYTHON:-/opt/sniper/.venv/bin/python3}
+PY=${SNIPER_PYTHON:-/opt/sniper/current/.venv/bin/python3}
 
 # The public origin (install.sh writes BILLING_ORIGIN=https://<hostname>
 # into /etc/sniper/env); Caddy has no certificate for a bare IP.

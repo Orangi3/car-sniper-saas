@@ -401,6 +401,18 @@ def _confidence(points: int) -> str:
     return "high" if points >= 4 else "medium" if points >= 2 else "low"
 
 
+def _same_car_elsewhere(target: dict, c: dict) -> bool:
+    """`c` is the target car itself, posted on another marketplace without a
+    shared VIN: the conservative identity alerting uses
+    (vehicle_identity.same_vehicle). Same-VIN copies are excluded before
+    this. Checked only when the odometers match, which that rule requires."""
+    odo = target.get("odometer")
+    if not odo or c.get("odometer") != odo:
+        return False
+    import vehicle_identity
+    return vehicle_identity.same_vehicle(target, c)[0]
+
+
 def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
                   now: Optional[datetime] = None) -> Valuation:
     """Value `target` (a listings row as dict) from asking-price `peers`
@@ -418,10 +430,14 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
     # ---- asking comparables ----
     usable = []
     other_variant = 0
+    same_car = 0
     for c in peers:
         if c.get("composite_id") == tid:
             continue
         if tkey and c.get("vehicle_key") == tkey:
+            continue
+        if _same_car_elsewhere(target, c):
+            same_car += 1                  # this car's own posting elsewhere
             continue
         if c.get("is_salvage") or c.get("needs_work") or not c.get("price"):
             continue
@@ -456,6 +472,9 @@ def value_listing(target: dict, peers: list[dict], sold: Optional[dict] = None,
     if other_variant:
         reasons.append(f"{other_variant} peer(s) excluded: a different vehicle than this "
                        f"{t_var} {target.get('model')} (model name shared)")
+    if same_car:
+        reasons.append(f"{same_car} posting(s) of this same car on other marketplaces "
+                       "excluded: not independent evidence")
 
     # geography: regional peers when the target's location is known
     t_geo = _coords(target)
@@ -695,7 +714,7 @@ def load_peers(conn, target: dict) -> list[dict]:
     rows = conn.execute(
         "SELECT composite_id, source, title, url, price, year, make, model, "
         "  odometer, is_dealer, is_salvage, needs_work, is_auction, vehicle_key, trim, "
-        "  first_seen_at, last_seen_at, latitude, longitude, extras "
+        "  first_seen_at, last_seen_at, latitude, longitude, extras, image_urls "
         "FROM listings WHERE LOWER(make) = LOWER(?) AND LOWER(model) = LOWER(?) "
         "  AND year BETWEEN ? AND ? AND price IS NOT NULL",
         (target["make"], target["model"], target["year"] - 2, target["year"] + 2)

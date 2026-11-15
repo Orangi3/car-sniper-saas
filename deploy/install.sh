@@ -120,20 +120,26 @@ fi
 id -u sniper >/dev/null 2>&1 || \
     useradd --system --create-home --home /opt/sniper --shell /usr/sbin/nologin sniper
 
-install -d -o sniper -g sniper -m 0755 /opt/sniper/releases
+install -d -o root -g root -m 0755 /opt/sniper /opt/sniper/releases
 install -d -o sniper -g sniper -m 0755 /opt/sniper/shared
 install -d -o sniper -g sniper -m 0755 /var/log/sniper
 install -d -o sniper -g sniper -m 0700 /var/backups/sniper
 
 # ----------------------------------------------------------------------
-# 5. Python venv (only created once; sync.sh `pip install -r` per deploy)
+# 5. Legacy shared Python venv (kept for old-style releases only).
+# New releases build their own venv inside their release directory
+# (see deploy/release_transition.py prepare_services) and install
+# requirements.txt there — including psycopg2-binary below — so the
+# shared venv is no longer touched by deploy or rollback.
 # ----------------------------------------------------------------------
 if [[ ! -x /opt/sniper/.venv/bin/python3 ]]; then
+    install -d -o sniper -g sniper -m 0755 /opt/sniper/.venv
     sudo -u sniper python3.12 -m venv /opt/sniper/.venv
 fi
 sudo -u sniper /opt/sniper/.venv/bin/python3 -m pip install --upgrade pip wheel
-# psycopg2-binary is required for the Postgres deploy; the rest are
-# (re)installed per release via sync.sh.
+# psycopg2-binary is required for the Postgres deploy. New releases
+# install it from requirements.txt into their own venv; this shared
+# install exists only so old-style releases keep working.
 sudo -u sniper /opt/sniper/.venv/bin/python3 -m pip install \
     "psycopg2-binary>=2.9"
 

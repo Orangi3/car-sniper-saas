@@ -372,11 +372,20 @@ def _json_error(e):
         if request.path.startswith("/api/"):
             return jsonify({"error": e.description, "code": e.code}), e.code
         return e.description or "HTTP error", e.code or 500
-    tb = traceback.format_exc()
-    _logger.error(f"UNCAUGHT {request.method} {request.path}: {e}\n{tb}")
+    return _internal_error(e)
+
+
+def _internal_error(e: Exception):
+    """An unexpected error: the full text goes to the log under a short
+    reference; the client gets only the reference. Exception text can carry
+    database details, customer data, connection strings or paths."""
+    import secrets
+    ref = secrets.token_hex(4)
+    _logger.error(f"UNCAUGHT [{ref}] {request.method} {request.path}: {e}\n"
+                  f"{traceback.format_exc()}")
     if request.path.startswith("/api/"):
-        return jsonify({"error": str(e), "type": type(e).__name__}), 500
-    return f"Internal error: {e}", 500
+        return jsonify({"error": f"internal error (reference {ref})", "ref": ref}), 500
+    return f"Internal error (reference {ref})", 500
 
 
 def _rows(query: str, params=()) -> list[dict]:
@@ -1088,7 +1097,7 @@ def api_vin():
     try:
         return jsonify(vin_mod.report(v))
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(e)
 
 
 # ============= v3 VIN endpoints ==========================================
@@ -1214,7 +1223,7 @@ def api_comps():
     except (KeyError, ValueError) as e:
         return jsonify({"error": f"need year/make/model: {e}"}), 400
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _internal_error(e)
 
 
 @app.get("/api/share_settings")
@@ -1524,6 +1533,18 @@ def api_logout():
     return resp
 
 
+DEMO_SOURCE = "demo"          # tests/browser/seed_demo.py; never a real marketplace
+
+
+def _demo_data_present() -> bool:
+    """True while the database holds synthetic demo listings. The app then
+    shows a "DEMO DATA" banner on every screen, and preflight refuses any
+    beta (indexed lookup on listings.source)."""
+    with sniper.db() as conn:
+        return conn.execute("SELECT 1 FROM listings WHERE source = ? LIMIT 1",
+                            (DEMO_SOURCE,)).fetchone() is not None
+
+
 @app.get("/api/me")
 def api_me():
     """Frontend hits this on load. Returns the current user (or 401 anon)
@@ -1533,11 +1554,12 @@ def api_me():
         # the login page shows "create account" only when sign-up is open;
         # with invite-only registration the invitation link opens it.
         # ?optional=1 answers 200 so a signed-out page load logs no error.
-        body = {"user": None, "registration": "open" if auth.ALLOW_REGISTRATION else "invite"}
+        body = {"user": None, "registration": "open" if auth.ALLOW_REGISTRATION else "invite",
+                "demo_data": _demo_data_present()}
         if request.args.get("optional") == "1":
             return jsonify(body)
         return jsonify({"error": "not authenticated", **body}), 401
-    return jsonify({"user": u.public_dict()})
+    return jsonify({"user": u.public_dict(), "demo_data": _demo_data_present()})
 
 
 # ===========================================================================
@@ -2055,10 +2077,14 @@ def api_saved_searches_create():
                                  f"{lim['saved_searches']} saved searches",
                         "limit": lim["saved_searches"], "current_plan": u.plan,
                         "upgrade_to": "pro" if u.plan != "pro" else None}), 402
-    if str(filter_obj.get("risk_mode", "")).lower() == "aggressive" \
-            and not lim["aggressive_mode"]:
-        return jsonify({"error": "aggressive mode is a Pro feature",
-                        "required_plan": "pro"}), 402
+    if filter_obj.get("risk_mode") not in (None, ""):
+        risk_mode = str(filter_obj["risk_mode"]).strip().lower()
+        if risk_mode not in ("conservative", "aggressive"):
+            return jsonify({"error": "risk_mode must be conservative or aggressive"}), 400
+        if risk_mode == "aggressive" and not lim["aggressive_mode"]:
+            return jsonify({"error": "aggressive mode is a Pro feature",
+                            "required_plan": "pro"}), 402
+        filter_obj["risk_mode"] = risk_mode
     with _db.transaction() as conn:
         cur = conn.cursor()
         if _db.IS_PG:
@@ -2172,9 +2198,10 @@ def api_me_alert_channels_test():
         r = dict(cur.fetchone() or {})
     from notifications import send_user_test
     results = send_user_test(phone=r.get("notify_phone"), ntfy_topic=r.get("ntfy_topic"),
-                             webhook=r.get("alert_webhook"))
+                             webhook=r.get("alert_webhook"), plan=u.plan, user_id=u.id)
     if not results:
-        return jsonify({"ok": False, "error": "no alert channel set"}), 400
+        return jsonify({"ok": False,
+                        "error": "no alert channel set that your plan includes"}), 400
     ok = any(v[0] for v in results.values())
     return jsonify({"ok": ok, "channels": {ch: {"ok": v[0], "detail": v[1]}
                                            for ch, v in results.items()}}), (200 if ok else 502)
@@ -2193,12 +2220,26 @@ def api_me_alerts():
             "  m.saved_search_id, s.name AS saved_search_name, m.discount_pct, "
             "  m.price, m.previous_price, m.value_mid, m.profit_base, m.confidence, "
             "  m.trust, l.composite_id, l.title, l.url, l.year, l.make, l.model, "
-            "  l.odometer, l.source, l.state, l.location, l.image_urls "
+            "  l.odometer, l.source, l.state, l.location, l.image_urls, "
+            "  l.price AS listing_price, l.last_seen_at, l.first_seen_at, l.is_auction, "
+            "  l.auction_end_at "
             "FROM user_matches m "
             "JOIN listings l ON l.composite_id = m.composite_id "
             "LEFT JOIN saved_searches s ON s.id = m.saved_search_id "
             "WHERE m.user_id = ? AND m.dismissed = FALSE "
             "ORDER BY m.created_at DESC, m.id DESC LIMIT ?", (u.id, limit)).fetchall()]
+    # `price` stays the price when the car matched (unchanged for API clients);
+    # the current price is shown only while the source still confirms the
+    # listing (the deal feeds' own display rules), never a stale one as an offer
+    limits = _display_limits()
+    for r in rows:
+        shown = _displayable(r, limits)
+        current = r.pop("listing_price")
+        for k in ("last_seen_at", "first_seen_at", "is_auction", "auction_end_at"):
+            r.pop(k, None)
+        r["matched_price"] = r["price"]
+        r["current_price"] = current if shown else None
+        r["current_price_confirmed"] = shown
     return jsonify(rows)
 
 
@@ -2263,36 +2304,16 @@ def _deal_row(r: dict, psettings: dict, plan: Optional[str],
 def _display_limits() -> dict:
     """source -> max hours since last confirmed by a poll, for sources whose
     terms limit how stale displayed data may be (eBay: 6 h); plus the set of
-    seller listings that are currently discoverable (seller_listings)."""
-    import seller_listings as sl
-    out: dict = {m.SOURCE_ID: m.DISPLAY_MAX_AGE_HOURS for m in sources.all_sources()
-                 if getattr(m, "DISPLAY_MAX_AGE_HOURS", None)}
+    seller listings that are currently discoverable (seller_listings).
+    The rules live in listing_display, shared with outbound alerts."""
+    import listing_display
     with sniper.db() as conn:
-        out["__direct__"] = sl.discoverable_ids(conn)
-    return out
+        return listing_display.limits(conn)
 
 
 def _displayable(d: dict, limits: dict) -> bool:
-    from datetime import datetime, timedelta, timezone
-    if d.get("source") == "direct":
-        return d.get("composite_id") in limits.get("__direct__", set())
-    if d.get("is_auction") and d.get("auction_end_at"):
-        try:                                  # an ended auction is not for sale
-            end = datetime.fromisoformat(str(d["auction_end_at"]).replace("Z", "+00:00"))
-            if (end if end.tzinfo else end.replace(tzinfo=timezone.utc)) <= datetime.now(timezone.utc):
-                return False
-        except ValueError:
-            pass
-    hrs = limits.get(d.get("source"))
-    if not hrs:
-        return True
-    seen = d.get("last_seen_at") or d.get("first_seen_at")
-    try:
-        t = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
-        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return False
-    return datetime.now(timezone.utc) - t <= timedelta(hours=hrs)
+    import listing_display
+    return listing_display.displayable(d, limits)
 
 
 def _rank(rows: list[dict]) -> list[dict]:
@@ -3304,7 +3325,7 @@ _replace_view("api_poll_all", _legacy_poll_gone)
 if __name__ == "__main__":
     import socket, sys, threading
     BIND = "0.0.0.0"
-    PORT = 8765
+    PORT = int(os.environ.get("PORT") or 8765)   # hosts like Render/Railway set PORT
 
     # ----- Pre-flight: verify the port isn't already taken -----
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

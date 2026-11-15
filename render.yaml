@@ -1,0 +1,45 @@
+# Render Blueprint — FlipFirst in one web service + one PostgreSQL database.
+# Step-by-step: DEPLOY_CLOUD.md. Render dashboard → New → Blueprint → pick
+# this repo. Plans below are paid (the free web plan sleeps after 15 idle
+# minutes, which would stop the scheduler and the alert worker).
+services:
+  - type: web
+    name: flipfirst
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: 0.5c-512mb
+    region: ohio
+    healthCheckPath: /health
+    autoDeploy: false          # deploys are owner-only (AGENTS.md): click "Manual Deploy"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: flipfirst-db
+          property: connectionString
+      # Only licensed sources run (SOURCES.md). Do not change for a public site.
+      - key: SNIPER_COMMERCIAL_MODE
+        value: "1"
+      # Invite-only signups: python -m invites issue --note pilot --count 10
+      - key: ALLOW_REGISTRATION
+        value: "0"
+      # Render's load balancer forwards from its private network; trusting it
+      # lets login rate-limits see each visitor's real address.
+      - key: SNIPER_TRUSTED_PROXIES
+        value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - key: WEB_CONCURRENCY
+        value: "2"
+      - key: WORKER_THREADS
+        value: "2"
+      # Optional, add when ready (never commit values): BILLING_ORIGIN (custom
+      # domain), STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_STARTER,
+      # STRIPE_PRICE_PRO, SMTP_HOST/PORT/USER/PASSWORD/FROM, NTFY_SERVER,
+      # EBAY_CLIENT_ID/SECRET, MARKETCHECK_API_KEY. See .env.example.
+
+databases:
+  - name: flipfirst-db
+    plan: 0.1c-256mb
+    region: ohio
+    postgresMajorVersion: "16"   # the version CI tests against
+    databaseName: flipfirst
+    user: flipfirst
+    ipAllowList: []              # private network only: no public access to the database

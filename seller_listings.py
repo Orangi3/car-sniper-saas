@@ -23,9 +23,14 @@ OFF by default (SNIPER_SELLER_SUBMISSIONS=1). Lifecycle:
 Contact verification (mailer.py): a single-use token, stored only as a
 SHA-256 hash, expiring after TOKEN_TTL_H, bound to the account AND the
 address; changing the address revokes earlier verification and tokens;
-sends and failed attempts are rate-limited. Without SMTP configured, nothing
-is published. The `issue-link` CLI (hand-delivered link) exists for isolated
-development/testing only: it refuses to run in commercial mode or without
+sends and failed attempts are rate-limited: per account (MAX_SENDS_PER_DAY,
+RESEND_MIN_GAP_S), per recipient inbox across all accounts
+(MAX_SENDS_PER_RECIPIENT_PER_DAY; +tags and Gmail dots count as one inbox)
+and for the whole site (SELLER_MAX_VERIFY_EMAILS_PER_DAY), so the message
+can't be aimed at a third party again and again from several accounts.
+Without SMTP configured, nothing is published. The `issue-link` CLI
+(hand-delivered link) exists for isolated development/testing only: it
+refuses to run in commercial mode or without
 SNIPER_ALLOW_MANUAL_VERIFY_LINKS=1, every issue is audited
 (usage_events 'seller_manual_verify_link', units = token id) and a
 verification through such a link is audited separately
@@ -65,10 +70,13 @@ CONFIRM_DAYS = int(os.environ.get("SELLER_CONFIRM_DAYS", "30"))
 TOKEN_TTL_H = 24
 RESEND_MIN_GAP_S = 60
 MAX_SENDS_PER_DAY = 5
+MAX_SENDS_PER_RECIPIENT_PER_DAY = 5      # one address, all accounts together
+MAX_VERIFY_EMAILS_PER_DAY = int(os.environ.get("SELLER_MAX_VERIFY_EMAILS_PER_DAY", "100"))
 MAX_FAILED_VERIFY_PER_HOUR = 10
 ATTESTATIONS = ("authorized_to_sell", "details_accurate", "share_contact_with_buyers")
 TITLE_STATUSES = ("clean", "rebuilt", "salvage", "unknown")
 LIVE = ("pending", "active")
+CONTACT_PLANS = ("starter", "pro")       # the plans that include a seller's contact address
 DEALER = "dealer"
 REPORT_REASONS = ("scam", "sold", "wrong_details", "offensive", "other")
 IMPORT_MAX_BYTES = 256 * 1024
@@ -266,6 +274,17 @@ def set_contact(user, email: str | None = None) -> dict:
     return {"email": email, "verified": False}
 
 
+def _mailbox(email: str) -> str:
+    """The inbox an address delivers to, for counting sends: lower case,
+    without a +tag, and for Gmail without dots (Gmail ignores them), so
+    victim+1@gmail.com and v.ictim@gmail.com are one recipient."""
+    local, _, domain = str(email or "").strip().lower().rpartition("@")
+    local = local.split("+", 1)[0]
+    if domain in ("gmail.com", "googlemail.com"):
+        local, domain = local.replace(".", ""), "gmail.com"
+    return f"{local}@{domain}"
+
+
 def _issue_token(conn, user_id: int, email: str) -> str:
     now = _now()
     sent = conn.execute("SELECT created_at FROM contact_verifications WHERE user_id = ? "
@@ -278,6 +297,24 @@ def _issue_token(conn, user_id: int, email: str) -> str:
         last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
         if (now - last).total_seconds() < RESEND_MIN_GAP_S:
             raise SubmissionError(["please wait a minute before requesting another email"], 429)
+    # Limits that don't depend on how many accounts someone controls. Withdrawn
+    # (undelivered) tokens are deleted, so only emails actually sent count. The
+    # site cap bounds how many rows this reads.
+    recent = [r[0] for r in conn.execute(
+        "SELECT email FROM contact_verifications WHERE created_at >= ?",
+        ((now - timedelta(days=1)).isoformat(),))]
+    box = _mailbox(email)
+    if sum(1 for e in recent if _mailbox(e) == box) >= MAX_SENDS_PER_RECIPIENT_PER_DAY:
+        raise SubmissionError(["this address has had too many verification emails today — "
+                               "try tomorrow"], 429)
+    site = len(recent)
+    if site >= MAX_VERIFY_EMAILS_PER_DAY:
+        import logging
+        logging.getLogger("sniper").warning(
+            "seller verification emails paused: %d sent in 24 h "
+            "(SELLER_MAX_VERIFY_EMAILS_PER_DAY=%d)", site, MAX_VERIFY_EMAILS_PER_DAY)
+        raise SubmissionError(["verification emails are paused for today — please try "
+                               "again tomorrow"], 429)
     token = secrets.token_urlsafe(32)
     conn.execute("INSERT INTO contact_verifications(user_id, email, token_hash, created_at, "
                  "expires_at) VALUES (?, ?, ?, ?, ?)",
@@ -510,6 +547,8 @@ def remove(user, sid: int) -> dict:
         for table in ("user_matches", "alerts", "near_misses", "saved_v2", "saved",
                       "listing_prices"):
             conn.execute(f"DELETE FROM {table} WHERE composite_id = ?", (cid,))
+        conn.execute("DELETE FROM alert_suppressions WHERE composite_id = ? "
+                     "OR duplicate_of = ?", (cid, cid))
         conn.execute("DELETE FROM jobs WHERE status IN ('pending', 'running') AND "
                      "(dedupe_key LIKE ? OR payload LIKE ?)",
                      (f"score:{cid}:%", f'%"composite_id": "{cid}"%'))
@@ -569,14 +608,19 @@ def dealer_name(conn, composite_id: str) -> str | None:
     return r[0] if r else None
 
 
-def contact_for(conn, composite_id: str, viewer_plan: str) -> dict | None:
+def contact_for(conn, composite_id: str, viewer_plan: str | None) -> dict | None:
     """Seller contact for a discoverable 'direct' listing: paid plans only,
-    and only a verified address."""
+    and only a verified address.
+
+    Fails closed: the address is shown only when the viewer's plan is exactly
+    one of CONTACT_PLANS. Free, missing, misspelled, or any other value (a
+    billing status such as "canceled", a future plan name) gets the upgrade
+    notice, as the free plan does."""
     if not composite_id.startswith(f"{SOURCE}:"):
         return None
     if composite_id not in discoverable_ids(conn):
         return None
-    if (viewer_plan or "free") == "free":
+    if not (isinstance(viewer_plan, str) and viewer_plan in CONTACT_PLANS):
         return {"available": False, "why": "upgrade to see the seller's contact"}
     r = conn.execute("SELECT contact_email FROM seller_listings WHERE id = ?",
                      (int(composite_id.split(":", 1)[1]),)).fetchone()

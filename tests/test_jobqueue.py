@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import insert_listing
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -210,6 +212,7 @@ def test_pending_notification_survives_worker_kill_and_restart(app, monkeypatch)
         for k in ("PUSHOVER_TOKEN", "TWILIO_ACCOUNT_SID", "DISCORD_WEBHOOK_URL",
                   "ALERT_WEBHOOK_URL"):
             monkeypatch.delenv(k, raising=False)
+        insert_listing("craigslist:1", price=14000)   # the listing the alert is about
         with db.session() as c:
             notifications.enqueue_owner(c, {"composite_id": "craigslist:1",
                                             "title": "2015 Tacoma", "price": 14000,
@@ -278,9 +281,11 @@ def test_two_worker_processes_deliver_each_job_exactly_once(app, monkeypatch):
         for k in ("PUSHOVER_TOKEN", "TWILIO_ACCOUNT_SID", "DISCORD_WEBHOOK_URL",
                   "ALERT_WEBHOOK_URL"):
             monkeypatch.delenv(k, raising=False)
+        for i in range(30):                    # the listings the alerts are about
+            insert_listing(f"x:{i}", price=9500)
         with db.session() as c:
             for i in range(30):
-                notifications.enqueue_owner(c, {"composite_id": f"x:{i}",
+                notifications.enqueue_owner(c, {"composite_id": f"x:{i}", "price": 9500,
                                                 "url": f"https://example.com/{i}"},
                                             f"alert{i}")
         env = {**os.environ}

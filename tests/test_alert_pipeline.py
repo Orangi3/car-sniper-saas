@@ -245,6 +245,9 @@ def test_notify_jobs_all_delivered_none_dropped(app, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(notifications.requests, "post",
                         lambda url, **kw: calls.append(kw.get("json")) or _R())
+    from tests.conftest import insert_listing
+    for i in range(5):                         # an alert refers to a stored listing
+        insert_listing(f"x:{i}", price=14000)
     with db.session() as conn:
         for i in range(5):
             chans = notifications.enqueue_owner(conn, {
