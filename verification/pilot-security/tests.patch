@@ -1,0 +1,415 @@
+diff --git a/tests/test_independent_cached_licensing.py b/tests/test_independent_cached_licensing.py
+new file mode 100644
+index 0000000..a987bfa
+--- /dev/null
++++ b/tests/test_independent_cached_licensing.py
+@@ -0,0 +1,24 @@
++from tests.conftest import register
++from tests.test_matching_and_history import world
++
++def test_cached_unlicensed_inventory_hidden_after_commercial_switch(client,world,monkeypatch):
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    register(client,'licensed-viewer@example.com')
++    assert client.get('/api/deals/craigslist:peer0').status_code==410
++
++def test_shared_alert_display_rule_rejects_cached_unlicensed_source(client,world,monkeypatch):
++    from config import CONFIG
++    import listing_display,db
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    with db.session() as conn:
++        limits=listing_display.limits(conn)
++    assert not listing_display.displayable({'source':'craigslist','composite_id':'craigslist:peer0'},limits)
++
++def test_cached_unlicensed_inventory_not_used_as_valuation_peers(client,world,monkeypatch):
++    from config import CONFIG
++    import valuation,db
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    with db.session() as conn:
++        peers=valuation.load_peers(conn,{'year':2015,'make':'Toyota','model':'Camry'})
++    assert peers==[]
+diff --git a/tests/test_independent_pg_caps.py b/tests/test_independent_pg_caps.py
+new file mode 100644
+index 0000000..e390772
+--- /dev/null
++++ b/tests/test_independent_pg_caps.py
+@@ -0,0 +1,32 @@
++"""Deterministic PostgreSQL race probe; requires an authorized disposable DB."""
++import pytest
++from tests.conftest import register,logout
++from tests.test_matching_and_history import world
++from tests.test_seller_listings import mail
++
++def test_postgres_cross_account_cap_snapshot_race(client,world,mail,monkeypatch):
++    import db,auth,seller_listings as sl
++    if not db.IS_PG:
++        pytest.skip('requires disposable PostgreSQL; SQLite globally serializes writes')
++    from concurrent.futures import ThreadPoolExecutor
++    from threading import Barrier,local
++    users=[]
++    for i in range(4):
++        address=f'pg-cap{i}@example.com'
++        register(client,address); users.append(auth.get_user_by_email(address)); logout(client)
++    monkeypatch.setattr(sl,'MAX_VERIFY_EMAILS_PER_DAY',2)
++    barrier=Barrier(4); state=local(); real=sl._mailbox
++    def mailbox(address):
++        if not getattr(state,'waited',False):
++            state.waited=True
++            # _issue_token has just read the site's recent token rows.
++            barrier.wait(timeout=10)
++        return real(address)
++    monkeypatch.setattr(sl,'_mailbox',mailbox)
++    def send(user):
++        try: sl.send_verification(user,'https://pilot.example.invalid'); return 200
++        except sl.SubmissionError as e: return e.status
++    with ThreadPoolExecutor(max_workers=4) as pool:
++        results=list(pool.map(send,users))
++    assert results.count(200)<=2
++    assert len(mail)<=2
+diff --git a/tests/test_independent_pilot.py b/tests/test_independent_pilot.py
+new file mode 100644
+index 0000000..dd830f5
+--- /dev/null
++++ b/tests/test_independent_pilot.py
+@@ -0,0 +1,106 @@
++"""Independent synthetic pilot acceptance. No real mail or provider calls."""
++import pytest
++from tests.conftest import register, login, logout, set_plan
++from tests.test_matching_and_history import world, score_all
++from tests.test_seller_listings import mail, seller, car, token_from
++
++@pytest.mark.parametrize('plan,allowed', [('free',False),('starter',True),('pro',True),('',False),('invalid',False),('expired',False)])
++def test_contact_entitlement_allowlist(client, world, mail, plan, allowed):
++    seller(client, box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all()
++    import db, seller_listings as sl
++    with db.session() as conn:
++        result=sl.contact_for(conn,cid,plan)
++    assert result['available'] is allowed
++    if not allowed: assert 'email' not in result
++
++def test_invalid_stored_plan_cannot_read_contact_api(client,world,mail):
++    seller(client,box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all(); logout(client); register(client,'invalid-buyer@example.com')
++    import db
++    with db.session() as conn:
++        conn.execute("UPDATE users SET plan='invalid' WHERE email=?",('invalid-buyer@example.com',))
++    r=client.get(f'/api/deals/{cid}')
++    assert r.status_code==200
++    assert 'seller@example.com' not in r.get_data(as_text=True)
++
++def test_invited_seller_complete_journey(client, world, mail, monkeypatch):
++    import auth, invites
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    monkeypatch.setattr(auth,'ALLOW_REGISTRATION',False)
++    _,token=invites.issue(1)[0]
++    body={'email':'pilot-seller@example.com','password':'pilot-pass-123','invite':token}
++    assert client.post('/api/auth/register',json=body).status_code==200
++    r=client.post('/api/seller/listings',json=car()).get_json()
++    assert r['status']=='pending'
++    assert client.post('/api/seller/contact',json={}).status_code==200
++    assert client.post('/api/seller/contact/verify',json={'token':token_from(mail)}).status_code==200
++    score_all()
++    sid,cid=r['id'],r['composite_id']
++    assert client.patch(f'/api/seller/listings/{sid}',json={'price':6500}).status_code==200
++    logout(client)
++    _,invite=invites.issue(1)[0]
++    assert client.post('/api/auth/register',json={'email':'pilot-buyer@example.com','password':'pilot-pass-123','invite':invite}).status_code==200
++    assert client.get(f'/api/deals/{cid}').get_json()['seller_contact']['available'] is False
++    set_plan('pilot-buyer@example.com','starter')
++    assert client.get(f'/api/deals/{cid}').get_json()['seller_contact']['email']=='pilot-seller@example.com'
++    assert client.delete(f'/api/seller/listings/{sid}').status_code==404
++    logout(client)
++    assert client.post('/api/auth/login',json={'email':'pilot-seller@example.com','password':'pilot-pass-123'}).status_code==200
++    assert client.delete(f'/api/seller/listings/{sid}').status_code==200
++    assert client.get(f'/api/deals/{cid}').status_code==404
++
++def test_email_failure_does_not_leak_synthetic_secret(client,world,mail,monkeypatch):
++    import mailer
++    register(client,'outage@example.com')
++    def fail(*a,**kw): raise mailer.MailerError('SYNTHETIC_PASSWORD=not-a-real-secret postgresql://fixture:fake@private.invalid/db')
++    monkeypatch.setattr(mailer,'send',fail)
++    r=client.post('/api/seller/contact',json={})
++    assert r.status_code==503
++    assert 'SYNTHETIC_PASSWORD' not in r.get_data(as_text=True)
++    assert 'private.invalid' not in r.get_data(as_text=True)
++
++def test_concurrent_cross_account_verification_site_cap(client,world,mail,monkeypatch):
++    import auth,seller_listings as sl
++    from concurrent.futures import ThreadPoolExecutor
++    from threading import Barrier
++    users=[]
++    for i in range(4):
++        email=f'concurrent{i}@example.com'
++        register(client,email); users.append(auth.get_user_by_email(email)); logout(client)
++    monkeypatch.setattr(sl,'MAX_VERIFY_EMAILS_PER_DAY',2)
++    barrier=Barrier(4)
++    def send(user):
++        barrier.wait(timeout=10)
++        try: sl.send_verification(user,'https://pilot.example.invalid'); return 200
++        except sl.SubmissionError as e: return e.status
++    with ThreadPoolExecutor(max_workers=4) as pool:
++        results=list(pool.map(send,users))
++    assert sorted(results)==[200,200,429,429]
++    assert len(mail)==2
++
++def test_expired_subscription_after_entitlement_refresh_denies_contact(client,world,mail):
++    seller(client,box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all(); logout(client)
++    from tests.test_billing_lifecycle import _seed_subscription
++    _seed_subscription(client,email='expired-buyer@example.com',period_end_offset_s=-86400,cancel_at_period_end=True)
++    r=client.get(f'/api/deals/{cid}')
++    assert r.status_code==200
++    assert r.get_json()['seller_contact']['available'] is False
++
++def test_elapsed_scheduled_cancellation_denies_contact_without_webhook(client,world,mail):
++    seller(client,box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all(); logout(client)
++    from tests.test_billing_lifecycle import _seed_subscription
++    _seed_subscription(client,email='elapsed-buyer@example.com',cancel_at_period_end=True)
++    import db
++    with db.session() as conn:
++        conn.execute("UPDATE subscriptions SET current_period_end='2000-01-01T00:00:00+00:00'")
++    r=client.get(f'/api/deals/{cid}')
++    assert r.status_code==200
++    assert r.get_json()['seller_contact']['available'] is False
+diff --git a/tests/test_independent_seller_preflight.py b/tests/test_independent_seller_preflight.py
+new file mode 100644
+index 0000000..ea70f6e
+--- /dev/null
++++ b/tests/test_independent_seller_preflight.py
+@@ -0,0 +1,40 @@
++import pytest
++from tests.test_preflight import pf, _tick
++
++@pytest.fixture
++def sellers(pf,monkeypatch):
++    preflight,cfg=pf
++    _tick()
++    monkeypatch.setitem(cfg,'commercial_mode',True)
++    monkeypatch.setenv('BILLING_ORIGIN','https://pilot.example.invalid')
++    monkeypatch.setenv('SNIPER_TRUSTED_PROXIES','127.0.0.1')
++    monkeypatch.setenv('ALLOW_REGISTRATION','0')
++    monkeypatch.setenv('SNIPER_SELLER_SUBMISSIONS','1')
++    import mailer, sources, seller_listings
++    monkeypatch.setattr(mailer,'configured',lambda: True)
++    monkeypatch.setattr(sources,'iter_sources',lambda cfg: [])
++    # Narrow unit fixture: only readiness policy is evaluated here.
++    monkeypatch.setattr(seller_listings,'discoverable_ids',lambda conn: {'direct:fixture'})
++    return preflight
++
++def test_seller_mode_is_explicit_and_default_unchanged(sellers):
++    assert sellers.run()['ready_for']=='private_internal_testing'
++    assert sellers.run(inventory='sellers-only')['ready_for']=='controlled_free_beta'
++
++@pytest.mark.parametrize('condition',['smtp','disabled','open-registration','no-listings','external-source'])
++def test_sellers_only_rejects_missing_requirements(sellers,monkeypatch,condition):
++    import mailer,seller_listings,sources
++    if condition=='smtp': monkeypatch.setattr(mailer,'configured',lambda:False)
++    if condition=='disabled': monkeypatch.setenv('SNIPER_SELLER_SUBMISSIONS','0')
++    if condition=='open-registration': monkeypatch.setenv('ALLOW_REGISTRATION','1')
++    if condition=='no-listings': monkeypatch.setattr(seller_listings,'discoverable_ids',lambda c:set())
++    if condition=='external-source': monkeypatch.setattr(sources,'iter_sources',lambda c:[object()])
++    assert sellers.run(inventory='sellers-only')['ready_for']=='private_internal_testing'
++
++def test_seller_mode_cli(sellers):
++    assert sellers.main(['--target','free','--inventory','sellers-only','--json'])==0
++
++@pytest.mark.parametrize('key',['STRIPE_SECRET_KEY','TWILIO_AUTH_TOKEN','MARKETCHECK_API_KEY','EBAY_CLIENT_SECRET'])
++def test_seller_mode_rejects_paid_service_credentials(sellers,monkeypatch,key):
++    monkeypatch.setenv(key,'synthetic-not-a-real-credential')
++    assert sellers.run(inventory='sellers-only')['ready_for']=='private_internal_testing'
+diff --git a/tests/test_pg_email_caps_acceptance.py b/tests/test_pg_email_caps_acceptance.py
+new file mode 100644
+index 0000000..e1f8ae9
+--- /dev/null
++++ b/tests/test_pg_email_caps_acceptance.py
+@@ -0,0 +1,74 @@
++"""Real PostgreSQL only. Fake mail, synthetic accounts, disposable test DBs."""
++from concurrent.futures import ThreadPoolExecutor
++from datetime import datetime,timedelta,timezone
++from threading import Barrier
++import pytest
++from tests.test_seller_listings import mail
++
++@pytest.fixture
++def pg(app,mail,monkeypatch):
++    import db,seller_listings as sl,auth
++    if not db.IS_PG: pytest.skip('real disposable PostgreSQL required')
++    fixed=datetime(2030,1,1,12,tzinfo=timezone.utc)
++    monkeypatch.setattr(sl,'_now',lambda:fixed)
++    monkeypatch.setattr(sl,'MAX_SENDS_PER_RECIPIENT_PER_DAY',3)
++    monkeypatch.setattr(sl,'MAX_VERIFY_EMAILS_PER_DAY',3)
++    users=[auth.create_user(f'pg-accept{i}@example.com','synthetic-pass-123') for i in range(8)]
++    return db,sl,users,mail,fixed
++
++def asks(sl,users):
++    barrier=Barrier(len(users))
++    def send(u):
++        barrier.wait(timeout=15)
++        try: sl.send_verification(u,'https://pilot.example.invalid');return 200
++        except sl.SubmissionError as e:return e.status
++    with ThreadPoolExecutor(max_workers=len(users)) as pool:
++        return list(pool.map(send,users))
++
++@pytest.mark.parametrize('mode',['site','recipient','aliases','last-slot'])
++def test_simultaneous_caps(pg,monkeypatch,mode):
++    db,sl,users,mail,fixed=pg
++    if mode in ('recipient','aliases'):monkeypatch.setattr(sl,'MAX_VERIFY_EMAILS_PER_DAY',50)
++    aliases=['victim@gmail.com','v.ictim+one@gmail.com','VICTIM+two@googlemail.com']
++    for i,u in enumerate(users):
++        address=aliases[i%3] if mode=='aliases' else ('victim@example.com' if mode=='recipient' else u.email)
++        sl.set_contact(u,address)
++    if mode=='last-slot':
++        for u in users[:2]:sl.send_verification(u,'https://pilot.example.invalid')
++        results=asks(sl,users[2:]);assert results.count(200)==1
++    else:
++        results=asks(sl,users);assert results.count(200)==3
++    assert all(r in (200,429) for r in results)
++    assert len(mail)==3
++    with db.session() as c:assert c.execute('SELECT COUNT(*) FROM contact_verifications').fetchone()[0]==3
++
++def test_token_transaction_rollback(pg,monkeypatch):
++    db,sl,users,mail,_=pg
++    real=sl._issue_token
++    def broken(*args):real(*args);raise RuntimeError('synthetic transaction interruption')
++    with monkeypatch.context() as m:
++        m.setattr(sl,'_issue_token',broken)
++        with pytest.raises(RuntimeError,match='synthetic'):
++            sl.send_verification(users[0],'https://pilot.example.invalid')
++    with db.session() as c:assert c.execute('SELECT COUNT(*) FROM contact_verifications').fetchone()[0]==0
++    assert mail==[]
++    assert sl.send_verification(users[0],'https://pilot.example.invalid')['sent']
++
++def test_delivery_failure_releases_quota(pg,monkeypatch):
++    db,sl,users,mail,_=pg
++    import mailer
++    def fail(*args):raise mailer.MailerError('synthetic failure')
++    with monkeypatch.context() as m:
++        m.setattr(mailer,'send',fail)
++        with pytest.raises(sl.SubmissionError):sl.send_verification(users[0],'https://pilot.example.invalid')
++    with db.session() as c:assert c.execute('SELECT COUNT(*) FROM contact_verifications').fetchone()[0]==0
++    assert mail==[]
++    assert sl.send_verification(users[0],'https://pilot.example.invalid')['sent']
++
++def test_rolling_day_accounting(pg,monkeypatch):
++    db,sl,users,mail,fixed=pg
++    for u in users[:3]:sl.send_verification(u,'https://pilot.example.invalid')
++    with pytest.raises(sl.SubmissionError):sl.send_verification(users[3],'https://pilot.example.invalid')
++    monkeypatch.setattr(sl,'_now',lambda:fixed+timedelta(hours=25))
++    assert sl.send_verification(users[3],'https://pilot.example.invalid')['sent']
++    assert len(mail)==4
+diff --git a/tests/test_security_final.py b/tests/test_security_final.py
+new file mode 100644
+index 0000000..67837d9
+--- /dev/null
++++ b/tests/test_security_final.py
+@@ -0,0 +1,103 @@
++import pytest
++from tests.conftest import register,login,logout,set_plan
++from tests.test_matching_and_history import world,L,make_user,score_all
++from tests.test_seller_listings import mail,seller,car
++
++@pytest.mark.parametrize('plan',[None,'',{},[]])
++def test_missing_or_malformed_contact_plan_is_denied(monkeypatch,plan):
++    import seller_listings as sl
++    monkeypatch.setattr(sl,'discoverable_ids',lambda c:{'direct:1'})
++    monkeypatch.setenv('SNIPER_SELLER_SUBMISSIONS','0')
++    assert sl.contact_for(None,'direct:1',plan)['available'] is False
++
++@pytest.fixture
++def scheduled(client,world,mail,monkeypatch):
++    seller(client,box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all();logout(client)
++    from tests.test_billing_lifecycle import _seed_subscription
++    _seed_subscription(client,email='scheduled@example.com',cancel_at_period_end=True)
++    import billing
++    monkeypatch.setattr(billing,'_now_utc_iso',lambda:'2030-01-01T12:00:00+00:00')
++    return cid
++
++@pytest.mark.parametrize('end,allowed',[
++    ('2030-01-01T12:00:01+00:00',True),('2030-01-01T12:00:00+00:00',False),
++    ('2030-01-01T11:59:59+00:00',False),('2030-01-01T14:00:00+02:00',False),
++    (None,False),('',False),('zzz',False),('2030-01-02',False),
++    ('2030-01-01T13:00:00',False)])
++def test_scheduled_expiry_is_strict_and_timezone_aware(client,scheduled,end,allowed):
++    import db
++    with db.session() as c:
++        c.execute('UPDATE subscriptions SET current_period_end=?',(end,))
++        c.execute("UPDATE users SET plan='starter' WHERE email='scheduled@example.com'")
++    r=client.get('/api/deals/'+scheduled)
++    assert r.status_code==200
++    assert r.get_json()['seller_contact']['available'] is allowed
++
++@pytest.mark.parametrize('path',['/api/saved','/api/me/alerts','/api/deals?feed=trusted','/api/deals?feed=search'])
++def test_legacy_inventory_read_paths(client,world,monkeypatch,path):
++    make_user(client,'reader@example.com',searches=[('camry',{'max_price':9000})],topic=False)
++    login(client,'reader@example.com')
++    world.ingest([L('legacy-secret-car',6000)]);score_all()
++    assert client.post('/api/save',json={'composite_id':'craigslist:legacy-secret-car'}).status_code==200
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    if path.endswith('feed=search'):
++        import db
++        with db.session() as c:
++            sid=c.execute('SELECT id FROM saved_searches').fetchone()[0]
++        path+='&search_id='+str(sid)
++    r=client.get(path)
++    assert r.status_code==200
++    assert 'legacy-secret-car' not in r.get_data(as_text=True)
++
++def test_sold_comp_cache_rechecks_revoked_permission(monkeypatch):
++    import comps
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    monkeypatch.delenv('MARKETCHECK_COMMERCIAL_AGREEMENT',raising=False)
++    monkeypatch.setattr(comps,'cached_get',lambda *a:({'marketcheck':[{'price':12345,'url':'https://private.invalid/cached'}]},1))
++    rows,_=comps.raw_sold(2015,'Toyota','Camry')
++    assert not rows.get('marketcheck')
++
++def test_saved_analysis_rechecks_licensing_preserves_user_notes(client,world,monkeypatch):
++    from tests.test_analyze import CAMRY
++    register(client,'analyst@example.com');set_plan('analyst@example.com','starter')
++    r=client.post('/api/opportunities',json={'input':CAMRY,'notes':'MY_PRIVATE_NOTE'})
++    assert r.status_code==201
++    oid=r.get_json()['id']
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    r=client.get(f'/api/opportunities/{oid}')
++    assert r.status_code==200
++    assert 'MY_PRIVATE_NOTE' in r.get_data(as_text=True)
++    assert 'craigslist' not in r.get_data(as_text=True)
++    assert r.get_json()['value_mid'] is None
++
++def test_concurrent_expired_contact_requests(app,client,scheduled):
++    import db
++    with db.session() as c:
++        c.execute("UPDATE subscriptions SET current_period_end='2030-01-01T11:00:00+00:00'")
++    token=client.get_cookie('sniper_session').value
++    from concurrent.futures import ThreadPoolExecutor
++    from threading import Barrier
++    barrier=Barrier(4)
++    def read(_):
++        c=app.test_client();c.set_cookie('sniper_session',token);barrier.wait(timeout=10)
++        r=c.get('/api/deals/'+scheduled)
++        assert r.status_code==200
++        return r.get_json()['seller_contact']['available']
++    with ThreadPoolExecutor(max_workers=4) as pool:
++        assert list(pool.map(read,range(4)))==[False]*4
++
++def test_direct_listing_does_not_return_old_unlicensed_valuation(client,world,mail,monkeypatch):
++    seller(client,box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all()
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    r=client.get('/api/deals/'+cid)
++    assert r.status_code==200
++    assert 'craigslist' not in r.get_data(as_text=True)
++    assert r.get_json()['value_mid'] is None

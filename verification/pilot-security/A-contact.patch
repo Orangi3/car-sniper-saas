@@ -1,0 +1,13 @@
+diff --git a/seller_listings.py b/seller_listings.py
+index 91e0c12..2c475dc 100644
+--- a/seller_listings.py
++++ b/seller_listings.py
+@@ -614,7 +614,7 @@ def contact_for(conn, composite_id: str, viewer_plan: str) -> dict | None:
+         return None
+     if composite_id not in discoverable_ids(conn):
+         return None
+-    if (viewer_plan or "free") == "free":
++    if viewer_plan not in ("starter", "pro"):
+         return {"available": False, "why": "upgrade to see the seller's contact"}
+     r = conn.execute("SELECT contact_email FROM seller_listings WHERE id = ?",
+                      (int(composite_id.split(":", 1)[1]),)).fetchone()

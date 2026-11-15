@@ -1,0 +1,66 @@
+diff --git a/preflight.py b/preflight.py
+index a0eb7ff..07a8edc 100644
+--- a/preflight.py
++++ b/preflight.py
+@@ -54,7 +54,9 @@ def _age_s(iso) -> float | None:
+         return None
+ 
+ 
+-def run() -> dict:
++def run(*, inventory: str = "third-party") -> dict:
++    if inventory not in ("third-party", "sellers-only"):
++        raise ValueError("unsupported inventory mode")
+     checks: list[dict] = []
+ 
+     def add(cat, name, status, detail, blocks=None):
+@@ -176,7 +178,38 @@ def run() -> dict:
+             add("licensing", sid, WARN, block)
+         elif verified:
+             fresh_licensed.append(sid)
+-    if fresh_licensed:
++    if inventory == "sellers-only":
++        # This explicit mode cannot approve mixed inventory or enable a provider.
++        # SMTP configuration is not proof of delivery; staged acceptance still
++        # requires a real invited seller and a separately authorized mail test.
++        import mailer
++        import seller_listings
++        with _db.session() as conn:
++            direct = seller_listings.discoverable_ids(conn)
++            other = conn.execute(
++                "SELECT COUNT(*) FROM listings WHERE source IS NULL OR source <> 'direct'"
++            ).fetchone()[0]
++        requirements = (
++            ("seller submissions", seller_listings.enabled(), "SNIPER_SELLER_SUBMISSIONS=1 required"),
++            ("seller email configuration", mailer.configured(), "SMTP configuration required; delivery not verified"),
++            ("invitation-only registration", _env("ALLOW_REGISTRATION") in ("", "0", "false", "no"),
++             "open registration is not allowed for this pilot"),
++            ("external ingestion disabled", not sources.iter_sources(CONFIG),
++             "all external ingestion must be disabled or licensing-blocked"),
++            ("paid services disabled", not any(_env(k) for k in (
++                "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "TWILIO_ACCOUNT_SID",
++                "TWILIO_AUTH_TOKEN", "MARKETCHECK_API_KEY", "EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET")),
++             "remove payment, SMS and metered market-data credentials for this pilot"),
++            ("first-party inventory only", not other, "non-direct inventory must not be present"),
++            ("verified seller inventory", bool(direct), "a discoverable verified seller listing is required"),
++        )
++        for name, good, detail in requirements:
++            add("data", name, OK if good else FAIL, detail,
++                None if good else "controlled_free_beta")
++        # Paid acceptance is deliberately outside this new pilot mode.
++        add("payments", "seller pilot scope", WARN, "sellers-only mode is for a free pilot",
++            "controlled_paid_beta")
++    elif fresh_licensed:
+         add("data", "licensed data available", OK,
+             f"fresh listings from: {', '.join(fresh_licensed)}")
+     else:
+@@ -223,8 +256,9 @@ def main(argv=None) -> int:
+     ap = argparse.ArgumentParser(prog="python -m preflight")
+     ap.add_argument("--json", action="store_true")
+     ap.add_argument("--target", choices=("internal", "free", "paid"))
++    ap.add_argument("--inventory", choices=("third-party", "sellers-only"), default="third-party")
+     a = ap.parse_args(argv)
+-    r = run()
++    r = run(inventory=a.inventory)
+     if a.json:
+         print(json.dumps(r, indent=2))
+     else:

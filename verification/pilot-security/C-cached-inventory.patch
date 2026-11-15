@@ -1,0 +1,180 @@
+diff --git a/comps.py b/comps.py
+index 6dca5f3..3f384bf 100644
+--- a/comps.py
++++ b/comps.py
+@@ -429,7 +429,13 @@ def raw_sold(year: int, make: str, model: str) -> tuple[dict, int]:
+     q = f"{year} {make} {model}".strip()
+     # Commercial mode has its own cache key: scraped results never leak in.
+     key = f"comps{':licensed' if _commercial_mode() else ''}:{q}"
+-    return cached_get(key, lambda: _fetch_all(q, year, make, model))
++    rows, fetched_at = cached_get(key, lambda: _fetch_all(q, year, make, model))
++    if _commercial_mode():
++        agreed = bool(os.environ.get("MARKETCHECK_COMMERCIAL_AGREEMENT", "").strip())
++        rows = {source: items if (COMP_SOURCE_LICENSING.get(source) == "licensed_api"
++                or (source == "marketcheck" and agreed)) else []
++                for source, items in rows.items()}
++    return rows, fetched_at
+ 
+ 
+ # Licensing of each sold-comp feed (see SOURCES.md). In commercial mode only
+diff --git a/listing_display.py b/listing_display.py
+index fe0f920..02e7373 100644
+--- a/listing_display.py
++++ b/listing_display.py
+@@ -19,6 +19,22 @@ from datetime import datetime, timedelta, timezone
+ from typing import Optional
+ 
+ DIRECT_KEY = "__direct__"
++LICENSED_KEY = "__licensed__"
++
++
++def source_allowed(source, display_limits: dict) -> bool:
++    return source == "direct" or LICENSED_KEY not in display_limits or source in display_limits[LICENSED_KEY]
++
++
++def cached_evidence_allowed(evidence: dict) -> bool:
++    from config import CONFIG
++    if not CONFIG.get("commercial_mode"):
++        return True
++    import sources
++    allowed = {m.SOURCE_ID for m in sources.all_sources()
++               if not sources.licensing_block(m, CONFIG)} | {"direct"}
++    return all(isinstance(c, dict) and c.get("source") in allowed
++               for c in (evidence or {}).get("comps", []) or [])
+ 
+ 
+ def limits(conn, include_direct: bool = True) -> dict:
+@@ -29,6 +45,10 @@ def limits(conn, include_direct: bool = True) -> dict:
+     import sources
+     out: dict = {m.SOURCE_ID: m.DISPLAY_MAX_AGE_HOURS for m in sources.all_sources()
+                  if getattr(m, "DISPLAY_MAX_AGE_HOURS", None)}
++    from config import CONFIG
++    if CONFIG.get("commercial_mode"):
++        out[LICENSED_KEY] = {m.SOURCE_ID for m in sources.all_sources()
++                             if not sources.licensing_block(m, CONFIG)}
+     if include_direct:
+         out[DIRECT_KEY] = sl.discoverable_ids(conn)
+     return out
+@@ -46,6 +66,8 @@ def hidden_reason(d: dict, limits: dict, now: Optional[datetime] = None) -> Opti
+         if d.get("composite_id") in limits.get(DIRECT_KEY, set()):
+             return None
+         return "seller listing is not live (withdrawn, expired or contact unverified)"
++    if not source_allowed(d.get("source"), limits):
++        return "source is not licensed for commercial display"
+     if d.get("is_auction") and d.get("auction_end_at"):
+         try:                                  # an ended auction is not for sale
+             if _utc(d["auction_end_at"]) <= now:
+diff --git a/notifications.py b/notifications.py
+index c493481..d922885 100644
+--- a/notifications.py
++++ b/notifications.py
+@@ -110,13 +110,19 @@ def stale_reason(conn, deal: dict, basis: Optional[dict]) -> Optional[str]:
+     r = conn.execute(
+         "SELECT l.composite_id, l.source, l.price, l.is_auction, l.auction_end_at, "
+         "  l.last_seen_at, l.first_seen_at, l.is_salvage, l.needs_work, l.scam_score, "
+-        "  l.odometer, nm.trust, nm.risk_flags, nm.price_at_score "
++        "  l.odometer, nm.trust, nm.risk_flags, nm.price_at_score, nm.evidence AS evidence_json "
+         "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
+         "WHERE l.composite_id = ?", (cid,)).fetchone()
+     if r is None:
+         return "listing no longer exists"
+     r = dict(r)
+     import listing_display
++    try:
++        evidence = json.loads(r.get("evidence_json") or "{}")
++    except (ValueError, TypeError):
++        return "cached evidence is malformed"
++    if not listing_display.cached_evidence_allowed(evidence):
++        return "cached valuation evidence is not licensed for commercial use"
+     hidden = listing_display.hidden_reason(
+         r, listing_display.limits(conn, include_direct=r["source"] == "direct"))
+     if hidden:
+diff --git a/valuation.py b/valuation.py
+index 0a873ae..d886324 100644
+--- a/valuation.py
++++ b/valuation.py
+@@ -719,7 +719,14 @@ def load_peers(conn, target: dict) -> list[dict]:
+         "  AND year BETWEEN ? AND ? AND price IS NOT NULL",
+         (target["make"], target["model"], target["year"] - 2, target["year"] + 2)
+     ).fetchall()
+-    return [dict(r) for r in rows]
++    peers = [dict(r) for r in rows]
++    from config import CONFIG
++    if CONFIG.get("commercial_mode"):
++        import sources
++        allowed = {m.SOURCE_ID for m in sources.all_sources()
++                   if not sources.licensing_block(m, CONFIG)} | {"direct"}
++        peers = [r for r in peers if r.get("source") in allowed]
++    return peers
+ 
+ 
+ def evidence_json(v: Valuation) -> str:
+diff --git a/workspace.py b/workspace.py
+index 4f5fdee..974bd43 100644
+--- a/workspace.py
++++ b/workspace.py
+@@ -98,10 +98,17 @@ def realized(r: dict) -> Optional[dict]:
+             "holding_days": days, "recorded_by": "you (not verified by FlipFirst)"}
+ 
+ 
++def _analysis_allowed(analysis: dict) -> bool:
++    import listing_display
++    return listing_display.cached_evidence_allowed(analysis.get("evidence") or {})
++
++
+ def _item(row) -> dict:
+     """A workspace row for lists and comparison: the key figures only."""
+     r = dict(row)
+     a = json.loads(r.pop("analysis_json") or "null") or {}
++    if not _analysis_allowed(a):
++        a = {}
+     inp = json.loads(r.pop("input_json") or "{}")
+     pr = a.get("profit") or {}
+     r.update({
+@@ -177,6 +184,9 @@ def get(conn, user_id: int, oid: int, display_limits: Optional[dict] = None) ->
+     out = _item(row)
+     out["input"] = json.loads(r["input_json"] or "null") or {}
+     out["analysis"] = json.loads(r["analysis_json"] or "null")
++    if not _analysis_allowed(out["analysis"] or {}):
++        out["analysis"] = {"requires_reanalysis": True,
++                           "reason": "cached evidence is not licensed for commercial use"}
+     _hide_stale_comps(out["analysis"], display_limits)
+     return out
+ 
+diff --git a/server.py b/server.py
+index a9470e7..09fa5d6 100644
+--- a/server.py
++++ b/server.py
+@@ -1919,6 +1919,9 @@ def api_saved_v2():
+             WHERE s.user_id = {_PH()}
+             ORDER BY s.saved_at DESC""", (u.id,))
+         rows = [dict(r) for r in cur.fetchall()]
++    import listing_display
++    display_limits = _display_limits()
++    rows = [r for r in rows if listing_display.source_allowed(r.get("source"), display_limits)]
+     fees = 1500
+     for r in rows:
+         if r.get("comp_avg") and r.get("price"):
+@@ -2232,6 +2235,8 @@ def api_me_alerts():
+     # the current price is shown only while the source still confirms the
+     # listing (the deal feeds' own display rules), never a stale one as an offer
+     limits = _display_limits()
++    import listing_display
++    rows = [r for r in rows if listing_display.source_allowed(r.get("source"), limits)]
+     for r in rows:
+         shown = _displayable(r, limits)
+         current = r.pop("listing_price")
+@@ -2276,6 +2281,13 @@ def _deal_row(r: dict, psettings: dict, plan: Optional[str],
+         ev = json.loads(d.pop("evidence_json", None) or "{}")
+     except ValueError:
+         ev = {}
++    import listing_display
++    if not listing_display.cached_evidence_allowed(ev):
++        ev = {}
++        d.update(value_low=None, value_mid=None, value_high=None,
++                 discount_pct=None, comp_n=0, evidence_class="insufficient",
++                 confidence="none", trust="insufficient", risk_flags="[]",
++                 valuation_requires_refresh=True, evidence=None, confidence_reasons=None)
+     d["dealer_share"] = ev.get("dealer_share") or 0.0
+     d["distance_mi"] = geo.distance_mi(home_zip, d.get("latitude"), d.get("longitude"))
+     try:

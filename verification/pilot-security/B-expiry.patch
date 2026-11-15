@@ -1,0 +1,47 @@
+diff --git a/billing.py b/billing.py
+index 8ac544d..45996e4 100644
+--- a/billing.py
++++ b/billing.py
+@@ -348,8 +348,15 @@ def refresh_entitlement(conn, user_id: int) -> str:
+         # we never got a subscription.deleted event. Drop access.
+         cancel_eop = bool(row.get("cancel_at_period_end"))
+         period_end = row.get("current_period_end") or ""
+-        if cancel_eop and period_end and period_end < now_iso:
+-            continue
++        if cancel_eop:
++            try:
++                end = datetime.fromisoformat(str(period_end).replace("Z", "+00:00"))
++                now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
++                if end.tzinfo is None or now.tzinfo is None or end <= now:
++                    continue
++            except (ValueError, TypeError, OverflowError):
++                # Missing/malformed expiry cannot prove a scheduled entitlement.
++                continue
+         entitling.append(row.get("plan") or "")
+     if "pro" in entitling:
+         new_plan = "pro"
+diff --git a/server.py b/server.py
+index a9470e7..09fa5d6 100644
+--- a/server.py
++++ b/server.py
+@@ -2460,8 +2472,19 @@ def api_deal_detail(cid: str):
+     d["plan"] = {"plan": plan, "name": plans.display_name(plan), **plans.limits(plan)}
+     if d.get("source") == "direct":
+         import seller_listings as sl
++        import db as contact_db
++        contact_plan = plan
++        # Re-evaluate mirrored subscription state at the privacy boundary.
++        # Keep operator-granted pilot plans when no subscription rows exist.
++        with contact_db.transaction() as billing_conn:
++            cur = billing_conn.cursor()
++            cur.execute(f"SELECT 1 FROM subscriptions WHERE user_id = {contact_db.placeholder()} LIMIT 1",
++                        (u.id,))
++            if cur.fetchone():
++                import billing
++                contact_plan = billing.refresh_entitlement(billing_conn, u.id)
+         with sniper.db() as conn:
+-            d["seller_contact"] = sl.contact_for(conn, d["composite_id"], plan)
++            d["seller_contact"] = sl.contact_for(conn, d["composite_id"], contact_plan)
+             dealer = sl.dealer_name(conn, d["composite_id"])     # current approval, not publish time
+         d["provenance"] = (f"Listed on FlipFirst by {dealer}, a dealer approved by FlipFirst. "
+                            "Its email address is verified; the vehicle details are "

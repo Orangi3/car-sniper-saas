@@ -1,0 +1,74 @@
+name: One-time pilot security PostgreSQL verification
+on:
+  push:
+    branches: [verification/pilot-security-20261114]
+    paths: [.github/workflows/pilot-security-postgres.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fixture_admin
+          POSTGRES_PASSWORD: ephemeral-fixture-only
+          POSTGRES_DB: postgres
+        ports: ['55441:5432']
+        options: >-
+          --health-cmd "pg_isready -U fixture_admin -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: handoff
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Orangi3/car-sniper-saas
+          ref: a1497d54185f4cb67ef96587399593963ed87d76
+          path: candidate
+          persist-credentials: false
+      - name: Validate and reconstruct exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          cd handoff/verification/pilot-security
+          sha256sum --check SHA256SUMS
+          cd ../../../candidate
+          test "$(git rev-parse HEAD)" = "a1497d54185f4cb67ef96587399593963ed87d76"
+          for patch in A-contact.patch B-expiry.patch C-cached-inventory.patch D-preflight.patch tests.patch; do
+            git apply --check "../handoff/verification/pilot-security/$patch"
+            git apply "../handoff/verification/pilot-security/$patch"
+          done
+          git add -- billing.py comps.py listing_display.py notifications.py preflight.py seller_listings.py server.py valuation.py workspace.py tests/test_independent_cached_licensing.py tests/test_independent_pg_caps.py tests/test_independent_pilot.py tests/test_independent_seller_preflight.py tests/test_security_final.py tests/test_pg_email_caps_acceptance.py
+          test "$(git write-tree)" = "98d97d89572ace507d1b412dd4818a8e3bc5236c"
+          git write-tree > ../evidence/candidate-tree.txt
+          git diff --cached --name-status > ../evidence/changed-files.txt
+      - name: Isolated test dependencies
+        working-directory: candidate
+        run: |
+          python3 -m venv ../venv
+          ../venv/bin/pip install -r requirements.txt
+          ../venv/bin/pip freeze > ../evidence/dependencies.txt
+          ../venv/bin/python --version > ../evidence/python-version.txt
+      - name: Real PostgreSQL security and email-cap tests
+        working-directory: candidate
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          ../venv/bin/python ../handoff/verification/pilot-security/run_pg.py -q -rA tests/test_pg_email_caps_acceptance.py tests/test_independent_pg_caps.py tests/test_seller_verification_caps.py tests/test_security_final.py tests/test_independent_seller_preflight.py 2>&1 | tee ../evidence/postgres-tests.txt
+          code=${PIPESTATUS[0]}
+          echo "$code" > ../evidence/test-exit-code.txt
+          exit "$code"
+      - name: Preserve evidence including failures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilot-security-postgres-evidence
+          path: evidence/
+          retention-days: 7
