@@ -1,0 +1,85 @@
+name: PR32 native lock timeout safety
+on:
+  push:
+    branches: [verification/pr32-timeout-c330b100]
+    paths: [.github/workflows/pr32-timeout-postgres.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fixture_admin
+          POSTGRES_PASSWORD: ephemeral-fixture-only
+          POSTGRES_DB: postgres
+        ports: ['55441:5432']
+        options: >-
+          --health-cmd "pg_isready -U fixture_admin -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: handoff
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Orangi3/car-sniper-saas
+          ref: deb684dc4155f5bf5df233322b60a75fb4881963
+          path: candidate
+          persist-credentials: false
+      - name: Validate and reconstruct exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          cd handoff/verification/pr32-quota
+          sha256sum --check SHA256SUMS
+          cd ../../../candidate
+          test "$(git rev-parse HEAD)" = "deb684dc4155f5bf5df233322b60a75fb4881963"
+          for patch in candidate.patch; do
+            git apply --check "../handoff/verification/pr32-quota/$patch"
+            git apply "../handoff/verification/pr32-quota/$patch"
+          done
+          git add -- billing.py comps.py listing_display.py notifications.py seller_listings.py server.py tests/test_atomic_email_quota.py tests/test_independent_cached_licensing.py tests/test_independent_pilot.py tests/test_quota_transaction_protocol.py tests/test_security_final.py valuation.py workspace.py
+          test "$(git write-tree)" = "654fad548e92ca9e77a79a741f33c154cf98759b"
+          git write-tree > ../evidence/candidate-tree.txt
+          git diff --cached --name-status > ../evidence/changed-files.txt
+      - name: Isolated test dependencies
+        working-directory: candidate
+        run: |
+          python3 -m venv ../venv
+          ../venv/bin/pip install -r requirements.txt
+          ../venv/bin/pip freeze > ../evidence/dependencies.txt
+          ../venv/bin/python --version > ../evidence/python-version.txt
+      - name: Install separately hashed acceptance test
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "61f0172c2fabeffcf3bdd7d2ffd3be1d9260009ca67cf8db778ef43fda4d4b31  handoff/verification/pr32-timeout/test_pg_quota_timeout.py" | sha256sum --check
+          cp handoff/verification/pr32-timeout/test_pg_quota_timeout.py candidate/tests/test_pg_quota_timeout.py
+          sha256sum candidate/tests/test_pg_quota_timeout.py > evidence/timeout-test-sha256.txt
+      - name: Native timeout no-send and retry only
+        working-directory: candidate
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          ../venv/bin/python ../handoff/verification/pr32-quota/run_pg.py -q -s -rA tests/test_pg_quota_timeout.py 2>&1 | tee ../evidence/timeout-tests.txt
+          code=${PIPESTATUS[0]}
+          echo "$code" > ../evidence/test-exit-code.txt
+          git diff --exit-code > ../evidence/tracked-source-unchanged.txt
+          unchanged=$?
+          test "$(git write-tree)" = "654fad548e92ca9e77a79a741f33c154cf98759b" || exit 98
+          test "$unchanged" = 0 || exit 99
+          exit "$code"
+      - name: Preserve evidence including failures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr32-timeout-postgres-evidence
+          path: evidence/
+          retention-days: 7
