@@ -1,0 +1,719 @@
+diff --git a/billing.py b/billing.py
+index 8ac544d..45996e4 100644
+--- a/billing.py
++++ b/billing.py
+@@ -348,8 +348,15 @@ def refresh_entitlement(conn, user_id: int) -> str:
+         # we never got a subscription.deleted event. Drop access.
+         cancel_eop = bool(row.get("cancel_at_period_end"))
+         period_end = row.get("current_period_end") or ""
+-        if cancel_eop and period_end and period_end < now_iso:
+-            continue
++        if cancel_eop:
++            try:
++                end = datetime.fromisoformat(str(period_end).replace("Z", "+00:00"))
++                now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
++                if end.tzinfo is None or now.tzinfo is None or end <= now:
++                    continue
++            except (ValueError, TypeError, OverflowError):
++                # Missing/malformed expiry cannot prove a scheduled entitlement.
++                continue
+         entitling.append(row.get("plan") or "")
+     if "pro" in entitling:
+         new_plan = "pro"
+diff --git a/comps.py b/comps.py
+index 6dca5f3..3f384bf 100644
+--- a/comps.py
++++ b/comps.py
+@@ -429,7 +429,13 @@ def raw_sold(year: int, make: str, model: str) -> tuple[dict, int]:
+     q = f"{year} {make} {model}".strip()
+     # Commercial mode has its own cache key: scraped results never leak in.
+     key = f"comps{':licensed' if _commercial_mode() else ''}:{q}"
+-    return cached_get(key, lambda: _fetch_all(q, year, make, model))
++    rows, fetched_at = cached_get(key, lambda: _fetch_all(q, year, make, model))
++    if _commercial_mode():
++        agreed = bool(os.environ.get("MARKETCHECK_COMMERCIAL_AGREEMENT", "").strip())
++        rows = {source: items if (COMP_SOURCE_LICENSING.get(source) == "licensed_api"
++                or (source == "marketcheck" and agreed)) else []
++                for source, items in rows.items()}
++    return rows, fetched_at
+ 
+ 
+ # Licensing of each sold-comp feed (see SOURCES.md). In commercial mode only
+diff --git a/listing_display.py b/listing_display.py
+index fe0f920..02e7373 100644
+--- a/listing_display.py
++++ b/listing_display.py
+@@ -19,6 +19,22 @@ from datetime import datetime, timedelta, timezone
+ from typing import Optional
+ 
+ DIRECT_KEY = "__direct__"
++LICENSED_KEY = "__licensed__"
++
++
++def source_allowed(source, display_limits: dict) -> bool:
++    return source == "direct" or LICENSED_KEY not in display_limits or source in display_limits[LICENSED_KEY]
++
++
++def cached_evidence_allowed(evidence: dict) -> bool:
++    from config import CONFIG
++    if not CONFIG.get("commercial_mode"):
++        return True
++    import sources
++    allowed = {m.SOURCE_ID for m in sources.all_sources()
++               if not sources.licensing_block(m, CONFIG)} | {"direct"}
++    return all(isinstance(c, dict) and c.get("source") in allowed
++               for c in (evidence or {}).get("comps", []) or [])
+ 
+ 
+ def limits(conn, include_direct: bool = True) -> dict:
+@@ -29,6 +45,10 @@ def limits(conn, include_direct: bool = True) -> dict:
+     import sources
+     out: dict = {m.SOURCE_ID: m.DISPLAY_MAX_AGE_HOURS for m in sources.all_sources()
+                  if getattr(m, "DISPLAY_MAX_AGE_HOURS", None)}
++    from config import CONFIG
++    if CONFIG.get("commercial_mode"):
++        out[LICENSED_KEY] = {m.SOURCE_ID for m in sources.all_sources()
++                             if not sources.licensing_block(m, CONFIG)}
+     if include_direct:
+         out[DIRECT_KEY] = sl.discoverable_ids(conn)
+     return out
+@@ -46,6 +66,8 @@ def hidden_reason(d: dict, limits: dict, now: Optional[datetime] = None) -> Opti
+         if d.get("composite_id") in limits.get(DIRECT_KEY, set()):
+             return None
+         return "seller listing is not live (withdrawn, expired or contact unverified)"
++    if not source_allowed(d.get("source"), limits):
++        return "source is not licensed for commercial display"
+     if d.get("is_auction") and d.get("auction_end_at"):
+         try:                                  # an ended auction is not for sale
+             if _utc(d["auction_end_at"]) <= now:
+diff --git a/notifications.py b/notifications.py
+index c493481..d922885 100644
+--- a/notifications.py
++++ b/notifications.py
+@@ -110,13 +110,19 @@ def stale_reason(conn, deal: dict, basis: Optional[dict]) -> Optional[str]:
+     r = conn.execute(
+         "SELECT l.composite_id, l.source, l.price, l.is_auction, l.auction_end_at, "
+         "  l.last_seen_at, l.first_seen_at, l.is_salvage, l.needs_work, l.scam_score, "
+-        "  l.odometer, nm.trust, nm.risk_flags, nm.price_at_score "
++        "  l.odometer, nm.trust, nm.risk_flags, nm.price_at_score, nm.evidence AS evidence_json "
+         "FROM listings l LEFT JOIN near_misses nm ON nm.composite_id = l.composite_id "
+         "WHERE l.composite_id = ?", (cid,)).fetchone()
+     if r is None:
+         return "listing no longer exists"
+     r = dict(r)
+     import listing_display
++    try:
++        evidence = json.loads(r.get("evidence_json") or "{}")
++    except (ValueError, TypeError):
++        return "cached evidence is malformed"
++    if not listing_display.cached_evidence_allowed(evidence):
++        return "cached valuation evidence is not licensed for commercial use"
+     hidden = listing_display.hidden_reason(
+         r, listing_display.limits(conn, include_direct=r["source"] == "direct"))
+     if hidden:
+diff --git a/seller_listings.py b/seller_listings.py
+index 7470eeb..4ffd578 100644
+--- a/seller_listings.py
++++ b/seller_listings.py
+@@ -285,7 +285,31 @@ def _mailbox(email: str) -> str:
+     return f"{local}@{domain}"
+ 
+ 
++def _lock_email_quota(conn) -> None:
++    """First operation in each issuing transaction, before user/row locks.
++
++    All issuers share one short reservation lock; SMTP runs after commit.
++    READ COMMITTED ensures counts after waiting see prior reservations.
++    SQLite's write reservation supplies the same serialization locally.
++    """
++    import db as _db
++    if not _db.IS_PG:
++        conn.execute("BEGIN IMMEDIATE")
++        return
++    isolation = conn.execute("SELECT current_setting('transaction_isolation')").fetchone()[0]
++    if isolation != "read committed":
++        raise SubmissionError(["verification requires read-committed transactions"], 503)
++    conn.execute("SET LOCAL lock_timeout = '5s'")
++    try:
++        conn.execute("SELECT pg_advisory_xact_lock(?, ?)", (0x46465645, 1))
++    except Exception as exc:
++        if getattr(exc, "pgcode", None) == "55P03":
++            raise SubmissionError(["verification is busy — please retry shortly"], 503) from None
++        raise
++
++
+ def _issue_token(conn, user_id: int, email: str) -> str:
++    """Capacity check + reservation; caller holds _lock_email_quota until commit."""
+     now = _now()
+     sent = conn.execute("SELECT created_at FROM contact_verifications WHERE user_id = ? "
+                         "AND created_at >= ? ORDER BY created_at DESC",
+@@ -335,6 +359,7 @@ def send_verification(user, origin: str) -> dict:
+         raise SubmissionError(["email delivery isn't set up yet, so listings can't be "
+                                "published — the site owner has been notified"], 503)
+     with _db.session() as conn:
++        _lock_email_quota(conn)
+         _lock_user(conn, user.id)
+         c = contact(conn, user)
+         if not conn.execute("SELECT 1 FROM seller_contacts WHERE user_id = ?",
+@@ -843,6 +868,8 @@ def _main(argv=None) -> int:
+         print("unknown account, empty --operator, or no --origin/BILLING_ORIGIN")
+         return 1
+     with _db.session() as conn:
++        _lock_email_quota(conn)
++        _lock_user(conn, u.id)
+         c = contact(conn, u)
+         if not conn.execute("SELECT 1 FROM seller_contacts WHERE user_id = ?", (u.id,)).fetchone():
+             conn.execute("INSERT INTO seller_contacts(user_id, email, verified_at, updated_at) "
+diff --git a/server.py b/server.py
+index a9470e7..09fa5d6 100644
+--- a/server.py
++++ b/server.py
+@@ -1919,6 +1919,9 @@ def api_saved_v2():
+             WHERE s.user_id = {_PH()}
+             ORDER BY s.saved_at DESC""", (u.id,))
+         rows = [dict(r) for r in cur.fetchall()]
++    import listing_display
++    display_limits = _display_limits()
++    rows = [r for r in rows if listing_display.source_allowed(r.get("source"), display_limits)]
+     fees = 1500
+     for r in rows:
+         if r.get("comp_avg") and r.get("price"):
+@@ -2232,6 +2235,8 @@ def api_me_alerts():
+     # the current price is shown only while the source still confirms the
+     # listing (the deal feeds' own display rules), never a stale one as an offer
+     limits = _display_limits()
++    import listing_display
++    rows = [r for r in rows if listing_display.source_allowed(r.get("source"), limits)]
+     for r in rows:
+         shown = _displayable(r, limits)
+         current = r.pop("listing_price")
+@@ -2276,6 +2281,13 @@ def _deal_row(r: dict, psettings: dict, plan: Optional[str],
+         ev = json.loads(d.pop("evidence_json", None) or "{}")
+     except ValueError:
+         ev = {}
++    import listing_display
++    if not listing_display.cached_evidence_allowed(ev):
++        ev = {}
++        d.update(value_low=None, value_mid=None, value_high=None,
++                 discount_pct=None, comp_n=0, evidence_class="insufficient",
++                 confidence="none", trust="insufficient", risk_flags="[]",
++                 valuation_requires_refresh=True, evidence=None, confidence_reasons=None)
+     d["dealer_share"] = ev.get("dealer_share") or 0.0
+     d["distance_mi"] = geo.distance_mi(home_zip, d.get("latitude"), d.get("longitude"))
+     try:
+@@ -2460,8 +2472,19 @@ def api_deal_detail(cid: str):
+     d["plan"] = {"plan": plan, "name": plans.display_name(plan), **plans.limits(plan)}
+     if d.get("source") == "direct":
+         import seller_listings as sl
++        import db as contact_db
++        contact_plan = plan
++        # Re-evaluate mirrored subscription state at the privacy boundary.
++        # Keep operator-granted pilot plans when no subscription rows exist.
++        with contact_db.transaction() as billing_conn:
++            cur = billing_conn.cursor()
++            cur.execute(f"SELECT 1 FROM subscriptions WHERE user_id = {contact_db.placeholder()} LIMIT 1",
++                        (u.id,))
++            if cur.fetchone():
++                import billing
++                contact_plan = billing.refresh_entitlement(billing_conn, u.id)
+         with sniper.db() as conn:
+-            d["seller_contact"] = sl.contact_for(conn, d["composite_id"], plan)
++            d["seller_contact"] = sl.contact_for(conn, d["composite_id"], contact_plan)
+             dealer = sl.dealer_name(conn, d["composite_id"])     # current approval, not publish time
+         d["provenance"] = (f"Listed on FlipFirst by {dealer}, a dealer approved by FlipFirst. "
+                            "Its email address is verified; the vehicle details are "
+diff --git a/tests/test_atomic_email_quota.py b/tests/test_atomic_email_quota.py
+new file mode 100644
+index 0000000..9a5f038
+--- /dev/null
++++ b/tests/test_atomic_email_quota.py
+@@ -0,0 +1,123 @@
++"""Synthetic contention through independent DB connections; SMTP is always fake."""
++from concurrent.futures import ThreadPoolExecutor
++from datetime import datetime,timedelta,timezone
++from threading import Barrier,Event,Lock
++import json,time
++import pytest
++
++@pytest.fixture
++def quota(app,monkeypatch):
++    import auth,db,mailer,seller_listings as sl
++    # No login is tested; reuse one real hash to avoid 14 bcrypt operations.
++    password_hash=auth.hash_password('fixture-password-123')
++    monkeypatch.setattr(auth,'hash_password',lambda p:password_hash)
++    users=[auth.create_user(f'quota{i}@example.com','fixture-password-123') for i in range(14)]
++    monkeypatch.setattr(mailer,'configured',lambda:True)
++    sent=[]
++    monkeypatch.setattr(mailer,'send',lambda to,*args:sent.append(to))
++    monkeypatch.setenv('SNIPER_SELLER_SUBMISSIONS','1')
++    fixed=datetime(2030,1,1,12,tzinfo=timezone.utc)
++    monkeypatch.setattr(sl,'_now',lambda:fixed)
++    return db,sl,users,sent,fixed
++
++@pytest.mark.parametrize('repeat',range(3))
++@pytest.mark.parametrize('mode,workers,cap',[
++    ('site',2,1),('site',4,2),('site',12,3),('recipient',12,3),
++    ('aliases',12,3),('last-slot',12,3)])
++def test_atomic_capacity(quota,monkeypatch,mode,workers,cap,repeat):
++    db,sl,users,sent,fixed=quota
++    monkeypatch.setattr(sl,'MAX_VERIFY_EMAILS_PER_DAY',100 if mode in ('recipient','aliases') else cap)
++    monkeypatch.setattr(sl,'MAX_SENDS_PER_RECIPIENT_PER_DAY',cap)
++    aliases=['victim@gmail.com','v.ictim+x@googlemail.com','VICTIM+tag@gmail.com']
++    for i,u in enumerate(users):
++        sl.set_contact(u,aliases[i%3] if mode=='aliases' else 'victim@example.com' if mode=='recipient' else u.email)
++    before=cap-1 if mode=='last-slot' else 0
++    for u in users[:before]:sl.send_verification(u,'https://fixture.invalid')
++    barrier=Barrier(workers);waits=[];connections=[];metrics_lock=Lock()
++    hook='_lock_email_quota' if hasattr(sl,'_lock_email_quota') else '_lock_user'
++    real=getattr(sl,hook)
++    def timed(conn,*args):
++        start=time.perf_counter();real(conn,*args)
++        # This Python lock protects only measurement collection, never capacity.
++        with metrics_lock:
++            waits.append((time.perf_counter()-start)*1000)
++            connections.append(conn.raw.get_backend_pid() if db.IS_PG else id(conn.raw))
++    monkeypatch.setattr(sl,hook,timed)
++    def send(u):
++        barrier.wait(timeout=15)
++        try:sl.send_verification(u,'https://fixture.invalid');return 200
++        except sl.SubmissionError as e:return e.status
++    with ThreadPoolExecutor(max_workers=workers) as pool:
++        results=list(pool.map(send,users[before:before+workers]))
++    successful=results.count(200)
++    print('QUOTA_METRIC '+json.dumps({'engine':'postgresql' if db.IS_PG else 'sqlite','mode':mode,'workers':workers,'cap':cap,'prefilled':before,'repeat':repeat,'successful':successful,'rejected':results.count(429),'send_attempts':len(sent),'max_reservation_wait_ms':round(max(waits),3),'distinct_connections':len(set(connections))}))
++    assert successful==cap-before
++    assert results.count(429)==workers-successful
++    assert len(sent)==cap
++    with db.session() as c:assert c.execute('SELECT COUNT(*) FROM contact_verifications').fetchone()[0]==cap
++
++def test_transaction_failure_rolls_back_then_retry_succeeds(quota,monkeypatch):
++    db,sl,users,sent,_=quota;real=sl._issue_token
++    def failure(*args):real(*args);raise RuntimeError('fixture rollback')
++    with monkeypatch.context() as m:
++        m.setattr(sl,'_issue_token',failure)
++        with pytest.raises(RuntimeError,match='fixture rollback'):sl.send_verification(users[0],'https://fixture.invalid')
++    with db.session() as c:assert c.execute('SELECT COUNT(*) FROM contact_verifications').fetchone()[0]==0
++    assert sent==[]
++    assert sl.send_verification(users[0],'https://fixture.invalid')['sent']
++
++def test_delivery_failure_releases_reservation_then_retry(quota,monkeypatch):
++    db,sl,users,sent,_=quota
++    import mailer
++    def failure(*args):raise mailer.MailerError('synthetic pre-delivery failure')
++    with monkeypatch.context() as m:
++        m.setattr(mailer,'send',failure)
++        with pytest.raises(sl.SubmissionError):sl.send_verification(users[0],'https://fixture.invalid')
++    with db.session() as c:assert c.execute('SELECT COUNT(*) FROM contact_verifications').fetchone()[0]==0
++    assert sent==[]
++    assert sl.send_verification(users[0],'https://fixture.invalid')['sent']
++
++def test_slow_smtp_does_not_hold_quota_lock(quota,monkeypatch):
++    db,sl,users,sent,_=quota
++    import mailer
++    entered=Event();release=Event()
++    def mail(to,*args):
++        sent.append(to)
++        if to==users[0].email:
++            entered.set();assert release.wait(5)
++    monkeypatch.setattr(mailer,'send',mail)
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        first=pool.submit(sl.send_verification,users[0],'https://fixture.invalid')
++        assert entered.wait(5)
++        try:
++            second=pool.submit(sl.send_verification,users[1],'https://fixture.invalid')
++            assert second.result(timeout=4)['sent']
++        finally:release.set()
++        assert first.result(timeout=4)['sent']
++    assert len(sent)==2
++
++def test_rolling_window_expires_without_permanent_reservations(quota,monkeypatch):
++    db,sl,users,sent,fixed=quota
++    monkeypatch.setattr(sl,'MAX_VERIFY_EMAILS_PER_DAY',1)
++    sl.send_verification(users[0],'https://fixture.invalid')
++    with pytest.raises(sl.SubmissionError):sl.send_verification(users[1],'https://fixture.invalid')
++    monkeypatch.setattr(sl,'_now',lambda:fixed+timedelta(hours=25))
++    assert sl.send_verification(users[1],'https://fixture.invalid')['sent']
++
++def test_postgres_wait_visible_and_released_on_rollback(quota):
++    db,sl,users,sent,_=quota
++    if not db.IS_PG:pytest.skip('pg_locks observation requires actual PostgreSQL')
++    with ThreadPoolExecutor(max_workers=1) as pool:
++        with db.session() as held:
++            sl._lock_email_quota(held)
++            future=pool.submit(sl.send_verification,users[0],'https://fixture.invalid')
++            waiting=False;until=time.monotonic()+3
++            while time.monotonic()<until:
++                with db.session() as c:
++                    waiting=bool(c.execute("SELECT COUNT(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted AND classid=? AND objid=1",(0x46465645,)).fetchone()[0])
++                if waiting:break
++                time.sleep(.02)
++            assert waiting and not future.done()
++            held.rollback()
++        assert future.result(timeout=4)['sent']
++    print('PG_LOCK_OBSERVATION waiter visible; rollback released lock; one send completed')
+diff --git a/tests/test_independent_cached_licensing.py b/tests/test_independent_cached_licensing.py
+new file mode 100644
+index 0000000..a987bfa
+--- /dev/null
++++ b/tests/test_independent_cached_licensing.py
+@@ -0,0 +1,24 @@
++from tests.conftest import register
++from tests.test_matching_and_history import world
++
++def test_cached_unlicensed_inventory_hidden_after_commercial_switch(client,world,monkeypatch):
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    register(client,'licensed-viewer@example.com')
++    assert client.get('/api/deals/craigslist:peer0').status_code==410
++
++def test_shared_alert_display_rule_rejects_cached_unlicensed_source(client,world,monkeypatch):
++    from config import CONFIG
++    import listing_display,db
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    with db.session() as conn:
++        limits=listing_display.limits(conn)
++    assert not listing_display.displayable({'source':'craigslist','composite_id':'craigslist:peer0'},limits)
++
++def test_cached_unlicensed_inventory_not_used_as_valuation_peers(client,world,monkeypatch):
++    from config import CONFIG
++    import valuation,db
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    with db.session() as conn:
++        peers=valuation.load_peers(conn,{'year':2015,'make':'Toyota','model':'Camry'})
++    assert peers==[]
+diff --git a/tests/test_independent_pilot.py b/tests/test_independent_pilot.py
+new file mode 100644
+index 0000000..dd830f5
+--- /dev/null
++++ b/tests/test_independent_pilot.py
+@@ -0,0 +1,106 @@
++"""Independent synthetic pilot acceptance. No real mail or provider calls."""
++import pytest
++from tests.conftest import register, login, logout, set_plan
++from tests.test_matching_and_history import world, score_all
++from tests.test_seller_listings import mail, seller, car, token_from
++
++@pytest.mark.parametrize('plan,allowed', [('free',False),('starter',True),('pro',True),('',False),('invalid',False),('expired',False)])
++def test_contact_entitlement_allowlist(client, world, mail, plan, allowed):
++    seller(client, box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all()
++    import db, seller_listings as sl
++    with db.session() as conn:
++        result=sl.contact_for(conn,cid,plan)
++    assert result['available'] is allowed
++    if not allowed: assert 'email' not in result
++
++def test_invalid_stored_plan_cannot_read_contact_api(client,world,mail):
++    seller(client,box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all(); logout(client); register(client,'invalid-buyer@example.com')
++    import db
++    with db.session() as conn:
++        conn.execute("UPDATE users SET plan='invalid' WHERE email=?",('invalid-buyer@example.com',))
++    r=client.get(f'/api/deals/{cid}')
++    assert r.status_code==200
++    assert 'seller@example.com' not in r.get_data(as_text=True)
++
++def test_invited_seller_complete_journey(client, world, mail, monkeypatch):
++    import auth, invites
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    monkeypatch.setattr(auth,'ALLOW_REGISTRATION',False)
++    _,token=invites.issue(1)[0]
++    body={'email':'pilot-seller@example.com','password':'pilot-pass-123','invite':token}
++    assert client.post('/api/auth/register',json=body).status_code==200
++    r=client.post('/api/seller/listings',json=car()).get_json()
++    assert r['status']=='pending'
++    assert client.post('/api/seller/contact',json={}).status_code==200
++    assert client.post('/api/seller/contact/verify',json={'token':token_from(mail)}).status_code==200
++    score_all()
++    sid,cid=r['id'],r['composite_id']
++    assert client.patch(f'/api/seller/listings/{sid}',json={'price':6500}).status_code==200
++    logout(client)
++    _,invite=invites.issue(1)[0]
++    assert client.post('/api/auth/register',json={'email':'pilot-buyer@example.com','password':'pilot-pass-123','invite':invite}).status_code==200
++    assert client.get(f'/api/deals/{cid}').get_json()['seller_contact']['available'] is False
++    set_plan('pilot-buyer@example.com','starter')
++    assert client.get(f'/api/deals/{cid}').get_json()['seller_contact']['email']=='pilot-seller@example.com'
++    assert client.delete(f'/api/seller/listings/{sid}').status_code==404
++    logout(client)
++    assert client.post('/api/auth/login',json={'email':'pilot-seller@example.com','password':'pilot-pass-123'}).status_code==200
++    assert client.delete(f'/api/seller/listings/{sid}').status_code==200
++    assert client.get(f'/api/deals/{cid}').status_code==404
++
++def test_email_failure_does_not_leak_synthetic_secret(client,world,mail,monkeypatch):
++    import mailer
++    register(client,'outage@example.com')
++    def fail(*a,**kw): raise mailer.MailerError('SYNTHETIC_PASSWORD=not-a-real-secret postgresql://fixture:fake@private.invalid/db')
++    monkeypatch.setattr(mailer,'send',fail)
++    r=client.post('/api/seller/contact',json={})
++    assert r.status_code==503
++    assert 'SYNTHETIC_PASSWORD' not in r.get_data(as_text=True)
++    assert 'private.invalid' not in r.get_data(as_text=True)
++
++def test_concurrent_cross_account_verification_site_cap(client,world,mail,monkeypatch):
++    import auth,seller_listings as sl
++    from concurrent.futures import ThreadPoolExecutor
++    from threading import Barrier
++    users=[]
++    for i in range(4):
++        email=f'concurrent{i}@example.com'
++        register(client,email); users.append(auth.get_user_by_email(email)); logout(client)
++    monkeypatch.setattr(sl,'MAX_VERIFY_EMAILS_PER_DAY',2)
++    barrier=Barrier(4)
++    def send(user):
++        barrier.wait(timeout=10)
++        try: sl.send_verification(user,'https://pilot.example.invalid'); return 200
++        except sl.SubmissionError as e: return e.status
++    with ThreadPoolExecutor(max_workers=4) as pool:
++        results=list(pool.map(send,users))
++    assert sorted(results)==[200,200,429,429]
++    assert len(mail)==2
++
++def test_expired_subscription_after_entitlement_refresh_denies_contact(client,world,mail):
++    seller(client,box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all(); logout(client)
++    from tests.test_billing_lifecycle import _seed_subscription
++    _seed_subscription(client,email='expired-buyer@example.com',period_end_offset_s=-86400,cancel_at_period_end=True)
++    r=client.get(f'/api/deals/{cid}')
++    assert r.status_code==200
++    assert r.get_json()['seller_contact']['available'] is False
++
++def test_elapsed_scheduled_cancellation_denies_contact_without_webhook(client,world,mail):
++    seller(client,box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all(); logout(client)
++    from tests.test_billing_lifecycle import _seed_subscription
++    _seed_subscription(client,email='elapsed-buyer@example.com',cancel_at_period_end=True)
++    import db
++    with db.session() as conn:
++        conn.execute("UPDATE subscriptions SET current_period_end='2000-01-01T00:00:00+00:00'")
++    r=client.get(f'/api/deals/{cid}')
++    assert r.status_code==200
++    assert r.get_json()['seller_contact']['available'] is False
+diff --git a/tests/test_quota_transaction_protocol.py b/tests/test_quota_transaction_protocol.py
+new file mode 100644
+index 0000000..c194b6a
+--- /dev/null
++++ b/tests/test_quota_transaction_protocol.py
+@@ -0,0 +1,36 @@
++"""SQL protocol tests only: these do not substitute for PostgreSQL execution."""
++import pytest
++
++@pytest.mark.parametrize('isolation',['repeatable read','serializable'])
++def test_snapshot_isolation_fails_closed(app,monkeypatch,isolation):
++    import db,seller_listings as sl
++    monkeypatch.setattr(db,'IS_PG',True)
++    class Conn:
++        def execute(self,sql,params=()):
++            assert 'current_setting' in sql
++            return self
++        def fetchone(self):return (isolation,)
++    with pytest.raises(sl.SubmissionError) as error:sl._lock_email_quota(Conn())
++    assert error.value.status==503
++
++def test_postgres_lock_is_transaction_scoped_and_bounded(app,monkeypatch):
++    import db,seller_listings as sl
++    monkeypatch.setattr(db,'IS_PG',True)
++    calls=[]
++    class Conn:
++        def execute(self,sql,params=()):calls.append((sql,params));return self
++        def fetchone(self):return ('read committed',)
++    sl._lock_email_quota(Conn())
++    assert 'current_setting' in calls[0][0]
++    assert "SET LOCAL lock_timeout" in calls[1][0]
++    assert 'pg_advisory_xact_lock' in calls[2][0]
++    assert calls[2][1]==(0x46465645,1)
++
++def test_sqlite_takes_write_reservation_before_reads(app,monkeypatch):
++    import db,seller_listings as sl
++    monkeypatch.setattr(db,'IS_PG',False)
++    calls=[]
++    class Conn:
++        def execute(self,sql,params=()):calls.append(sql)
++    sl._lock_email_quota(Conn())
++    assert calls==['BEGIN IMMEDIATE']
+diff --git a/tests/test_security_final.py b/tests/test_security_final.py
+new file mode 100644
+index 0000000..61bc600
+--- /dev/null
++++ b/tests/test_security_final.py
+@@ -0,0 +1,124 @@
++import pytest
++from tests.conftest import register,login,logout,set_plan
++from tests.test_matching_and_history import world,L,make_user,score_all
++from tests.test_seller_listings import mail,seller,car
++
++@pytest.mark.parametrize('plan',[None,'',{},[]])
++def test_missing_or_malformed_contact_plan_is_denied(monkeypatch,plan):
++    import seller_listings as sl
++    monkeypatch.setattr(sl,'discoverable_ids',lambda c:{'direct:1'})
++    monkeypatch.setenv('SNIPER_SELLER_SUBMISSIONS','0')
++    assert sl.contact_for(None,'direct:1',plan)['available'] is False
++
++@pytest.fixture
++def scheduled(client,world,mail,monkeypatch):
++    seller(client,box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all();logout(client)
++    from tests.test_billing_lifecycle import _seed_subscription
++    _seed_subscription(client,email='scheduled@example.com',cancel_at_period_end=True)
++    import billing
++    monkeypatch.setattr(billing,'_now_utc_iso',lambda:'2030-01-01T12:00:00+00:00')
++    return cid
++
++@pytest.mark.parametrize('end,allowed',[
++    ('2030-01-01T12:00:01+00:00',True),('2030-01-01T12:00:00+00:00',False),
++    ('2030-01-01T11:59:59+00:00',False),('2030-01-01T14:00:00+02:00',False),
++    (None,False),('2030-01-02T00:00:00+00:00',True),
++    ('2030-01-01T13:00:00+00:00',True)])
++def test_scheduled_expiry_is_strict_and_timezone_aware(client,scheduled,end,allowed):
++    import db
++    with db.session() as c:
++        c.execute('UPDATE subscriptions SET current_period_end=?',(end,))
++        c.execute("UPDATE users SET plan='starter' WHERE email='scheduled@example.com'")
++    r=client.get('/api/deals/'+scheduled)
++    assert r.status_code==200
++    assert r.get_json()['seller_contact']['available'] is allowed
++
++@pytest.mark.parametrize('end',['','zzz','2030-01-02','2030-01-01T13:00:00'])
++def test_malformed_expiry_at_application_row_boundary(app,monkeypatch,end):
++    # Defensive parser test, deliberately not an impossible PG timestamp INSERT.
++    import billing
++    monkeypatch.setattr(billing,'_now_utc_iso',lambda:'2030-01-01T12:00:00+00:00')
++    class Cursor:
++        def execute(self,sql,args=()):pass
++        def fetchall(self):return [{'plan':'starter','status':'active','current_period_end':end,'cancel_at_period_end':True}]
++        def fetchone(self):return {'plan':'starter','role':'user'}
++    class Conn:
++        def cursor(self):return Cursor()
++    assert billing.refresh_entitlement(Conn(),1)=='free'
++
++@pytest.mark.parametrize('bad',['','zzz'])
++def test_postgres_rejects_unrepresentable_timestamp(client,scheduled,bad):
++    import db
++    if not db.IS_PG:pytest.skip('PostgreSQL typed-column boundary only')
++    from psycopg2.errors import InvalidDatetimeFormat
++    with pytest.raises(InvalidDatetimeFormat):
++        with db.session() as c:c.execute('UPDATE subscriptions SET current_period_end=?',(bad,))
++
++@pytest.mark.parametrize('path',['/api/saved','/api/me/alerts','/api/deals?feed=trusted','/api/deals?feed=search'])
++def test_legacy_inventory_read_paths(client,world,monkeypatch,path):
++    make_user(client,'reader@example.com',searches=[('camry',{'max_price':9000})],topic=False)
++    login(client,'reader@example.com')
++    world.ingest([L('legacy-secret-car',6000)]);score_all()
++    assert client.post('/api/save',json={'composite_id':'craigslist:legacy-secret-car'}).status_code==200
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    if path.endswith('feed=search'):
++        import db
++        with db.session() as c:
++            sid=c.execute('SELECT id FROM saved_searches').fetchone()[0]
++        path+='&search_id='+str(sid)
++    r=client.get(path)
++    assert r.status_code==200
++    assert 'legacy-secret-car' not in r.get_data(as_text=True)
++
++def test_sold_comp_cache_rechecks_revoked_permission(monkeypatch):
++    import comps
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    monkeypatch.delenv('MARKETCHECK_COMMERCIAL_AGREEMENT',raising=False)
++    monkeypatch.setattr(comps,'cached_get',lambda *a:({'marketcheck':[{'price':12345,'url':'https://private.invalid/cached'}]},1))
++    rows,_=comps.raw_sold(2015,'Toyota','Camry')
++    assert not rows.get('marketcheck')
++
++def test_saved_analysis_rechecks_licensing_preserves_user_notes(client,world,monkeypatch):
++    from tests.test_analyze import CAMRY
++    register(client,'analyst@example.com');set_plan('analyst@example.com','starter')
++    r=client.post('/api/opportunities',json={'input':CAMRY,'notes':'MY_PRIVATE_NOTE'})
++    assert r.status_code==201
++    oid=r.get_json()['id']
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    r=client.get(f'/api/opportunities/{oid}')
++    assert r.status_code==200
++    assert 'MY_PRIVATE_NOTE' in r.get_data(as_text=True)
++    assert 'craigslist' not in r.get_data(as_text=True)
++    assert r.get_json()['value_mid'] is None
++
++def test_concurrent_expired_contact_requests(app,client,scheduled):
++    import db
++    with db.session() as c:
++        c.execute("UPDATE subscriptions SET current_period_end='2030-01-01T11:00:00+00:00'")
++    token=client.get_cookie('sniper_session').value
++    from concurrent.futures import ThreadPoolExecutor
++    from threading import Barrier
++    barrier=Barrier(4)
++    def read(_):
++        c=app.test_client();c.set_cookie('sniper_session',token);barrier.wait(timeout=10)
++        r=c.get('/api/deals/'+scheduled)
++        assert r.status_code==200
++        return r.get_json()['seller_contact']['available']
++    with ThreadPoolExecutor(max_workers=4) as pool:
++        assert list(pool.map(read,range(4)))==[False]*4
++
++def test_direct_listing_does_not_return_old_unlicensed_valuation(client,world,mail,monkeypatch):
++    seller(client,box=mail)
++    cid=client.post('/api/seller/listings',json=car()).get_json()['composite_id']
++    score_all()
++    from config import CONFIG
++    monkeypatch.setitem(CONFIG,'commercial_mode',True)
++    r=client.get('/api/deals/'+cid)
++    assert r.status_code==200
++    assert 'craigslist' not in r.get_data(as_text=True)
++    assert r.get_json()['value_mid'] is None
+diff --git a/valuation.py b/valuation.py
+index 0a873ae..d886324 100644
+--- a/valuation.py
++++ b/valuation.py
+@@ -719,7 +719,14 @@ def load_peers(conn, target: dict) -> list[dict]:
+         "  AND year BETWEEN ? AND ? AND price IS NOT NULL",
+         (target["make"], target["model"], target["year"] - 2, target["year"] + 2)
+     ).fetchall()
+-    return [dict(r) for r in rows]
++    peers = [dict(r) for r in rows]
++    from config import CONFIG
++    if CONFIG.get("commercial_mode"):
++        import sources
++        allowed = {m.SOURCE_ID for m in sources.all_sources()
++                   if not sources.licensing_block(m, CONFIG)} | {"direct"}
++        peers = [r for r in peers if r.get("source") in allowed]
++    return peers
+ 
+ 
+ def evidence_json(v: Valuation) -> str:
+diff --git a/workspace.py b/workspace.py
+index 4f5fdee..974bd43 100644
+--- a/workspace.py
++++ b/workspace.py
+@@ -98,10 +98,17 @@ def realized(r: dict) -> Optional[dict]:
+             "holding_days": days, "recorded_by": "you (not verified by FlipFirst)"}
+ 
+ 
++def _analysis_allowed(analysis: dict) -> bool:
++    import listing_display
++    return listing_display.cached_evidence_allowed(analysis.get("evidence") or {})
++
++
+ def _item(row) -> dict:
+     """A workspace row for lists and comparison: the key figures only."""
+     r = dict(row)
+     a = json.loads(r.pop("analysis_json") or "null") or {}
++    if not _analysis_allowed(a):
++        a = {}
+     inp = json.loads(r.pop("input_json") or "{}")
+     pr = a.get("profit") or {}
+     r.update({
+@@ -177,6 +184,9 @@ def get(conn, user_id: int, oid: int, display_limits: Optional[dict] = None) ->
+     out = _item(row)
+     out["input"] = json.loads(r["input_json"] or "null") or {}
+     out["analysis"] = json.loads(r["analysis_json"] or "null")
++    if not _analysis_allowed(out["analysis"] or {}):
++        out["analysis"] = {"requires_reanalysis": True,
++                           "reason": "cached evidence is not licensed for commercial use"}
+     _hide_stale_comps(out["analysis"], display_limits)
+     return out
+ 

@@ -1,0 +1,88 @@
+name: PR32 quota and security PostgreSQL verification
+on:
+  push:
+    branches: [verification/pr32-quota-c330b100]
+    paths: [.github/workflows/pr32-quota-postgres.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fixture_admin
+          POSTGRES_PASSWORD: ephemeral-fixture-only
+          POSTGRES_DB: postgres
+        ports: ['55441:5432']
+        options: >-
+          --health-cmd "pg_isready -U fixture_admin -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: handoff
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Orangi3/car-sniper-saas
+          ref: deb684dc4155f5bf5df233322b60a75fb4881963
+          path: candidate
+          persist-credentials: false
+      - name: Validate and reconstruct exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          cd handoff/verification/pr32-quota
+          sha256sum --check SHA256SUMS
+          cd ../../../candidate
+          test "$(git rev-parse HEAD)" = "deb684dc4155f5bf5df233322b60a75fb4881963"
+          for patch in candidate.patch; do
+            git apply --check "../handoff/verification/pr32-quota/$patch"
+            git apply "../handoff/verification/pr32-quota/$patch"
+          done
+          git add -- billing.py comps.py listing_display.py notifications.py seller_listings.py server.py tests/test_atomic_email_quota.py tests/test_independent_cached_licensing.py tests/test_independent_pilot.py tests/test_quota_transaction_protocol.py tests/test_security_final.py valuation.py workspace.py
+          test "$(git write-tree)" = "654fad548e92ca9e77a79a741f33c154cf98759b"
+          git write-tree > ../evidence/candidate-tree.txt
+          git diff --cached --name-status > ../evidence/changed-files.txt
+      - name: Isolated test dependencies
+        working-directory: candidate
+        run: |
+          python3 -m venv ../venv
+          ../venv/bin/pip install -r requirements.txt
+          ../venv/bin/pip freeze > ../evidence/dependencies.txt
+          ../venv/bin/python --version > ../evidence/python-version.txt
+      - name: Reproduce race on exact unmodified PR32 source
+        working-directory: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach ../baseline deb684dc4155f5bf5df233322b60a75fb4881963
+          cp ../handoff/verification/pr32-quota/baseline_race.py ../baseline/tests/test_baseline_race.py
+          cd ../baseline
+          set +e
+          ../venv/bin/python ../handoff/verification/pr32-quota/run_pg.py -q -s -rA tests/test_baseline_race.py 2>&1 | tee ../evidence/baseline-race.txt
+          code=${PIPESTATUS[0]}
+          echo "$code" > ../evidence/baseline-exit-code.txt
+          exit "$code"
+      - name: Real PostgreSQL security and email-cap tests
+        if: ${{ !cancelled() }}
+        working-directory: candidate
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          ../venv/bin/python ../handoff/verification/pr32-quota/run_pg.py -q -s -rA tests/test_atomic_email_quota.py tests/test_quota_transaction_protocol.py tests/test_security_final.py tests/test_seller_verification_caps.py tests/test_seller_listings.py tests/test_billing_lifecycle.py tests/test_independent_pilot.py tests/test_independent_cached_licensing.py 2>&1 | tee ../evidence/postgres-tests.txt
+          code=${PIPESTATUS[0]}
+          echo "$code" > ../evidence/test-exit-code.txt
+          exit "$code"
+      - name: Preserve evidence including failures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr32-quota-postgres-evidence
+          path: evidence/
+          retention-days: 7
